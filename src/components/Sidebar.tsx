@@ -27,11 +27,11 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
     <aside className="sidebar">
       <div className="sidebar__top">
         <SpickLogo />
-        <span className="sidebar__version">EARLY ACCESS</span>
+        <span className="sidebar__version">EARLY BUILD</span>
       </div>
 
       <nav className="sidebar__nav" aria-label="Main navigation">
-        <span className="sidebar__label">Workspace</span>
+        <span className="sidebar__label">Go to</span>
         {navItems.map((item) => {
           const Icon = item.icon;
           return (
@@ -68,10 +68,10 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
         <div className="privacy-status">
           <ShieldCheck size={16} />
           <div>
-            <strong>Foundation preview</strong>
-            <span>Native capture ready · Transcription next</span>
+            <strong>Mic capture works</strong>
+            <span>Transcription comes next</span>
           </div>
-          <span className="status-dot" aria-label="Preview" />
+          <span className="status-dot" aria-label="Early build" />
         </div>
       </div>
     </aside>

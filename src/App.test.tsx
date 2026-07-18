@@ -22,16 +22,18 @@ describe("Spick product shell", () => {
   it("gates onboarding progress on both simulated permissions", () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set up Spick" }));
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
 
     const continueButton = screen.getByRole("button", { name: "Continue" });
     expect(continueButton).toBeDisabled();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Simulate microphone access" }),
+      screen.getByRole("button", { name: "Simulate mic approval" }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Simulate accessibility access" }),
+      screen.getByRole("button", {
+        name: "Simulate Accessibility approval",
+      }),
     );
 
     expect(continueButton).toBeEnabled();
@@ -41,9 +43,7 @@ describe("Spick product shell", () => {
     window.localStorage.setItem("spick-onboarding-complete", "true");
     render(<App />);
 
-    expect(
-      screen.getByRole("heading", { name: "Your dictation workspace" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
     expect(screen.getByText("SAMPLE DATA")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Engines" }));
@@ -59,10 +59,10 @@ describe("Spick product shell", () => {
     render(<App />);
 
     expect(
-      screen.getByRole("button", { name: "Start dictation" }),
+      screen.getByRole("button", { name: "Start recording" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Set up Spick" }),
+      screen.queryByRole("button", { name: "Let’s set it up" }),
     ).not.toBeInTheDocument();
   });
 
@@ -71,20 +71,20 @@ describe("Spick product shell", () => {
     window.history.replaceState({}, "", "/?window=hud");
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
     expect(
-      screen.getByRole("button", { name: "Finish dictation" }),
+      screen.getByRole("button", { name: "Finish recording" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Finish dictation" }));
-    expect(screen.getByText("Polishing your words")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Finish recording" }));
+    expect(screen.getByText("Finishing recording")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1150));
-    expect(screen.getByText("Capture complete")).toBeInTheDocument();
+    expect(screen.getByText("Recording finished")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1250));
     expect(
-      screen.getByRole("button", { name: "Start dictation" }),
+      screen.getByRole("button", { name: "Start recording" }),
     ).toBeInTheDocument();
   });
 });

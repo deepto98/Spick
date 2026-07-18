@@ -29,7 +29,7 @@ export function useDictationController() {
     setState(toHudState(event.state));
     setError(
       event.state === "failed"
-        ? (event.session?.error ?? "Dictation failed")
+        ? (event.session?.error ?? "Recording failed")
         : null,
     );
   }, []);
@@ -54,7 +54,7 @@ export function useDictationController() {
         if (!disposed) applyNativeState(current);
       } catch (reason) {
         if (!disposed) {
-          setError(`Could not connect to native dictation: ${String(reason)}`);
+          setError(`Couldn’t connect to the recorder: ${String(reason)}`);
         }
       }
     };
@@ -99,9 +99,7 @@ export function useDictationController() {
           if (event) applyNativeState(event);
         })
         .catch((reason) => {
-          setError(
-            `Native dictation could not change state: ${String(reason)}`,
-          );
+          setError(`Couldn’t start or stop recording: ${String(reason)}`);
         })
         .finally(() => {
           pendingRef.current = false;

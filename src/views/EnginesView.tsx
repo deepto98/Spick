@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   Check,
   ChevronRight,
+  CircleDashed,
   Cloud,
   Cpu,
   Download,
@@ -13,10 +14,8 @@ import {
   LockKeyhole,
   MoreHorizontal,
   ShieldCheck,
-  Sparkles,
   Trash2,
   Wifi,
-  Zap,
 } from "lucide-react";
 import type { Engine, EngineKind } from "../types";
 import { PageHeader } from "../components/Ui";
@@ -53,18 +52,18 @@ export function EnginesView({
   return (
     <div className="view view--engines">
       <PageHeader
-        eyebrow="Speech intelligence"
+        eyebrow="TRANSCRIPTION"
         title="Engines"
-        description="Engine contracts and a verified local catalog are wired. Model downloads and decoder/provider implementations are not connected yet."
+        description="Choose where speech will be transcribed. The catalog is ready; downloads and runtimes are not."
         actions={
           <div className="engine-active-pill">
             {activeEngine ? (
               <span className="status-dot" />
             ) : (
-              <Sparkles size={16} />
+              <CircleDashed size={16} />
             )}
             <div>
-              <small>Preview selection</small>
+              <small>Selected here</small>
               <strong>{activeEngine?.name ?? "None selected"}</strong>
             </div>
           </div>
@@ -86,7 +85,7 @@ export function EnginesView({
           <Laptop size={17} />
           <span>
             <strong>On this Mac</strong>
-            <small>Private & offline</small>
+            <small>Offline once installed</small>
           </span>
           <span className="tab-count">{localCount}</span>
         </button>
@@ -100,7 +99,7 @@ export function EnginesView({
           <Cloud size={17} />
           <span>
             <strong>Cloud providers</strong>
-            <small>Frontier accuracy</small>
+            <small>Needs internet</small>
           </span>
           <span className="tab-count">{cloudCount}</span>
         </button>
@@ -114,32 +113,29 @@ export function EnginesView({
             </div>
             <div className="hardware-banner__copy">
               <span className="hardware-banner__eyebrow">THIS MAC</span>
-              <strong>Native hardware scan pending</strong>
-              <p>
-                Compatibility and acceleration will be measured on this device
-                before a model is recommended.
-              </p>
+              <strong>We haven’t checked this Mac yet</strong>
+              <p>Spick will test model speed here before suggesting one.</p>
             </div>
             <div className="hardware-banner__stats">
               <span>
-                <Zap size={14} /> <strong>Benchmark</strong> after install
+                <Gauge size={14} /> <strong>Speed test</strong> after install
               </span>
               <span>
                 <HardDrive size={14} /> <strong>No models</strong> installed
               </span>
             </div>
             <span className="compatibility-badge">
-              <Sparkles size={13} /> Preview profile
+              <Gauge size={13} /> Example only
             </span>
           </section>
 
           <div className="section-heading">
             <div>
               <h2>Local models</h2>
-              <p>Downloads and activation are simulated in this milestone.</p>
+              <p>The download buttons are a preview for now.</p>
             </div>
             <span>
-              <ShieldCheck size={14} /> Local-first plan
+              <ShieldCheck size={14} /> Stays on this Mac
             </span>
           </div>
 
@@ -158,14 +154,14 @@ export function EnginesView({
           <div className="engine-note">
             <LockKeyhole size={17} />
             <div>
-              <strong>Local means local</strong>
+              <strong>Audio stays on this Mac</strong>
               <span>
-                Once connected, local models will run without sending audio to a
-                provider. Raw audio will remain ephemeral by default.
+                Once a local runtime is connected, recordings won’t be sent to a
+                provider. Raw audio will be discarded after each session.
               </span>
             </div>
             <button type="button" className="text-button">
-              Privacy details <ChevronRight size={14} />
+              How it works <ChevronRight size={14} />
             </button>
           </div>
         </>
@@ -173,13 +169,13 @@ export function EnginesView({
         <>
           <section className="cloud-intro">
             <div className="cloud-intro__icon">
-              <Sparkles size={21} />
+              <Cloud size={21} />
             </div>
             <div>
-              <strong>Frontier speech, when you need it</strong>
+              <strong>Use your own provider</strong>
               <p>
-                Planned adapters will expose only the capabilities each provider
-                and model actually supports.
+                Cloud adapters aren’t connected yet. When they are, each one
+                will show exactly what its model supports.
               </p>
             </div>
             <span>
@@ -191,8 +187,7 @@ export function EnginesView({
             <div>
               <h2>Cloud providers</h2>
               <p>
-                Provider credentials stay disabled until native credential
-                storage is implemented.
+                API keys stay disabled until OS credential storage is ready.
               </p>
             </div>
           </div>
@@ -245,7 +240,7 @@ export function EnginesView({
               <div className="provider-logo provider-logo--openai">O</div>
               <div>
                 <h2>OpenAI API key</h2>
-                <p>Credential storage is shown as a setup preview.</p>
+                <p>This field is here to show the planned setup.</p>
               </div>
               <span className="prototype-badge">NOT CONNECTED</span>
             </div>
@@ -255,7 +250,7 @@ export function EnginesView({
                 value=""
                 type="password"
                 aria-label="OpenAI API key"
-                placeholder="Keychain integration required"
+                placeholder="Keychain support is not ready"
                 disabled
                 readOnly
               />
@@ -264,12 +259,12 @@ export function EnginesView({
                 className="button button--primary button--small"
                 disabled
               >
-                Unavailable in preview
+                Not ready
               </button>
             </div>
             <span className="api-key-hint">
               <LockKeyhole size={13} /> Do not paste credentials into this
-              preview. Native builds will use the OS credential store.
+              field. Spick will use the OS credential store when this is ready.
             </span>
           </section>
         </>
@@ -324,7 +319,7 @@ function EngineCard({
           <strong>{engine.name}</strong>
           {engine.recommended && (
             <span className="recommended-badge">
-              <Sparkles size={11} /> Recommended
+              <Check size={11} /> Recommended
             </span>
           )}
           {engine.status === "active" && (
@@ -344,11 +339,11 @@ function EngineCard({
           </span>
           {engine.size && (
             <span>
-              <HardDrive size={13} /> Pinned download {engine.size}
+              <HardDrive size={13} /> Download {engine.size}
             </span>
           )}
           <span>
-            <Zap size={13} /> Runtime planned
+            <Cpu size={13} /> Not wired up
           </span>
         </div>
         {progress !== null && (
@@ -391,7 +386,7 @@ function EngineCard({
             onClick={install}
             disabled={progress !== null}
           >
-            <Download size={15} /> Preview download
+            <Download size={15} /> Demo download
           </button>
         )}
         {engine.status === "ready" && (

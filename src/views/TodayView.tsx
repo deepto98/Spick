@@ -4,10 +4,10 @@ import {
   ChevronRight,
   Clock3,
   Copy,
+  Cpu,
   Gauge,
   Languages,
   Mic2,
-  Sparkles,
   Timer,
   TrendingUp,
 } from "lucide-react";
@@ -51,17 +51,17 @@ export function TodayView({
   return (
     <div className="view view--today">
       <PageHeader
-        eyebrow="INTERACTIVE PRODUCT PREVIEW"
-        title="Your dictation workspace"
-        description="Sample activity demonstrates the dashboard; live statistics begin when transcription and local history are connected."
+        eyebrow="EARLY BUILD"
+        title="Today"
+        description="This dashboard uses sample data until transcription and local history are ready."
         actions={
           <button
             type="button"
             className="button button--secondary"
             onClick={onOpenEngines}
           >
-            <Sparkles size={16} />
-            Set up an engine
+            <Cpu size={16} />
+            Choose an engine
             <ChevronRight size={15} />
           </button>
         }
@@ -74,7 +74,7 @@ export function TodayView({
           </span>
           <div className="stat-card__metric">
             <strong>3,128</strong>
-            <span>sample words</span>
+            <span>words</span>
           </div>
           <span className="trend trend--light">
             <TrendingUp size={13} /> 24%
@@ -93,12 +93,12 @@ export function TodayView({
           </span>
           <div className="stat-card__metric">
             <strong>142</strong>
-            <span>sample WPM</span>
+            <span>words per minute</span>
           </div>
           <span className="trend">
             <ArrowUpRight size={13} /> 8%
           </span>
-          <small>3.2× faster than typing</small>
+          <small>Example pace</small>
         </article>
         <article className="stat-card">
           <span className="stat-card__icon">
@@ -106,12 +106,12 @@ export function TodayView({
           </span>
           <div className="stat-card__metric">
             <strong>28m</strong>
-            <span>sample time saved</span>
+            <span>time saved</span>
           </div>
           <span className="trend">
             <ArrowUpRight size={13} /> 12%
           </span>
-          <small>3h 42m saved this month</small>
+          <small>Example estimate</small>
         </article>
         <article className="stat-card">
           <span className="stat-card__icon">
@@ -119,7 +119,7 @@ export function TodayView({
           </span>
           <div className="stat-card__metric">
             <strong>3</strong>
-            <span>sample languages</span>
+            <span>languages</span>
           </div>
           <span
             className="language-stack"
@@ -129,7 +129,7 @@ export function TodayView({
               <i key={language.code}>{language.code}</i>
             ))}
           </span>
-          <small>Auto-detect is on</small>
+          <small>Example language mix</small>
         </article>
       </section>
 
@@ -137,8 +137,8 @@ export function TodayView({
         <section className="panel activity-panel">
           <header className="panel__header">
             <div>
-              <h2>Speaking activity</h2>
-              <p>Example weekly trend</p>
+              <h2>Words by day</h2>
+              <p>Example data</p>
             </div>
             <button type="button" className="filter-button">
               This week <ChevronRight size={14} />
@@ -186,7 +186,7 @@ export function TodayView({
           <header className="panel__header">
             <div>
               <h2>Languages</h2>
-              <p>Example language mix</p>
+              <p>Example data</p>
             </div>
             <span className="auto-badge">
               <i /> Auto
@@ -219,8 +219,8 @@ export function TodayView({
         <section className="panel recent-panel">
           <header className="panel__header">
             <div>
-              <h2>Sample dictations</h2>
-              <p>Representative polished output</p>
+              <h2>A few examples</h2>
+              <p>Placeholder text, for now</p>
             </div>
             <span className="prototype-badge">SAMPLE DATA</span>
           </header>
@@ -264,13 +264,13 @@ export function TodayView({
         <section className="panel try-panel">
           <div className="try-panel__glow" />
           <span className="try-panel__eyebrow">
-            <i /> {native ? "LIVE CAPTURE" : "INTERACTION PREVIEW"}
+            <i /> {native ? "MIC CONNECTED" : "BROWSER DEMO"}
           </span>
-          <h2>Speak. Watch it become clear.</h2>
+          <h2>Try the shortcut</h2>
           <p>
             {native
-              ? "Microphone capture is live. Transcription and insertion are the next milestone."
-              : "This browser preview animates only. Run the desktop build for live capture."}
+              ? "Spick can record you here. It can’t transcribe or type the result yet."
+              : "This page only shows the animation. Use the desktop build to record audio."}
           </p>
           <div className="try-panel__hud">
             <DictationHud
@@ -284,9 +284,9 @@ export function TodayView({
           </div>
           <div className="try-panel__footer">
             <span>
-              <Clock3 size={14} /> Interaction
+              <Clock3 size={14} /> Status
             </span>
-            <strong>{native ? "Native foundation" : "Demo only"}</strong>
+            <strong>{native ? "Recording works" : "Animation only"}</strong>
           </div>
         </section>
       </div>

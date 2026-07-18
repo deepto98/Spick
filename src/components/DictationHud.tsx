@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, Mic, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Check, LoaderCircle, Mic, X } from "lucide-react";
 import type { HudState } from "../types";
 
 interface DictationHudProps {
@@ -74,14 +74,14 @@ export function DictationHud({
         type="button"
         className={`dictation-hud dictation-hud--idle ${floating ? "dictation-hud--floating" : ""}`}
         onClick={() => transitionTo("listening")}
-        aria-label="Start dictation"
+        aria-label="Start recording"
         disabled={disabled}
       >
         <span className="hud-orb">
           <Mic size={17} />
         </span>
         <span className="hud-idle-copy">
-          <strong>Hold to speak</strong>
+          <strong>Hold to record</strong>
           <small>⌘ ⇧ Space</small>
         </span>
       </button>
@@ -97,7 +97,7 @@ export function DictationHud({
     >
       <span className="hud-orb" aria-hidden="true">
         {state === "listening" && <Mic size={17} />}
-        {state === "processing" && <Sparkles size={17} />}
+        {state === "processing" && <LoaderCircle size={17} />}
         {state === "success" && <Check size={18} />}
         {state === "error" && <AlertTriangle size={17} />}
       </span>
@@ -130,7 +130,7 @@ export function DictationHud({
             type="button"
             className="hud-stop"
             onClick={() => transitionTo("processing")}
-            aria-label="Finish dictation"
+            aria-label="Finish recording"
             disabled={disabled}
           >
             <X size={15} />
@@ -140,7 +140,7 @@ export function DictationHud({
 
       {state === "processing" && (
         <div className="hud-status-copy">
-          <strong>Polishing your words</strong>
+          <strong>Finishing recording</strong>
           <span className="hud-loading">
             <i />
             <i />
@@ -151,8 +151,8 @@ export function DictationHud({
 
       {state === "success" && (
         <div className="hud-status-copy">
-          <strong>Capture complete</strong>
-          <span>Transcription and insertion are the next milestone</span>
+          <strong>Recording finished</strong>
+          <span>Transcription isn’t connected yet</span>
         </div>
       )}
 
@@ -166,7 +166,7 @@ export function DictationHud({
             type="button"
             className="hud-stop"
             onClick={() => transitionTo("idle")}
-            aria-label="Dismiss dictation error"
+            aria-label="Dismiss recording error"
           >
             <X size={15} />
           </button>

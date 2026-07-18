@@ -2,17 +2,19 @@ import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  AudioLines,
   Check,
   CheckCircle2,
   ChevronRight,
+  Cloud,
+  Eraser,
   Globe2,
+  Info,
   Keyboard,
   Languages,
   LockKeyhole,
   Mic2,
   ShieldCheck,
-  Sparkles,
-  WandSparkles,
 } from "lucide-react";
 import type { AppSettings } from "../types";
 import { DictationHud } from "./DictationHud";
@@ -60,7 +62,7 @@ export function Onboarding({
     <main className="onboarding-shell">
       <header className="onboarding-topbar">
         <SpickLogo />
-        <span className="prototype-badge">INTERACTIVE PREVIEW</span>
+        <span className="prototype-badge">EARLY BUILD</span>
         {step > 0 && (
           <span className="onboarding-topbar__step">
             Step {step} of {totalSteps - 1}
@@ -81,27 +83,27 @@ export function Onboarding({
           <section className="welcome-step">
             <div className="welcome-step__copy">
               <span className="onboarding-eyebrow">
-                <Sparkles size={14} /> YOUR VOICE, EVERYWHERE
+                <AudioLines size={14} /> MEET SPICK
               </span>
               <h1>
-                Speak naturally.
+                Talk it out.
                 <br />
-                <em>Type beautifully.</em>
+                <em>Skip the typing.</em>
               </h1>
               <p>
-                Spick is being built to turn your voice into clear, polished
-                text in every app—with a shortcut that’s always within reach.
+                Hold a shortcut and speak. This early build records audio;
+                transcription and typing come next.
               </p>
               <button
                 type="button"
                 className="button button--primary button--large"
                 onClick={next}
               >
-                Set up Spick <ArrowRight size={17} />
+                Let’s set it up <ArrowRight size={17} />
               </button>
               <span className="welcome-step__privacy">
-                <ShieldCheck size={14} /> This preview does not access your
-                microphone
+                <ShieldCheck size={14} /> This walkthrough won’t turn on your
+                mic
               </span>
             </div>
             <div className="welcome-demo" aria-label="Spick dictation example">
@@ -120,13 +122,13 @@ export function Onboarding({
                   </div>
                   <div className="mock-text">
                     <p>
-                      Let’s keep the new onboarding focused on one clear
-                      promise: speak naturally, then get polished text anywhere.
+                      Could we move tomorrow’s design review to ten? I need one
+                      more pass at the model notes.
                     </p>
                     <i />
                   </div>
                   <div className="mock-cleanup-badge">
-                    <WandSparkles size={13} /> 3 fillers removed
+                    <Eraser size={13} /> Preview · 3 fillers removed
                   </div>
                 </div>
               </div>
@@ -134,7 +136,7 @@ export function Onboarding({
                 <DictationHud state="listening" />
               </div>
               <div className="welcome-demo__note">
-                <Check size={13} /> Designed for browsers, editors & desktop
+                <Check size={13} /> Planned for browsers, editors, and desktop
                 apps
               </div>
             </div>
@@ -145,35 +147,35 @@ export function Onboarding({
           <section className="setup-step permission-step">
             <SetupHeading
               icon={<LockKeyhole size={21} />}
-              eyebrow="ONE-TIME SETUP"
-              title="Two permissions. That’s it."
-              description="Spick needs to hear you and place text at your cursor. You remain in control."
+              eyebrow="BEFORE YOU START"
+              title="A quick permission check."
+              description="Recording needs the microphone. Typing into other apps will need Accessibility when insertion is ready."
             />
             <div className="permission-list">
               <PermissionCard
                 number="01"
                 icon={<Mic2 size={21} />}
                 title="Microphone"
-                description="Capture your voice only while you hold the shortcut."
+                description="Used only while you hold the shortcut."
                 ready={microphoneReady}
-                button="Simulate microphone access"
+                button="Simulate mic approval"
                 onGrant={() => setMicrophoneReady(true)}
               />
               <PermissionCard
                 number="02"
                 icon={<Keyboard size={21} />}
                 title="Accessibility"
-                description="Insert polished text into the focused input in any app."
+                description="Will let Spick type into the field you’re using."
                 ready={accessibilityReady}
-                button="Simulate accessibility access"
+                button="Simulate Accessibility approval"
                 onGrant={() => setAccessibilityReady(true)}
               />
             </div>
             <div className="simulation-note">
-              <Sparkles size={15} />
+              <Info size={15} />
               <span>
-                This preview simulates macOS permissions. The native app will
-                open the relevant System Settings panels.
+                These buttons only move the walkthrough along. Permission
+                handling in macOS Settings is still being wired up.
               </span>
             </div>
             <StepActions
@@ -188,9 +190,9 @@ export function Onboarding({
           <section className="setup-step personalize-step">
             <SetupHeading
               icon={<Languages size={21} />}
-              eyebrow="MAKE IT YOURS"
-              title="How do you speak?"
-              description="Choose a starting point. You can switch languages and engines at any time."
+              eyebrow="A STARTING POINT"
+              title="Pick your language."
+              description="Choose a default. You can change it later."
             />
             <div className="personalize-grid">
               <div className="setup-field-group">
@@ -226,13 +228,13 @@ export function Onboarding({
                   )}
                 </div>
                 <span className="setup-field-group__hint">
-                  <Sparkles size={13} /> Auto-detect can preserve language
+                  <Globe2 size={13} /> Auto-detect is planned to handle language
                   changes between phrases.
                 </span>
               </div>
               <div className="setup-field-group">
                 <span className="setup-field-group__label">
-                  Processing preference
+                  Where transcription runs
                 </span>
                 <div className="processing-choice-list">
                   <button type="button" className="active">
@@ -240,26 +242,27 @@ export function Onboarding({
                       <ShieldCheck size={18} />
                     </span>
                     <div>
-                      <strong>On this Mac</strong>
-                      <small>Private, fast, and works offline</small>
+                      <strong>On this Mac (planned)</strong>
+                      <small>
+                        No audio upload once the runtime is connected
+                      </small>
                     </div>
-                    <span className="recommended-label">RECOMMENDED</span>
+                    <span className="recommended-label">SUGGESTED</span>
                     <CheckCircle2 size={17} />
                   </button>
                   <button type="button">
                     <span className="choice-icon">
-                      <Sparkles size={18} />
+                      <Cloud size={18} />
                     </span>
                     <div>
-                      <strong>Cloud engine</strong>
-                      <small>Connect a provider after setup</small>
+                      <strong>Cloud provider (planned)</strong>
+                      <small>Bring an API key when adapters are ready</small>
                     </div>
                     <ChevronRight size={17} />
                   </button>
                 </div>
                 <span className="setup-field-group__hint">
-                  Model availability shown here is representative until native
-                  hardware detection runs.
+                  These choices are examples until Spick checks this Mac.
                 </span>
               </div>
             </div>
@@ -271,25 +274,25 @@ export function Onboarding({
           <section className="setup-step shortcut-step">
             <SetupHeading
               icon={<Keyboard size={21} />}
-              eyebrow="YOUR NEW SHORTCUT"
-              title="Ready when you are."
-              description="Preview the hold-to-speak interaction now. Audio transcription and text insertion are the next native milestone."
+              eyebrow="ONE LAST THING"
+              title="Give the shortcut a try."
+              description="The desktop build can record audio now. It doesn’t transcribe or type it yet."
             />
             <div
               className={`shortcut-practice ${shortcutPressed ? "shortcut-practice--pressed" : ""}`}
             >
-              <span className="shortcut-practice__label">PRESS & HOLD</span>
+              <span className="shortcut-practice__label">HOLD TO RECORD</span>
               <div className="shortcut-practice__keys">
                 <ShortcutKeys value={settings.hotkey} />
               </div>
               <div className="shortcut-practice__pulse">
                 <Mic2 size={22} />
               </div>
-              <strong>{shortcutPressed ? "Listening…" : "Try it now"}</strong>
+              <strong>{shortcutPressed ? "Recording…" : "Try it here"}</strong>
               <span>
                 {shortcutPressed
-                  ? "Say a few words, then release Space"
-                  : "Hold Space to preview the interaction"}
+                  ? "Say something, then let go"
+                  : "Hold Space to test the animation"}
               </span>
             </div>
             <div className="ready-summary">
@@ -304,14 +307,14 @@ export function Onboarding({
                 <Check size={14} />
                 <div>
                   <strong>Engine</strong>
-                  <small>whisper.cpp · planned local runtime</small>
+                  <small>whisper.cpp · not connected yet</small>
                 </div>
               </span>
               <span>
                 <Check size={14} />
                 <div>
                   <strong>Cleanup</strong>
-                  <small>Clean mode</small>
+                  <small>Clean mode · planned</small>
                 </div>
               </span>
             </div>
@@ -328,7 +331,7 @@ export function Onboarding({
                 className="button button--primary button--large"
                 onClick={onComplete}
               >
-                Start speaking <ArrowRight size={17} />
+                Finish setup <ArrowRight size={17} />
               </button>
             </div>
           </section>
@@ -336,8 +339,8 @@ export function Onboarding({
       </div>
 
       <footer className="onboarding-footer">
-        <span>Spick preview · macOS</span>
-        <span>Privacy-first architecture</span>
+        <span>Early macOS build</span>
+        <span>Mic capture works · typing comes next</span>
       </footer>
     </main>
   );
@@ -403,7 +406,7 @@ function PermissionCard({
       >
         {ready ? (
           <>
-            <Check size={15} /> Preview ready
+            <Check size={15} /> Done
           </>
         ) : (
           <>

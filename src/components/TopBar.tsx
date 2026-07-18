@@ -33,7 +33,7 @@ export function TopBar({ activeView, onOpenNav }: TopBarProps) {
       <div className="topbar__actions">
         <div className="topbar__hint">
           <Command size={14} />
-          <span>Interaction preview</span>
+          <span>Hold to record</span>
           <ShortcutKeys value="⌘+⇧+Space" />
         </div>
         <button type="button" className="icon-button" aria-label="Help">

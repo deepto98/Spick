@@ -17,7 +17,6 @@ import {
   RotateCcw,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Volume2,
 } from "lucide-react";
 import type { AppSettings } from "../types";
@@ -69,12 +68,12 @@ export function SettingsView({
   return (
     <div className="view view--settings">
       <PageHeader
-        eyebrow="Preferences"
+        eyebrow="PREFERENCES"
         title="Settings"
-        description="Tune Spick to fit how, where, and what you dictate."
+        description="Change how Spick records and, later, how it writes."
         actions={
           <span className="settings-saved">
-            <Check size={14} /> Preview changes · not persisted
+            <Check size={14} /> Changes aren’t saved yet
           </span>
         }
       />
@@ -104,13 +103,13 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<SlidersHorizontal size={18} />}
                 title="General"
-                description="How Spick behaves on your computer."
+                description="Startup, the floating widget, and sounds."
               />
               <section className="settings-card">
                 <SettingRow
                   icon={<MonitorUp size={17} />}
-                  title="Launch Spick at login"
-                  description="Keep dictation one shortcut away after restarting your Mac."
+                  title="Open Spick at login"
+                  description="Start Spick when you sign in to your Mac."
                   control={
                     <Toggle
                       label="Launch at login"
@@ -122,7 +121,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<AppWindow size={17} />}
                   title="Show floating widget"
-                  description="Keep the compact microphone control above other windows."
+                  description="Keep the microphone control above other windows."
                   control={
                     <Toggle
                       label="Show floating widget"
@@ -134,7 +133,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<Volume2 size={17} />}
                   title="Interface sounds"
-                  description="Play quiet cues when listening starts and text is inserted."
+                  description="Play a cue when recording starts and stops."
                   control={
                     <Toggle
                       label="Interface sounds"
@@ -146,9 +145,9 @@ export function SettingsView({
               </section>
               <section className="settings-card settings-card--standalone">
                 <SettingRow
-                  icon={<Sparkles size={17} />}
-                  title="Run welcome setup again"
-                  description="Review permissions, language, and your dictation shortcut."
+                  icon={<RotateCcw size={17} />}
+                  title="Run setup again"
+                  description="Go through the short welcome tour again."
                   control={
                     <button
                       type="button"
@@ -168,7 +167,7 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<Mic2 size={18} />}
                 title="Dictation"
-                description="Your shortcut, microphone, and interaction preferences."
+                description="Your shortcut, mic, and recording behavior."
               />
               <section className="settings-card">
                 <div className="setting-block">
@@ -178,7 +177,7 @@ export function SettingsView({
                     </span>
                     <div>
                       <strong>Global shortcut</strong>
-                      <p>Hold this shortcut in any text field to dictate.</p>
+                      <p>The shortcut Spick listens for across your Mac.</p>
                     </div>
                   </div>
                   <button
@@ -205,7 +204,7 @@ export function SettingsView({
                     </span>
                     <div>
                       <strong>Microphone</strong>
-                      <p>The input used when you start dictating.</p>
+                      <p>The input Spick will record from.</p>
                     </div>
                   </div>
                   <SelectField
@@ -222,10 +221,10 @@ export function SettingsView({
                 <SettingRow
                   icon={<BellRing size={17} />}
                   title="Hold to speak"
-                  description="Shortcut and microphone capture are wired; transcription, cleanup, and insertion are next."
+                  description="The shortcut and mic work. Transcription and typing do not yet."
                   control={
                     <span className="fixed-value">
-                      <Check size={14} /> State wired
+                      <Check size={14} /> Recording works
                     </span>
                   }
                 />
@@ -233,9 +232,9 @@ export function SettingsView({
               <div className="settings-callout">
                 <Gauge size={17} />
                 <div>
-                  <strong>Latency benchmark pending</strong>
+                  <strong>No timing data yet</strong>
                   <span>
-                    Stage timing begins with the transcription pipeline.
+                    We’ll measure latency when transcription is connected.
                   </span>
                 </div>
               </div>
@@ -247,7 +246,7 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<Languages size={18} />}
                 title="Language & cleanup"
-                description="Control detection, code-switching, and how speech becomes prose."
+                description="Choose a language and how much cleanup to apply."
               />
               <section className="settings-card settings-card--form">
                 <SelectField
@@ -263,7 +262,7 @@ export function SettingsView({
                     "French",
                     "Hinglish",
                   ]}
-                  hint="Auto-detect will route language hints according to the selected engine's verified capabilities."
+                  hint="Auto-detect will follow the language support of the engine you choose."
                 />
                 <div className="cleanup-setting">
                   <span className="field__label">Cleanup style</span>
@@ -283,7 +282,7 @@ export function SettingsView({
                             {level === "Verbatim"
                               ? "Only punctuation"
                               : level === "Clean"
-                                ? "Remove fillers & repeats"
+                                ? "Remove fillers and repeats"
                                 : "Rewrite for clarity"}
                           </small>
                           {settings.cleanupLevel === level && (
@@ -296,8 +295,8 @@ export function SettingsView({
                 </div>
                 <SettingRow
                   icon={<BookOpenText size={17} />}
-                  title="Preserve specialist language"
-                  description="Planned protection for saved vocabulary and code terms during cleanup."
+                  title="Keep specialist terms"
+                  description="Vocabulary and code terms will be protected during cleanup."
                   control={<span className="fixed-value">Planned</span>}
                 />
               </section>
@@ -309,26 +308,26 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<ShieldCheck size={18} />}
                 title="Privacy & history"
-                description="Choose what leaves your Mac and what Spick remembers."
+                description="Control uploads and saved transcripts."
               />
               <section className="privacy-hero">
                 <span>
                   <LockKeyhole size={22} />
                 </span>
                 <div>
-                  <strong>Privacy-first local mode is the target</strong>
+                  <strong>Recordings stay in memory</strong>
                   <p>
-                    The native pipeline will process local audio in memory and
-                    discard recordings after each session.
+                    Spick discards the audio after each session. Local
+                    transcription is not connected yet.
                   </p>
                 </div>
-                <span className="privacy-grade">LOCAL</span>
+                <span className="privacy-grade">ON DEVICE</span>
               </section>
               <section className="settings-card">
                 <SettingRow
                   icon={<History size={17} />}
                   title="Keep transcript history"
-                  description="Save polished text and usage statistics on this Mac."
+                  description="Save transcripts and usage numbers on this Mac."
                   control={
                     <Toggle
                       label="Keep transcript history"
@@ -340,7 +339,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<Cloud size={17} />}
                   title="Allow cloud fallback"
-                  description="Retry low-confidence phrases with your selected cloud engine."
+                  description="Retry uncertain phrases with your cloud provider."
                   control={
                     <Toggle
                       label="Allow cloud fallback"
@@ -352,7 +351,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<LockKeyhole size={17} />}
                   title="Secure fields"
-                  description="Secure-field detection is planned for the native insertion layer."
+                  description="Typing into password fields will be blocked."
                   control={<span className="fixed-value">Planned</span>}
                 />
               </section>
@@ -360,7 +359,7 @@ export function SettingsView({
                 <div>
                   <strong>Delete local history</strong>
                   <span>
-                    Remove saved transcripts and statistics from this Mac.
+                    Remove transcripts and usage numbers saved on this Mac.
                   </span>
                 </div>
                 <button

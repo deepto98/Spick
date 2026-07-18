@@ -2,15 +2,15 @@ import { useMemo, useState } from "react";
 import {
   BookOpenText,
   Check,
+  Info,
   Languages,
   Lightbulb,
   MoreHorizontal,
+  PenLine,
   Plus,
   Search,
-  Sparkles,
   Trash2,
   Upload,
-  WandSparkles,
   X,
 } from "lucide-react";
 import type { VocabularyEntry } from "../types";
@@ -61,9 +61,9 @@ export function VocabularyView({
   return (
     <div className="view view--vocabulary">
       <PageHeader
-        eyebrow="Personalization"
+        eyebrow="NAMES & TERMS"
         title="Vocabulary"
-        description="Preview a shared vocabulary for names and technical terms. Engine adapters are not connected yet."
+        description="Add spellings Spick might miss. This list is not used during dictation yet."
         actions={
           <button
             type="button"
@@ -80,19 +80,19 @@ export function VocabularyView({
           <BookOpenText size={22} />
         </div>
         <div>
-          <strong>{vocabulary.length} sample phrases</strong>
-          <span>Editable in this preview; not persisted or applied yet</span>
+          <strong>{vocabulary.length} example phrases</strong>
+          <span>You can edit them here, but changes are not saved</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>Searchable</strong>
-          <span>sample library</span>
+          <strong>Search works</strong>
+          <span>in this list</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>Local</strong>
-          <span>preview state</span>
+          <strong>Not connected</strong>
+          <span>to dictation</span>
         </div>
         <span className="sync-badge">
-          <Check size={13} /> Preview data
+          <Check size={13} /> Example list
         </span>
       </section>
 
@@ -133,7 +133,7 @@ export function VocabularyView({
           ))}
         </div>
         <button type="button" className="button button--secondary" disabled>
-          <Upload size={15} /> Import planned
+          <Upload size={15} /> Import later
         </button>
       </div>
 
@@ -207,10 +207,10 @@ export function VocabularyView({
           <Lightbulb size={18} />
         </div>
         <p>
-          <strong>Make recognition even better</strong>
+          <strong>Got a name Spick might mangle?</strong>
           <span>
-            Add pronunciation hints for unusual names, acronyms, and product
-            terms. Spick applies them before cleanup.
+            A pronunciation hint can help with names, acronyms, and product
+            terms once vocabulary support is connected.
           </span>
         </p>
         <button type="button" className="text-button">
@@ -271,11 +271,11 @@ function AddPhraseDialog({ onClose, onAdd }: AddPhraseDialogProps) {
       >
         <header className="dialog__header">
           <span className="dialog__icon">
-            <WandSparkles size={19} />
+            <PenLine size={19} />
           </span>
           <div>
             <h2 id="add-phrase-title">Add a phrase</h2>
-            <p>Help Spick write it exactly the way you want.</p>
+            <p>Save the spelling you want Spick to use.</p>
           </div>
           <button
             type="button"
@@ -324,9 +324,9 @@ function AddPhraseDialog({ onClose, onAdd }: AddPhraseDialogProps) {
             />
           </div>
           <div className="dialog__preview">
-            <Sparkles size={15} />
+            <Info size={15} />
             <span>
-              Spick will apply this phrase locally before inserting your text.
+              This stays in the preview. Dictation does not use it yet.
             </span>
           </div>
           <footer className="dialog__footer">
