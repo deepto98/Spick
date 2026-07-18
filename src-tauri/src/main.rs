@@ -29,5 +29,32 @@ fn main() {
             std::process::exit(2);
         }
     }
+
+    #[cfg(not(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    )))]
+    if std::env::args_os().skip(1).any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument.contains("input-method-compatibility"))
+    }) {
+        eprintln!("input-method compatibility commands are not compiled into this build");
+        std::process::exit(2);
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    match spick_desktop_lib::compatibility::prepare_process() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(64);
+        }
+    }
+
     spick_desktop_lib::run()
 }

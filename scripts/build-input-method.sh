@@ -29,6 +29,7 @@ case "${signing_mode}" in
   check) ;;
   unsafe-adhoc)
     helper_compiler_definitions=("-DSPICK_ALLOW_UNSAFE_ADHOC_PEERS=1")
+    codesign_options=("--options" "runtime" "--timestamp=none")
     ;;
   development)
     signing_identity="${APPLE_SIGNING_IDENTITY}"
@@ -92,6 +93,7 @@ xcrun --sdk macosx clang \
   "${helper_compiler_definitions[@]}" \
   "${source_dir}/Sources/main.m" \
   "${source_dir}/Sources/SpickInputController.m" \
+  "${source_dir}/Sources/SpickInputSourceInspection.m" \
   "${source_dir}/Sources/SpickPeerIdentity.m" \
   "${source_dir}/Sources/SpickWireProtocol.m" \
   -o "${executable_dir}/SpickInput"
@@ -118,7 +120,21 @@ if [[ ! "${build_number}" =~ ^[1-9][0-9]*(\.[0-9]+){0,2}$ ]]; then
   exit 1
 fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${build_number}" "${contents_dir}/Info.plist"
+helper_authentication_mode="secure"
+if [[ "${signing_mode}" == "unsafe-adhoc" ]]; then
+  helper_authentication_mode="unsafe-adhoc"
+fi
+/usr/libexec/PlistBuddy -c "Set :SpickPeerAuthenticationMode ${helper_authentication_mode}" \
+  "${contents_dir}/Info.plist"
 plutil -lint "${contents_dir}/Info.plist" >/dev/null
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :SpickInputInspectionProtocol' "${contents_dir}/Info.plist" 2>/dev/null || true)" != "1" ]]; then
+  echo "Spick Input lacks its read-only inspection protocol marker." >&2
+  exit 1
+fi
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :SpickPeerAuthenticationMode' "${contents_dir}/Info.plist" 2>/dev/null || true)" != "${helper_authentication_mode}" ]]; then
+  echo "Spick Input lacks its sealed peer-authentication mode." >&2
+  exit 1
+fi
 /usr/bin/codesign --force --sign "${signing_identity}" \
   --identifier "${spick_input_helper_identifier}" \
   "${codesign_options[@]}" "${bundle_dir}" >/dev/null

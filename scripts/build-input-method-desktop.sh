@@ -5,8 +5,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "The Spick macOS compatibility app can only be built on macOS." >&2
   exit 1
 fi
-if [[ "$#" -ne 1 || ( "$1" != "development" && "$1" != "unsafe-adhoc" ) ]]; then
-  echo "Usage: $0 development|unsafe-adhoc" >&2
+if [[ "$#" -lt 1 || "$#" -gt 2 ||
+      ( "$1" != "development" && "$1" != "unsafe-adhoc" ) ||
+      ( "$#" -eq 2 && "$2" != "compatibility" ) ]]; then
+  echo "Usage: $0 development|unsafe-adhoc [compatibility]" >&2
   exit 1
 fi
 
@@ -15,6 +17,7 @@ project_dir="$(cd "${script_dir}/.." && pwd)"
 source "${script_dir}/lib/input-method-signing.sh"
 
 signing_mode="$1"
+build_kind="${2:-prototype}"
 spick_validate_input_signing_configuration "${signing_mode}"
 
 feature="macos-input-method-prototype"
@@ -22,17 +25,43 @@ signing_identity="${APPLE_SIGNING_IDENTITY:--}"
 if [[ "${signing_mode}" == "unsafe-adhoc" ]]; then
   feature="macos-input-method-unsafe-dev-peers"
 fi
+if [[ "${build_kind}" == "compatibility" ]]; then
+  feature="macos-input-method-compatibility-harness"
+  if [[ "${signing_mode}" == "unsafe-adhoc" ]]; then
+    feature="macos-input-method-compatibility-harness,macos-input-method-unsafe-dev-peers"
+  fi
+  export SPICK_COMPAT_SOURCE_REVISION
+  SPICK_COMPAT_SOURCE_REVISION="$(git -C "${project_dir}" rev-parse --verify HEAD)"
+  export SPICK_COMPAT_SOURCE_TREE="clean"
+  if [[ -n "$(git -C "${project_dir}" status --porcelain --untracked-files=normal)" ]]; then
+    SPICK_COMPAT_SOURCE_TREE="dirty"
+  fi
+  export SPICK_COMPAT_SIGNING_MODE
+  if [[ "${signing_mode}" == "unsafe-adhoc" ]]; then
+    SPICK_COMPAT_SIGNING_MODE="unsafeAdhoc"
+  else
+    SPICK_COMPAT_SIGNING_MODE="development"
+  fi
+fi
 
 cd "${project_dir}"
 npm run tauri -- build --debug --bundles app --features "${feature}"
 
 app="${project_dir}/src-tauri/target/debug/bundle/macos/Spick.app"
 executable="${app}/Contents/MacOS/spick-desktop"
+app_info="${app}/Contents/Info.plist"
 if [[ ! -d "${app}" || -L "${app}" || ! -O "${app}" ||
       ! -f "${executable}" || ! -x "${executable}" || -L "${executable}" ||
-      ! -O "${executable}" ]]; then
+      ! -O "${executable}" || ! -f "${app_info}" || -L "${app_info}" ]]; then
   echo "Tauri produced an app with an unsafe file shape." >&2
   exit 1
+fi
+
+/usr/libexec/PlistBuddy -c "Delete :SpickInputCompatibilityMode" \
+  "${app_info}" >/dev/null 2>&1 || true
+if [[ "${build_kind}" == "compatibility" ]]; then
+  /usr/libexec/PlistBuddy \
+    -c "Add :SpickInputCompatibilityMode string fixed-fixture-v1" "${app_info}"
 fi
 
 /usr/bin/codesign --force --sign "${signing_identity}" \
@@ -87,4 +116,20 @@ if [[ "${actual_auth_mode}" != "${expected_auth_mode}" ]]; then
   exit 1
 fi
 
-echo "Built and verified ${app} (${signing_mode})"
+if [[ "${build_kind}" == "compatibility" ]]; then
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print :SpickInputCompatibilityMode' "${app_info}")" != "fixed-fixture-v1" ]]; then
+    echo "The desktop app lacks its signed compatibility marker." >&2
+    exit 1
+  fi
+  actual_compatibility_mode="$("${executable}" --print-input-method-compatibility-mode)"
+  if [[ "${actual_compatibility_mode}" != "fixed-fixture-v1" ]]; then
+    echo "The desktop app does not contain the fixed-fixture compatibility harness." >&2
+    exit 1
+  fi
+elif /usr/libexec/PlistBuddy -c "Print :SpickInputCompatibilityMode" \
+  "${app_info}" >/dev/null 2>&1; then
+  echo "A non-compatibility desktop app retained the compatibility marker." >&2
+  exit 1
+fi
+
+echo "Built and verified ${app} (${signing_mode}, ${build_kind})"

@@ -2,6 +2,7 @@
 #define SPICK_PEER_IDENTITY_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef uint32_t SpickPeerTrustResult;
@@ -24,6 +25,16 @@ enum {
 SpickPeerTrustResult SpickVerifyPeerSocket(int descriptor,
                                            const char *expectedSelfIdentifier,
                                            const char *expectedPeerIdentifier);
+
+// The compatibility harness uses this variant to bind evidence to the live
+// audit-token-resolved peer. The output is lowercase hex and never a path,
+// certificate name, Team ID, or audit token.
+SpickPeerTrustResult SpickVerifyPeerSocketWithCDHash(
+    int descriptor,
+    const char *expectedSelfIdentifier,
+    const char *expectedPeerIdentifier,
+    char *peerCDHashHex,
+    size_t peerCDHashHexCapacity);
 
 // True only in artifacts compiled with the explicit unsafe development escape hatch.
 bool SpickPeerAuthenticationAllowsUnsafeDevelopment(void);

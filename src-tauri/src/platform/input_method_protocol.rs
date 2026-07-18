@@ -10,7 +10,7 @@ const MAX_BUNDLE_IDENTIFIER_BYTES: usize = 512;
 const MAX_TRANSCRIPT_BYTES: usize = 1024 * 1024;
 const REQUEST_MAGIC: [u8; 4] = *b"SPK2";
 const RESPONSE_MAGIC: [u8; 4] = *b"SPR2";
-const PROTOCOL_VERSION: u8 = 2;
+pub(crate) const PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

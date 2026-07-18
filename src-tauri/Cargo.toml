@@ -13,6 +13,12 @@ macos-input-method-prototype = ["dep:objc2", "dep:objc2-app-kit"]
 # Never ship this feature. It permits same-user, ad-hoc development bundles
 # after the secure signed-peer check fails.
 macos-input-method-unsafe-dev-peers = ["macos-input-method-prototype"]
+# A diagnostic-only app mode for measuring the guarded insertion primitive in
+# real controls. It accepts only checked-in cases and compiled fixture text.
+macos-input-method-compatibility-harness = [
+  "macos-input-method-prototype",
+  "dep:objc2-foundation",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -43,6 +49,7 @@ objc2 = { version = "0.6.4", optional = true }
 objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "AXError", "AXUIElement", "AXValue", "HIServices"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString"] }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

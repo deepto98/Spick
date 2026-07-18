@@ -1,8 +1,18 @@
 #[cfg(all(feature = "macos-input-method-unsafe-dev-peers", not(debug_assertions)))]
 compile_error!("macos-input-method-unsafe-dev-peers is forbidden in release builds");
+#[cfg(all(
+    feature = "macos-input-method-compatibility-harness",
+    not(debug_assertions)
+))]
+compile_error!("macos-input-method-compatibility-harness is forbidden in release builds");
 
 mod audio;
 mod commands;
+#[cfg(all(
+    target_os = "macos",
+    feature = "macos-input-method-compatibility-harness"
+))]
+pub mod compatibility;
 pub mod domain;
 pub mod engines;
 mod hud;
@@ -27,9 +37,16 @@ pub fn run() {
     // Keep settings writes and global shortcut ownership process-local. The
     // single-instance plugin must be registered before every other plugin.
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        reveal_main_window(app);
-    }));
+    let builder = if compatibility_mode_active() {
+        // A compatibility run is a single, explicit diagnostic process. Do
+        // not accept unauthenticated forwarded argv over the single-instance
+        // plugin's local socket.
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            reveal_main_window(app);
+        }))
+    };
 
     let app = builder
         .plugin(
@@ -61,6 +78,20 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(all(
+                target_os = "macos",
+                feature = "macos-input-method-compatibility-harness"
+            ))]
+            if compatibility::is_active() {
+                // The generated context has no windows in this mode, so no
+                // production IPC command can be invoked.
+                shortcut::register(app.handle(), compatibility::COMPATIBILITY_SHORTCUT)
+                    .map_err(setup_error)?;
+                compatibility::start_watchdog(app.handle().clone()).map_err(setup_error)?;
+                eprintln!("{}", compatibility::ready_message());
+                return Ok(());
+            }
+
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let models_path = app.path().app_local_data_dir()?.join("models");
             let state =
@@ -107,7 +138,13 @@ pub fn run() {
             commands::get_accessibility_permission_status,
             commands::request_accessibility_permission,
         ])
-        .build(tauri::generate_context!())
+        .build({
+            let mut context = tauri::generate_context!();
+            if compatibility_mode_active() {
+                context.config_mut().app.windows.clear();
+            }
+            context
+        })
         .expect("error while building Spick");
 
     app.run(|app, event| {
@@ -123,6 +160,24 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = (app, event);
     });
+}
+
+fn compatibility_mode_active() -> bool {
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    {
+        compatibility::is_active()
+    }
+
+    #[cfg(not(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    )))]
+    {
+        false
+    }
 }
 
 fn preload_active_model<R: tauri::Runtime>(app: tauri::AppHandle<R>) {

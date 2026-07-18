@@ -5,6 +5,7 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <string.h>
 #include <unistd.h>
 
 #ifndef SPICK_ALLOW_UNSAFE_ADHOC_PEERS
@@ -15,6 +16,7 @@
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, copy) NSString *teamIdentifier;
 @property(nonatomic, copy) NSDictionary<NSString *, id> *entitlements;
+@property(nonatomic, copy) NSData *cdHash;
 @property(nonatomic) SecCodeSignatureFlags flags;
 @end
 
@@ -54,8 +56,11 @@ static SpickCodeFacts *SpickCopyCodeFacts(SecCodeRef code) {
     id teamIdentifier = information[(__bridge NSString *)kSecCodeInfoTeamIdentifier];
     id entitlements = information[(__bridge NSString *)kSecCodeInfoEntitlementsDict];
     id flags = information[(__bridge NSString *)kSecCodeInfoFlags];
+    id cdHash = information[(__bridge NSString *)kSecCodeInfoUnique];
     if (![identifier isKindOfClass:NSString.class] ||
         ![flags isKindOfClass:NSNumber.class] ||
+        ![cdHash isKindOfClass:NSData.class] ||
+        ([cdHash length] != 20 && [cdHash length] != 32) ||
         (entitlements != nil && ![entitlements isKindOfClass:NSDictionary.class])) {
         return nil;
     }
@@ -66,6 +71,7 @@ static SpickCodeFacts *SpickCopyCodeFacts(SecCodeRef code) {
                                ? teamIdentifier
                                : @"";
     facts.entitlements = entitlements ?: @{};
+    facts.cdHash = cdHash;
     facts.flags = (SecCodeSignatureFlags)[flags unsignedIntValue];
     return facts;
 }
@@ -232,9 +238,26 @@ static BOOL SpickUnsafeDevelopmentPairAccepts(
 }
 #endif
 
-SpickPeerTrustResult SpickVerifyPeerSocket(int descriptor,
-                                           const char *expectedSelfIdentifier,
-                                           const char *expectedPeerIdentifier) {
+static BOOL SpickCopyCDHashHex(NSData *cdHash, char *output, size_t capacity) {
+    if (cdHash == nil || output == NULL || capacity < cdHash.length * 2 + 1) {
+        return NO;
+    }
+    static const char hexadecimal[] = "0123456789abcdef";
+    const uint8_t *bytes = cdHash.bytes;
+    for (NSUInteger index = 0; index < cdHash.length; index++) {
+        output[index * 2] = hexadecimal[bytes[index] >> 4];
+        output[index * 2 + 1] = hexadecimal[bytes[index] & 0x0f];
+    }
+    output[cdHash.length * 2] = '\0';
+    return YES;
+}
+
+static SpickPeerTrustResult SpickVerifyPeerSocketInternal(
+    int descriptor,
+    const char *expectedSelfIdentifier,
+    const char *expectedPeerIdentifier,
+    char *peerCDHashHex,
+    size_t peerCDHashHexCapacity) {
     @autoreleasepool {
         NSString *selfIdentifier = SpickStringFromUTF8(expectedSelfIdentifier);
         NSString *peerIdentifier = SpickStringFromUTF8(expectedPeerIdentifier);
@@ -288,10 +311,41 @@ SpickPeerTrustResult SpickVerifyPeerSocket(int descriptor,
             result = SpickPeerTrustUnsafeDevelopment;
         }
 #endif
+        if ((result == SpickPeerTrustSecure ||
+             result == SpickPeerTrustUnsafeDevelopment) &&
+            peerCDHashHex != NULL) {
+            SpickCodeFacts *verifiedPeerFacts = SpickCopyCodeFacts(peerCode);
+            if (!SpickCopyCDHashHex(verifiedPeerFacts.cdHash, peerCDHashHex,
+                                    peerCDHashHexCapacity)) {
+                result = SpickPeerTrustCodeUnavailable;
+            }
+        }
         CFRelease(selfCode);
         CFRelease(peerCode);
         return result;
     }
+}
+
+SpickPeerTrustResult SpickVerifyPeerSocket(int descriptor,
+                                           const char *expectedSelfIdentifier,
+                                           const char *expectedPeerIdentifier) {
+    return SpickVerifyPeerSocketInternal(descriptor, expectedSelfIdentifier,
+                                         expectedPeerIdentifier, NULL, 0);
+}
+
+SpickPeerTrustResult SpickVerifyPeerSocketWithCDHash(
+    int descriptor,
+    const char *expectedSelfIdentifier,
+    const char *expectedPeerIdentifier,
+    char *peerCDHashHex,
+    size_t peerCDHashHexCapacity) {
+    if (peerCDHashHex == NULL || peerCDHashHexCapacity < 65) {
+        return SpickPeerTrustInvalidInput;
+    }
+    peerCDHashHex[0] = '\0';
+    return SpickVerifyPeerSocketInternal(
+        descriptor, expectedSelfIdentifier, expectedPeerIdentifier,
+        peerCDHashHex, peerCDHashHexCapacity);
 }
 
 bool SpickPeerAuthenticationAllowsUnsafeDevelopment(void) {
@@ -377,6 +431,14 @@ bool SpickRunPeerIdentityRuntimeSelfTest(const char *expectedSelfIdentifier) {
     }
     const SpickPeerTrustResult result = SpickVerifyPeerSocket(
         sockets[0], expectedSelfIdentifier, expectedSelfIdentifier);
+    char livePeerCDHash[65] = {0};
+    char expectedSelfCDHash[65] = {0};
+    const SpickPeerTrustResult resultWithCDHash =
+        SpickVerifyPeerSocketWithCDHash(sockets[0], expectedSelfIdentifier,
+                                        expectedSelfIdentifier, livePeerCDHash,
+                                        sizeof(livePeerCDHash));
+    const BOOL copiedExpectedCDHash = SpickCopyCDHashHex(
+        selfFacts.cdHash, expectedSelfCDHash, sizeof(expectedSelfCDHash));
     NSString *wrongIdentifier = [identifier stringByAppendingString:@".wrong"];
     const SpickPeerTrustResult wrongPeer = SpickVerifyPeerSocket(
         sockets[0], expectedSelfIdentifier, wrongIdentifier.UTF8String);
@@ -384,8 +446,15 @@ bool SpickRunPeerIdentityRuntimeSelfTest(const char *expectedSelfIdentifier) {
         sockets[0], wrongIdentifier.UTF8String, expectedSelfIdentifier);
     close(sockets[0]);
     close(sockets[1]);
+    const BOOL trustedResult = result == SpickPeerTrustSecure ||
+                               result == SpickPeerTrustUnsafeDevelopment;
     if (wrongPeer != SpickPeerTrustIdentityMismatch ||
-        wrongSelf != SpickPeerTrustIdentityMismatch) {
+        wrongSelf != SpickPeerTrustIdentityMismatch ||
+        resultWithCDHash != result ||
+        (trustedResult &&
+         (!copiedExpectedCDHash ||
+          strcmp(livePeerCDHash, expectedSelfCDHash) != 0)) ||
+        (!trustedResult && livePeerCDHash[0] != '\0')) {
         return false;
     }
 

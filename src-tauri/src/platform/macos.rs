@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "macos-input-method-compatibility-harness")]
+use std::ffi::CStr;
 #[cfg(feature = "macos-input-method-prototype")]
 use std::{
     ffi::CString,
@@ -32,6 +34,8 @@ use super::input_method_protocol::{
     decode_response, encode_arm_request, encode_disarm_request, encode_insert_request,
     InputMethodResponse, InputMethodResponseStatus, RESPONSE_LENGTH,
 };
+#[cfg(feature = "macos-input-method-compatibility-harness")]
+use super::CompatibilitySelection;
 use super::{
     AccessibilityPermissionState, AccessibilityPermissionStatus, CapturedTextTarget,
     TextInsertionReceipt, TextTargetError, TextTargetErrorKind, TextTargetToken,
@@ -88,10 +92,19 @@ const PEER_TRUST_UNSAFE_DEVELOPMENT: u32 = 1;
 
 #[cfg(feature = "macos-input-method-prototype")]
 extern "C" {
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
     fn SpickVerifyPeerSocket(
         descriptor: libc::c_int,
         expected_self_identifier: *const libc::c_char,
         expected_peer_identifier: *const libc::c_char,
+    ) -> u32;
+    #[cfg(feature = "macos-input-method-compatibility-harness")]
+    fn SpickVerifyPeerSocketWithCDHash(
+        descriptor: libc::c_int,
+        expected_self_identifier: *const libc::c_char,
+        expected_peer_identifier: *const libc::c_char,
+        peer_cd_hash_hex: *mut libc::c_char,
+        peer_cd_hash_hex_capacity: usize,
     ) -> u32;
     fn SpickPeerAuthenticationAllowsUnsafeDevelopment() -> bool;
 }
@@ -121,6 +134,22 @@ impl MacTextTargetController {
     pub fn capture(&self) -> Result<CapturedTextTarget, TextTargetError> {
         self.request(TextTargetErrorKind::TimedOut, |reply| Command::Capture {
             deadline: Instant::now() + CAPTURE_DEADLINE,
+            expected_bundle_identifier: None,
+            expected_selection: None,
+            reply,
+        })?
+    }
+
+    #[cfg(feature = "macos-input-method-compatibility-harness")]
+    pub fn capture_for_compatibility(
+        &self,
+        expected_bundle_identifier: &str,
+        expected_selection: CompatibilitySelection,
+    ) -> Result<CapturedTextTarget, TextTargetError> {
+        self.request(TextTargetErrorKind::TimedOut, |reply| Command::Capture {
+            deadline: Instant::now() + CAPTURE_DEADLINE,
+            expected_bundle_identifier: Some(expected_bundle_identifier.to_owned()),
+            expected_selection: Some(expected_selection),
             reply,
         })?
     }
@@ -217,6 +246,11 @@ enum Command {
     },
     Capture {
         deadline: Instant,
+        expected_bundle_identifier: Option<String>,
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        expected_selection: Option<CompatibilitySelection>,
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+        expected_selection: Option<()>,
         reply: SyncSender<Result<CapturedTextTarget, TextTargetError>>,
     },
     Commit {
@@ -260,8 +294,17 @@ impl Worker {
                 Command::RequestPermission { reply } => {
                     let _ = reply.send(request_permission());
                 }
-                Command::Capture { deadline, reply } => {
-                    let result = self.capture(deadline);
+                Command::Capture {
+                    deadline,
+                    expected_bundle_identifier,
+                    expected_selection,
+                    reply,
+                } => {
+                    let result = self.capture(
+                        deadline,
+                        expected_bundle_identifier.as_deref(),
+                        expected_selection,
+                    );
                     let token = result
                         .as_ref()
                         .ok()
@@ -288,7 +331,16 @@ impl Worker {
         }
     }
 
-    fn capture(&mut self, deadline: Instant) -> Result<CapturedTextTarget, TextTargetError> {
+    fn capture(
+        &mut self,
+        deadline: Instant,
+        expected_bundle_identifier: Option<&str>,
+        #[cfg(feature = "macos-input-method-compatibility-harness")] expected_selection: Option<
+            CompatibilitySelection,
+        >,
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+        _expected_selection: Option<()>,
+    ) -> Result<CapturedTextTarget, TextTargetError> {
         check_deadline(deadline)?;
         if !is_trusted() {
             return Err(TextTargetError::new(
@@ -300,7 +352,6 @@ impl Worker {
         let system = unsafe { AXUIElement::new_system_wide() };
         let application = read_element(&system, AX_FOCUSED_APPLICATION, "focused application")?;
         set_element_timeout(&application)?;
-        ensure_not_secure(&application)?;
         let application_pid = read_pid(&application)?;
         if application_pid == std::process::id() as pid_t {
             return Err(TextTargetError::new(
@@ -308,6 +359,26 @@ impl Worker {
                 "Click a text field in another app before holding the shortcut",
             ));
         }
+
+        #[cfg(feature = "macos-input-method-prototype")]
+        let bundle_identifier = application_bundle_identifier(application_pid);
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        if let Some(expected) = expected_bundle_identifier {
+            if bundle_identifier.as_deref() != Some(expected) {
+                return Err(TextTargetError::new(
+                    TextTargetErrorKind::ExpectedApplicationMismatch,
+                    "Focus the exact app named by this compatibility case before using the shortcut",
+                ));
+            }
+        }
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+        let _ = expected_bundle_identifier;
+
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        ensure_not_secure(&application)
+            .map_err(|error| error.with_compatibility_target_pid(application_pid))?;
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+        ensure_not_secure(&application)?;
 
         let focus_anchor = read_element(&application, AX_FOCUSED_UI_ELEMENT, "focused text field")?;
         let anchor_pid = read_pid(&focus_anchor)?;
@@ -318,7 +389,26 @@ impl Worker {
             ));
         }
 
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        let editable = resolve_editable_target(&focus_anchor)
+            .map_err(|error| error.with_compatibility_target_pid(application_pid))?;
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         let editable = resolve_editable_target(&focus_anchor)?;
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        if let Some(expected) = expected_selection {
+            let has_selection = editable.selection.length > 0;
+            let matches = match expected {
+                CompatibilitySelection::Any => true,
+                CompatibilitySelection::Caret => !has_selection,
+                CompatibilitySelection::Range => has_selection,
+            };
+            if !matches {
+                return Err(TextTargetError::new(
+                    TextTargetErrorKind::ExpectedSelectionMismatch,
+                    "Prepare the caret or fixed selection required by this compatibility case",
+                ));
+            }
+        }
         check_deadline(deadline)?;
         let observer = ObserverLease::install(
             &self.run_loop,
@@ -334,8 +424,6 @@ impl Worker {
 
         self.next_token = self.next_token.wrapping_add(1).max(1);
         let token = self.next_token;
-        #[cfg(feature = "macos-input-method-prototype")]
-        let bundle_identifier = application_bundle_identifier(application_pid);
         #[cfg(feature = "macos-input-method-prototype")]
         let input_method_lease = match bundle_identifier.as_deref() {
             Some(identifier) => {
@@ -370,6 +458,8 @@ impl Worker {
         Ok(CapturedTextTarget {
             token: TextTargetToken::from_platform(token),
             target_app,
+            #[cfg(feature = "macos-input-method-compatibility-harness")]
+            compatibility_target_pid: application_pid,
         })
     }
 
@@ -393,6 +483,11 @@ impl Worker {
             Ok(TextInsertionReceipt {
                 target_app: None,
                 caret_repositioned: true,
+                #[cfg(feature = "macos-input-method-compatibility-harness")]
+                compatibility_peer_cd_hash: target
+                    .input_method_lease
+                    .as_ref()
+                    .map(|lease| lease.peer_cd_hash.clone()),
             })
         }
 
@@ -504,6 +599,8 @@ fn revalidate_captured_target(
 struct InputMethodLease {
     request_id: u64,
     lease_id: u64,
+    #[cfg(feature = "macos-input-method-compatibility-harness")]
+    peer_cd_hash: String,
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
@@ -548,6 +645,8 @@ fn try_arm_input_method(
         InputMethodResponseStatus::Armed => Ok(Some(InputMethodLease {
             request_id,
             lease_id: response.lease_id,
+            #[cfg(feature = "macos-input-method-compatibility-harness")]
+            peer_cd_hash: connection.peer_cd_hash.clone(),
         })),
         InputMethodResponseStatus::SecureInput => Err(TextTargetError::new(
             TextTargetErrorKind::SecureField,
@@ -616,6 +715,17 @@ fn commit_through_input_method(
     // Establish and authenticate the connection before the final AX snapshot.
     // No transcript bytes have crossed the process boundary at this point.
     let mut connection = InputMethodConnection::connect(deadline)?;
+    #[cfg(feature = "macos-input-method-compatibility-harness")]
+    if target
+        .input_method_lease
+        .as_ref()
+        .is_some_and(|lease| lease.peer_cd_hash != connection.peer_cd_hash)
+    {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "The authenticated input-method helper changed during this compatibility attempt",
+        ));
+    }
     revalidate_captured_target(target, deadline)?;
     let response = connection.exchange(&request, request_id, true, deadline)?;
     if response.status != InputMethodResponseStatus::RequestExpired {
@@ -677,6 +787,8 @@ fn map_insert_response_status(status: InputMethodResponseStatus) -> Result<(), T
 #[cfg(feature = "macos-input-method-prototype")]
 struct InputMethodConnection {
     stream: UnixStream,
+    #[cfg(feature = "macos-input-method-compatibility-harness")]
+    peer_cd_hash: String,
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
@@ -686,9 +798,16 @@ impl InputMethodConnection {
         validate_input_method_socket(&socket_path)?;
         let stream = connect_unix_with_deadline(&socket_path, deadline)
             .map_err(map_input_method_connect_error)?;
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        let peer_cd_hash = authenticate_input_method_peer(&stream)?;
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         authenticate_input_method_peer(&stream)?;
         remaining_input_method_time(deadline)?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            #[cfg(feature = "macos-input-method-compatibility-harness")]
+            peer_cd_hash,
+        })
     }
 
     fn exchange(
@@ -972,6 +1091,7 @@ fn wait_for_socket_io(
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn authenticate_input_method_peer(stream: &UnixStream) -> Result<(), TextTargetError> {
     let descriptor = stream.as_raw_fd();
     let trust = unsafe {
@@ -989,6 +1109,38 @@ fn authenticate_input_method_peer(stream: &UnixStream) -> Result<(), TextTargetE
     } else {
         Err(untrusted_input_method_error())
     }
+}
+
+#[cfg(feature = "macos-input-method-compatibility-harness")]
+fn authenticate_input_method_peer(stream: &UnixStream) -> Result<String, TextTargetError> {
+    let descriptor = stream.as_raw_fd();
+    let mut cd_hash = [0_i8; 65];
+    let trust = unsafe {
+        SpickVerifyPeerSocketWithCDHash(
+            descriptor,
+            DESKTOP_SIGNING_IDENTIFIER.as_ptr().cast(),
+            INPUT_METHOD_SIGNING_IDENTIFIER.as_ptr().cast(),
+            cd_hash.as_mut_ptr(),
+            cd_hash.len(),
+        )
+    };
+    let unsafe_development_allowed = unsafe { SpickPeerAuthenticationAllowsUnsafeDevelopment() };
+    if trust != PEER_TRUST_SECURE
+        && !(trust == PEER_TRUST_UNSAFE_DEVELOPMENT && unsafe_development_allowed)
+    {
+        return Err(untrusted_input_method_error());
+    }
+    let cd_hash = unsafe { CStr::from_ptr(cd_hash.as_ptr()) }
+        .to_str()
+        .map_err(|_| untrusted_input_method_error())?;
+    if !matches!(cd_hash.len(), 40 | 64)
+        || !cd_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(untrusted_input_method_error());
+    }
+    Ok(cd_hash.into())
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
@@ -1651,7 +1803,11 @@ mod tests {
             }
         });
 
-        let mut connection = InputMethodConnection { stream: client };
+        let mut connection = InputMethodConnection {
+            stream: client,
+            #[cfg(feature = "macos-input-method-compatibility-harness")]
+            peer_cd_hash: "0".repeat(40),
+        };
         let response = connection
             .exchange(
                 &request,
@@ -1683,7 +1839,11 @@ mod tests {
         });
 
         let started = Instant::now();
-        let mut connection = InputMethodConnection { stream: client };
+        let mut connection = InputMethodConnection {
+            stream: client,
+            #[cfg(feature = "macos-input-method-compatibility-harness")]
+            peer_cd_hash: "0".repeat(40),
+        };
         let error = connection
             .exchange(&request, 42, true, started + Duration::from_millis(45))
             .unwrap_err();
@@ -1755,11 +1915,23 @@ mod tests {
             cfg!(feature = "macos-input-method-unsafe-dev-peers")
         );
 
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         let invalid_socket_result = unsafe {
             SpickVerifyPeerSocket(
                 -1,
                 DESKTOP_SIGNING_IDENTIFIER.as_ptr().cast(),
                 INPUT_METHOD_SIGNING_IDENTIFIER.as_ptr().cast(),
+            )
+        };
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
+        let invalid_socket_result = unsafe {
+            let mut cd_hash = [0_i8; 65];
+            SpickVerifyPeerSocketWithCDHash(
+                -1,
+                DESKTOP_SIGNING_IDENTIFIER.as_ptr().cast(),
+                INPUT_METHOD_SIGNING_IDENTIFIER.as_ptr().cast(),
+                cd_hash.as_mut_ptr(),
+                cd_hash.len(),
             )
         };
         assert_eq!(invalid_socket_result, 10);

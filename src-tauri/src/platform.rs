@@ -17,6 +17,12 @@ mod input_method_protocol;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(all(
+    target_os = "macos",
+    feature = "macos-input-method-compatibility-harness"
+))]
+pub(crate) const INPUT_METHOD_PROTOCOL_VERSION: u8 = input_method_protocol::PROTOCOL_VERSION;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DesktopPlatform {
@@ -88,6 +94,14 @@ pub struct CapturedTextTarget {
     /// Application name only. Field titles, values, selections, and native
     /// identifiers never cross the platform boundary.
     pub target_app: Option<String>,
+    /// Used only inside the fixed-fixture harness to resolve public version
+    /// metadata for the exact process captured by Accessibility. It is never
+    /// serialized or included in evidence.
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    pub(crate) compatibility_target_pid: libc::pid_t,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +111,8 @@ pub enum TextTargetErrorKind {
     OwnApplication,
     NotEditable,
     SecureField,
+    ExpectedApplicationMismatch,
+    ExpectedSelectionMismatch,
     Unsupported,
     FocusChanged,
     SelectionChanged,
@@ -111,6 +127,11 @@ pub enum TextTargetErrorKind {
 pub struct TextTargetError {
     pub kind: TextTargetErrorKind,
     message: String,
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    pub(crate) compatibility_target_pid: Option<libc::pid_t>,
 }
 
 impl TextTargetError {
@@ -118,7 +139,21 @@ impl TextTargetError {
         Self {
             kind,
             message: message.into(),
+            #[cfg(all(
+                target_os = "macos",
+                feature = "macos-input-method-compatibility-harness"
+            ))]
+            compatibility_target_pid: None,
         }
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    pub(super) fn with_compatibility_target_pid(mut self, pid: libc::pid_t) -> Self {
+        self.compatibility_target_pid = Some(pid);
+        self
     }
 }
 
@@ -136,6 +171,11 @@ pub struct TextInsertionReceipt {
     /// The text was already inserted when this is false. A caret adjustment
     /// failure is diagnostic only and must never trigger a retry.
     pub caret_repositioned: bool,
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    pub(crate) compatibility_peer_cd_hash: Option<String>,
 }
 
 /// Cloneable proxy for the operating-system owner thread.
@@ -191,6 +231,19 @@ impl TextTargetController {
         }
     }
 
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    pub(crate) fn capture_for_compatibility(
+        &self,
+        expected_bundle_identifier: &str,
+        selection: CompatibilitySelection,
+    ) -> Result<CapturedTextTarget, TextTargetError> {
+        self.inner
+            .capture_for_compatibility(expected_bundle_identifier, selection)
+    }
+
     pub fn commit(
         &self,
         token: TextTargetToken,
@@ -218,6 +271,17 @@ impl TextTargetController {
         #[cfg(not(target_os = "macos"))]
         let _ = token;
     }
+}
+
+#[cfg(all(
+    target_os = "macos",
+    feature = "macos-input-method-compatibility-harness"
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompatibilitySelection {
+    Any,
+    Caret,
+    Range,
 }
 
 pub fn current_platform_capabilities() -> PlatformCapabilities {

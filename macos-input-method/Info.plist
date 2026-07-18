@@ -26,6 +26,10 @@
   <string>SpickInputController</string>
   <key>InputMethodType</key>
   <string>palette</string>
+  <key>SpickInputInspectionProtocol</key>
+  <integer>1</integer>
+  <key>SpickPeerAuthenticationMode</key>
+  <string>secure</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>

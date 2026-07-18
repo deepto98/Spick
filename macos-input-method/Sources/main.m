@@ -2,10 +2,37 @@
 #import <InputMethodKit/InputMethodKit.h>
 
 #import "SpickInputController.h"
+#import "SpickInputSourceInspection.h"
 #import "SpickPeerIdentity.h"
 #import "SpickWireProtocol.h"
 
 #include <stdio.h>
+
+// A deliberately read-only command used by compatibility preflight. It calls
+// only TIS inspection APIs and returns before NSApplication or the insertion
+// broker is created.
+static int SpickPrintInputSourceState(void) {
+    const SpickInputSourceState state = SpickInspectInputSourceState(
+        "app.spick.desktop.input-method");
+    switch (state) {
+        case SpickInputSourceMissing:
+            puts("missing");
+            return EXIT_SUCCESS;
+        case SpickInputSourceDisabled:
+            puts("disabled");
+            return EXIT_SUCCESS;
+        case SpickInputSourceEnabled:
+            puts("enabled");
+            return EXIT_SUCCESS;
+        case SpickInputSourceSelected:
+            puts("selected");
+            return EXIT_SUCCESS;
+        case SpickInputSourceInvalid:
+        default:
+            fputs("input source state is invalid\n", stderr);
+            return EXIT_FAILURE;
+    }
+}
 
 @interface SpickApplicationDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) IMKServer *inputMethodServer;
@@ -43,6 +70,13 @@ int main(int argc, const char *argv[]) {
                      ? "unsafe-adhoc"
                      : "secure");
             return EXIT_SUCCESS;
+        }
+        if (argc == 2 && strcmp(argv[1], "--print-input-source-state") == 0) {
+            return SpickPrintInputSourceState();
+        }
+        if (argc != 1) {
+            fputs("unknown Spick Input command\n", stderr);
+            return 64;
         }
 
         NSApplication *application = NSApplication.sharedApplication;

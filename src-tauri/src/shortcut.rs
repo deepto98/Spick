@@ -39,6 +39,15 @@ pub fn replace<R: Runtime>(app: &AppHandle<R>, previous: &str, next: &str) -> Re
 }
 
 pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event_state: ShortcutState) {
+    #[cfg(all(
+        target_os = "macos",
+        feature = "macos-input-method-compatibility-harness"
+    ))]
+    if crate::compatibility::is_active() {
+        crate::compatibility::handle_shortcut(app, event_state);
+        return;
+    }
+
     let state = app.state::<AppState>();
     let result = match event_state {
         ShortcutState::Pressed => {

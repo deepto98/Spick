@@ -4,6 +4,7 @@ fn main() {
         let mut peer_identity = cc::Build::new();
         peer_identity
             .file("../macos-input-method/Sources/SpickPeerIdentity.m")
+            .file("../macos-input-method/Sources/SpickInputSourceInspection.m")
             .flag("-fobjc-arc")
             .flag("-fmodules")
             .flag("-mmacosx-version-min=13.0");
@@ -15,12 +16,22 @@ fn main() {
         );
         peer_identity.compile("spick_peer_identity");
         println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Carbon");
         println!("cargo:rustc-link-lib=framework=Security");
+        println!(
+            "cargo:rerun-if-changed=../macos-input-method/Sources/SpickInputSourceInspection.h"
+        );
+        println!(
+            "cargo:rerun-if-changed=../macos-input-method/Sources/SpickInputSourceInspection.m"
+        );
         println!("cargo:rerun-if-changed=../macos-input-method/Sources/SpickPeerIdentity.h");
         println!("cargo:rerun-if-changed=../macos-input-method/Sources/SpickPeerIdentity.m");
     }
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MACOS_INPUT_METHOD_PROTOTYPE");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MACOS_INPUT_METHOD_UNSAFE_DEV_PEERS");
+    println!("cargo:rerun-if-env-changed=SPICK_COMPAT_SOURCE_REVISION");
+    println!("cargo:rerun-if-env-changed=SPICK_COMPAT_SOURCE_TREE");
+    println!("cargo:rerun-if-env-changed=SPICK_COMPAT_SIGNING_MODE");
     tauri_build::build()
 }

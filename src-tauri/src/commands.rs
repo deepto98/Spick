@@ -917,6 +917,8 @@ fn delivery_for_target_error(
         TextTargetErrorKind::AccessibilityMissing => DictationDeliveryStatus::AccessibilityMissing,
         TextTargetErrorKind::SecureField => DictationDeliveryStatus::SecureField,
         TextTargetErrorKind::FocusChanged
+        | TextTargetErrorKind::ExpectedApplicationMismatch
+        | TextTargetErrorKind::ExpectedSelectionMismatch
         | TextTargetErrorKind::SelectionChanged
         | TextTargetErrorKind::ContentChanged
         | TextTargetErrorKind::TargetGone => DictationDeliveryStatus::FocusChanged,
