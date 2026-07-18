@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 pub mod domain;
+pub mod engines;
 mod hud;
 pub mod platform;
 mod session;

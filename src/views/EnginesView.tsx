@@ -47,13 +47,15 @@ export function EnginesView({
     [engines, kind],
   );
   const activeEngine = engines.find((engine) => engine.status === "active");
+  const localCount = engines.filter((engine) => engine.kind === "local").length;
+  const cloudCount = engines.filter((engine) => engine.kind === "cloud").length;
 
   return (
     <div className="view view--engines">
       <PageHeader
         eyebrow="Speech intelligence"
         title="Engines"
-        description="Preview local and cloud engine configuration. Runtime adapters and model downloads are not connected yet."
+        description="Engine contracts and a verified local catalog are wired. Model downloads and decoder/provider implementations are not connected yet."
         actions={
           <div className="engine-active-pill">
             {activeEngine ? (
@@ -86,7 +88,7 @@ export function EnginesView({
             <strong>On this Mac</strong>
             <small>Private & offline</small>
           </span>
-          <span className="tab-count">3</span>
+          <span className="tab-count">{localCount}</span>
         </button>
         <button
           type="button"
@@ -100,7 +102,7 @@ export function EnginesView({
             <strong>Cloud providers</strong>
             <small>Frontier accuracy</small>
           </span>
-          <span className="tab-count">3</span>
+          <span className="tab-count">{cloudCount}</span>
         </button>
       </div>
 
@@ -342,7 +344,7 @@ function EngineCard({
           </span>
           {engine.size && (
             <span>
-              <HardDrive size={13} /> Example {engine.size}
+              <HardDrive size={13} /> Pinned download {engine.size}
             </span>
           )}
           <span>
