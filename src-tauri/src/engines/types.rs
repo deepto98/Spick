@@ -1,4 +1,9 @@
-use std::fmt;
+use std::{
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use serde::Serialize;
 
 use crate::domain::LanguagePolicy;
 
@@ -51,10 +56,15 @@ pub struct TranscriptionRequest<'a> {
     pub language_policy: &'a LanguagePolicy,
     /// Product names and uncommon words used to bias recognition.
     pub vocabulary: &'a [&'a str],
+    /// A session-owned flag checked before and during local inference.
+    pub cancellation: Option<&'a AtomicBool>,
 }
 
 impl TranscriptionRequest<'_> {
     pub fn validate(self) -> Result<(), EngineError> {
+        if self.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
         self.audio.validate()?;
         if self.vocabulary.iter().any(|term| term.trim().is_empty()) {
             return Err(EngineError::InvalidRequest(
@@ -63,9 +73,15 @@ impl TranscriptionRequest<'_> {
         }
         Ok(())
     }
+
+    pub fn is_cancelled(self) -> bool {
+        self.cancellation
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     pub text: String,
     pub start_ms: u64,
@@ -92,13 +108,24 @@ impl TranscriptSegment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptResult {
     pub text: String,
     pub segments: Vec<TranscriptSegment>,
     pub detected_language: Option<String>,
     pub confidence: Option<f32>,
     pub is_final: bool,
+}
+
+/// Ephemeral, in-memory output for one completed transcription. It is safe to
+/// expose to the dashboard for recovery, but is never persisted by this type.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationTranscript {
+    pub session_id: String,
+    pub engine_id: String,
+    pub transcript: TranscriptResult,
 }
 
 impl TranscriptResult {
@@ -173,6 +200,7 @@ pub enum EngineError {
     UnsupportedPolicy(PolicyCompatibilityError),
     Backend(String),
     InvalidResult(String),
+    Cancelled,
 }
 
 impl fmt::Display for EngineError {
@@ -182,6 +210,7 @@ impl fmt::Display for EngineError {
             Self::UnsupportedPolicy(reason) => write!(formatter, "unsupported policy: {reason}"),
             Self::Backend(reason) => write!(formatter, "engine backend failed: {reason}"),
             Self::InvalidResult(reason) => write!(formatter, "invalid engine result: {reason}"),
+            Self::Cancelled => formatter.write_str("engine request was cancelled"),
         }
     }
 }

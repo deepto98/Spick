@@ -16,13 +16,21 @@ import {
   ShieldCheck,
   Trash2,
   Wifi,
+  X,
 } from "lucide-react";
 import type { Engine, EngineKind } from "../types";
+import type { ModelDownloadProgress } from "../lib/nativeModels";
 import { PageHeader } from "../components/Ui";
 
 interface EnginesViewProps {
   engines: Engine[];
+  downloads: Record<string, ModelDownloadProgress>;
+  native: boolean;
+  cancellingModelIds: ReadonlySet<string>;
+  pendingModelId: string | null;
+  error?: string;
   onActivate: (id: string) => void;
+  onCancelInstall: (id: string) => void;
   onInstall: (id: string) => void;
   onRemove: (id: string) => void;
 }
@@ -35,7 +43,13 @@ const providerMeta: Record<string, { initial: string; className: string }> = {
 
 export function EnginesView({
   engines,
+  downloads,
+  native,
+  cancellingModelIds,
+  pendingModelId,
+  error,
   onActivate,
+  onCancelInstall,
   onInstall,
   onRemove,
 }: EnginesViewProps) {
@@ -48,13 +62,18 @@ export function EnginesView({
   const activeEngine = engines.find((engine) => engine.status === "active");
   const localCount = engines.filter((engine) => engine.kind === "local").length;
   const cloudCount = engines.filter((engine) => engine.kind === "cloud").length;
+  const installedCount = engines.filter(
+    (engine) =>
+      engine.kind === "local" &&
+      (engine.status === "active" || engine.status === "ready"),
+  ).length;
 
   return (
     <div className="view view--engines">
       <PageHeader
         eyebrow="TRANSCRIPTION"
         title="Engines"
-        description="Choose where speech will be transcribed. The catalog is ready; downloads and runtimes are not."
+        description="Choose where your recording is transcribed. Local models stay on this computer."
         actions={
           <div className="engine-active-pill">
             {activeEngine ? (
@@ -69,6 +88,13 @@ export function EnginesView({
           </div>
         }
       />
+
+      {error && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Model action didn’t finish</strong>
+          <span>{error}</span>
+        </div>
+      )}
 
       <div
         className="engine-kind-tabs"
@@ -121,18 +147,19 @@ export function EnginesView({
                 <Gauge size={14} /> <strong>Speed test</strong> after install
               </span>
               <span>
-                <HardDrive size={14} /> <strong>No models</strong> installed
+                <HardDrive size={14} /> <strong>{installedCount}</strong>{" "}
+                {installedCount === 1 ? "model" : "models"} installed
               </span>
             </div>
             <span className="compatibility-badge">
-              <Gauge size={13} /> Example only
+              <Gauge size={13} /> {native ? "Metal ready" : "Desktop only"}
             </span>
           </section>
 
           <div className="section-heading">
             <div>
               <h2>Local models</h2>
-              <p>The download buttons are a preview for now.</p>
+              <p>Every download is checked before Spick can load it.</p>
             </div>
             <span>
               <ShieldCheck size={14} /> Stays on this Mac
@@ -144,7 +171,12 @@ export function EnginesView({
               <EngineCard
                 engine={engine}
                 key={engine.id}
+                download={downloads[engine.id]}
+                actionsDisabled={pendingModelId !== null}
+                cancelling={cancellingModelIds.has(engine.id)}
+                pending={pendingModelId === engine.id}
                 onActivate={() => onActivate(engine.id)}
+                onCancelInstall={() => onCancelInstall(engine.id)}
                 onInstall={() => onInstall(engine.id)}
                 onRemove={() => onRemove(engine.id)}
               />
@@ -156,8 +188,8 @@ export function EnginesView({
             <div>
               <strong>Audio stays on this Mac</strong>
               <span>
-                Once a local runtime is connected, recordings won’t be sent to a
-                provider. Raw audio will be discarded after each session.
+                Recordings go from memory to whisper.cpp and are released when
+                the session ends.
               </span>
             </div>
             <button type="button" className="text-button">
@@ -275,37 +307,34 @@ export function EnginesView({
 
 interface EngineCardProps {
   engine: Engine;
+  download?: ModelDownloadProgress;
+  actionsDisabled: boolean;
+  cancelling: boolean;
+  pending: boolean;
   onActivate: () => void;
+  onCancelInstall: () => void;
   onInstall: () => void;
   onRemove: () => void;
 }
 
 function EngineCard({
   engine,
+  download,
+  actionsDisabled,
+  cancelling,
+  pending,
   onActivate,
+  onCancelInstall,
   onInstall,
   onRemove,
 }: EngineCardProps) {
-  const [progress, setProgress] = useState<number | null>(null);
-
-  const install = () => {
-    setProgress(12);
-    const progressSteps = [34, 61, 84, 100];
-    progressSteps.forEach((value, index) => {
-      window.setTimeout(
-        () => {
-          setProgress(value);
-          if (value === 100) {
-            window.setTimeout(() => {
-              setProgress(null);
-              onInstall();
-            }, 280);
-          }
-        },
-        280 * (index + 1),
-      );
-    });
-  };
+  const progress = download
+    ? Math.min(
+        100,
+        Math.round((download.downloadedBytes / download.totalBytes) * 100),
+      )
+    : null;
+  const englishOnly = engine.languageSupport.startsWith("English-only");
 
   return (
     <article
@@ -343,7 +372,7 @@ function EngineCard({
             </span>
           )}
           <span>
-            <Cpu size={13} /> Not wired up
+            <Cpu size={13} /> Runs on device
           </span>
         </div>
         {progress !== null && (
@@ -355,7 +384,13 @@ function EngineCard({
             aria-valuenow={progress}
           >
             <div>
-              <span>Downloading model…</span>
+              <span>
+                {download?.phase === "verifying"
+                  ? "Checking download…"
+                  : download?.phase === "installed"
+                    ? "Ready"
+                    : "Downloading model…"}
+              </span>
               <strong>{progress}%</strong>
             </div>
             <i>
@@ -375,25 +410,46 @@ function EngineCard({
             type="button"
             className="button button--primary"
             onClick={onActivate}
+            disabled={actionsDisabled}
           >
-            Use model
+            {pending
+              ? "Checking…"
+              : englishOnly
+                ? "Use in English"
+                : "Use model"}
           </button>
         )}
-        {engine.status === "available" && (
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={install}
-            disabled={progress !== null}
-          >
-            <Download size={15} /> Demo download
-          </button>
-        )}
+        {(engine.status === "available" || engine.status === "invalid") &&
+          (pending ? (
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={onCancelInstall}
+              disabled={cancelling}
+            >
+              <X size={15} /> {cancelling ? "Stopping…" : "Cancel download"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={onInstall}
+              disabled={actionsDisabled || progress !== null || cancelling}
+            >
+              {cancelling ? <X size={15} /> : <Download size={15} />}
+              {cancelling
+                ? "Stopping…"
+                : engine.status === "invalid"
+                  ? "Download again"
+                  : "Download"}
+            </button>
+          ))}
         {engine.status === "ready" && (
           <button
             type="button"
             className="icon-button icon-button--subtle"
             onClick={onRemove}
+            disabled={actionsDisabled}
             aria-label={`Remove ${engine.name}`}
           >
             <Trash2 size={16} />

@@ -68,8 +68,8 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
         <div className="privacy-status">
           <ShieldCheck size={16} />
           <div>
-            <strong>Mic capture works</strong>
-            <span>Transcription comes next</span>
+            <strong>Local transcription</strong>
+            <span>Automatic typing is next</span>
           </div>
           <span className="status-dot" aria-label="Early build" />
         </div>

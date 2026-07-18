@@ -12,6 +12,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { languages, recentDictations, weeklyWords } from "../data/mockData";
+import type { NativeDictationTranscript } from "../lib/nativeDictation";
 import type { HudState } from "../types";
 import { DictationHud } from "../components/DictationHud";
 import { PageHeader } from "../components/Ui";
@@ -22,6 +23,8 @@ interface TodayViewProps {
   audioLevel?: number;
   dictationPending?: boolean;
   dictationError?: string;
+  lastTranscript: NativeDictationTranscript | null;
+  language: string;
   native: boolean;
   onHudStateChange: (state: HudState) => void;
 }
@@ -32,6 +35,8 @@ export function TodayView({
   audioLevel,
   dictationPending,
   dictationError,
+  lastTranscript,
+  language,
   native,
   onHudStateChange,
 }: TodayViewProps) {
@@ -53,7 +58,7 @@ export function TodayView({
       <PageHeader
         eyebrow="EARLY BUILD"
         title="Today"
-        description="This dashboard uses sample data until transcription and local history are ready."
+        description="The stats are sample data. Your latest local transcript stays in memory until the next recording."
         actions={
           <button
             type="button"
@@ -219,12 +224,65 @@ export function TodayView({
         <section className="panel recent-panel">
           <header className="panel__header">
             <div>
-              <h2>A few examples</h2>
-              <p>Placeholder text, for now</p>
+              <h2>{lastTranscript ? "Latest transcript" : "A few examples"}</h2>
+              <p>
+                {lastTranscript
+                  ? "Not saved to disk"
+                  : "Placeholder text, for now"}
+              </p>
             </div>
-            <span className="prototype-badge">SAMPLE DATA</span>
+            <span className="prototype-badge">
+              {lastTranscript ? "MEMORY ONLY" : "SAMPLE DATA"}
+            </span>
           </header>
           <div className="dictation-list">
+            {lastTranscript && (
+              <article className="dictation-row dictation-row--real">
+                <span className="app-tile app-tile--spick">S</span>
+                <div className="dictation-row__body">
+                  <div className="dictation-row__meta">
+                    <strong>Spick</strong>
+                    <span>Just now</span>
+                  </div>
+                  <p>{lastTranscript.transcript.text}</p>
+                  <div className="dictation-row__details">
+                    <span>
+                      {lastTranscript.transcript.detectedLanguage?.toUpperCase() ??
+                        "AUTO"}
+                    </span>
+                    <span>
+                      {
+                        lastTranscript.transcript.text.trim().split(/\s+/u)
+                          .length
+                      }{" "}
+                      words
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button icon-button--subtle"
+                  onClick={() =>
+                    void copyText(
+                      lastTranscript.sessionId,
+                      lastTranscript.transcript.text,
+                    )
+                  }
+                  aria-label="Copy latest transcript"
+                >
+                  {copiedId === lastTranscript.sessionId ? (
+                    <span className="copied-label">Copied</span>
+                  ) : (
+                    <Copy size={15} />
+                  )}
+                </button>
+              </article>
+            )}
+            {lastTranscript && (
+              <div className="sample-divider">
+                <span>Sample rows below</span>
+              </div>
+            )}
             {recentDictations.map((dictation) => (
               <article className="dictation-row" key={dictation.id}>
                 <span
@@ -269,7 +327,7 @@ export function TodayView({
           <h2>Try the shortcut</h2>
           <p>
             {native
-              ? "Spick can record you here. It can’t transcribe or type the result yet."
+              ? "Hold the shortcut and talk. Spick records and transcribes locally; automatic typing is the next piece."
               : "This page only shows the animation. Use the desktop build to record audio."}
           </p>
           <div className="try-panel__hud">
@@ -278,6 +336,7 @@ export function TodayView({
               audioLevel={audioLevel}
               disabled={dictationPending}
               errorMessage={dictationError}
+              language={language}
               state={hudState}
               onStateChange={onHudStateChange}
             />
@@ -286,7 +345,13 @@ export function TodayView({
             <span>
               <Clock3 size={14} /> Status
             </span>
-            <strong>{native ? "Recording works" : "Animation only"}</strong>
+            <strong>
+              {native
+                ? lastTranscript
+                  ? "Transcript ready"
+                  : "Local recorder ready"
+                : "Animation only"}
+            </strong>
           </div>
         </section>
       </div>

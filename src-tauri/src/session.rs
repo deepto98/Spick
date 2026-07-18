@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::domain::{
-    DictationSession, DictationStateEvent, LanguagePolicy, SessionState, SessionTrigger,
+    DictationSession, DictationStateEvent, EngineConfig, LanguagePolicy, SessionState,
+    SessionTrigger,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,8 +62,9 @@ impl SessionController {
         &mut self,
         trigger: SessionTrigger,
         language_policy: LanguagePolicy,
+        transcription_engine: EngineConfig,
     ) -> Result<DictationStateEvent, SessionError> {
-        self.start_at(trigger, language_policy, now_ms())
+        self.start_at(trigger, language_policy, transcription_engine, now_ms())
     }
 
     pub fn stop(&mut self) -> Result<DictationStateEvent, SessionError> {
@@ -87,6 +89,7 @@ impl SessionController {
         &mut self,
         trigger: SessionTrigger,
         language_policy: LanguagePolicy,
+        transcription_engine: EngineConfig,
         timestamp_ms: u64,
     ) -> Result<DictationStateEvent, SessionError> {
         if let Some(session) = &self.current {
@@ -105,6 +108,7 @@ impl SessionController {
             state: SessionState::Listening,
             trigger,
             language_policy,
+            transcription_engine,
             started_at_ms: timestamp_ms,
             ended_at_ms: None,
             cancel_reason: None,
@@ -212,6 +216,11 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::AppSettings;
+
+    fn engine() -> EngineConfig {
+        AppSettings::default().transcription_engine
+    }
 
     fn session(event: &DictationStateEvent) -> &DictationSession {
         event.session.as_ref().expect("expected a session")
@@ -223,7 +232,12 @@ mod tests {
 
         assert_eq!(controller.snapshot(), DictationStateEvent::idle());
         let listening = controller
-            .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 100)
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                100,
+            )
             .unwrap();
         assert_eq!(listening.state, SessionState::Listening);
         assert_eq!(listening.revision, 1);
@@ -236,14 +250,43 @@ mod tests {
     }
 
     #[test]
+    fn session_keeps_the_engine_selected_when_recording_started() {
+        let mut controller = SessionController::default();
+        let selected = EngineConfig::local(
+            crate::domain::EngineProvider::WhisperCpp,
+            "whisper-tiny-multilingual-f16",
+        );
+        let listening = controller
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                selected.clone(),
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(session(&listening).transcription_engine, selected);
+    }
+
+    #[test]
     fn active_sessions_cannot_overlap() {
         let mut controller = SessionController::default();
         controller
-            .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 100)
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                100,
+            )
             .unwrap();
 
         assert_eq!(
-            controller.start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 101),
+            controller.start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                101
+            ),
             Err(SessionError::AlreadyActive(SessionState::Listening))
         );
     }
@@ -252,7 +295,12 @@ mod tests {
     fn processing_can_complete_and_a_new_session_can_then_start() {
         let mut controller = SessionController::default();
         controller
-            .start_at(SessionTrigger::UserInterface, LanguagePolicy::Auto, 100)
+            .start_at(
+                SessionTrigger::UserInterface,
+                LanguagePolicy::Auto,
+                engine(),
+                100,
+            )
             .unwrap();
         controller.stop_at(150).unwrap();
 
@@ -262,7 +310,12 @@ mod tests {
         assert_eq!(session(&completed).ended_at_ms, Some(300));
 
         let next = controller
-            .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 400)
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                400,
+            )
             .unwrap();
         assert_eq!(next.state, SessionState::Listening);
         assert_eq!(next.revision, 4);
@@ -273,7 +326,12 @@ mod tests {
     fn cancel_is_terminal_and_records_a_reason() {
         let mut controller = SessionController::default();
         controller
-            .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 100)
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                100,
+            )
             .unwrap();
 
         let cancelled = controller
@@ -297,7 +355,12 @@ mod tests {
         );
 
         controller
-            .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 110)
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                110,
+            )
             .unwrap();
         let failed = controller
             .fail_at("microphone unavailable".into(), 120)

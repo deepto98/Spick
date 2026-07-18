@@ -184,7 +184,10 @@ impl Default for AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             push_to_talk_shortcut: DEFAULT_PUSH_TO_TALK_SHORTCUT.into(),
             language_policy: LanguagePolicy::Auto,
-            transcription_engine: EngineConfig::local(EngineProvider::WhisperCpp, "small-q5_1"),
+            transcription_engine: EngineConfig::local(
+                EngineProvider::WhisperCpp,
+                "whisper-small-multilingual-q5-1",
+            ),
             cleanup_engine: Some(EngineConfig::local(EngineProvider::BuiltIn, "readable-v1")),
             hud: HudSettings::default(),
             allow_cloud_fallback: false,
@@ -248,6 +251,9 @@ pub struct DictationSession {
     /// Snapshot the policy so an in-flight session is deterministic even if
     /// settings are edited concurrently.
     pub language_policy: LanguagePolicy,
+    /// Snapshot the engine for the same reason. A model switch only affects the
+    /// next dictation session.
+    pub transcription_engine: EngineConfig,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub cancel_reason: Option<String>,
@@ -295,6 +301,10 @@ mod tests {
         assert_eq!(
             settings.transcription_engine.location,
             EngineLocation::Local
+        );
+        assert_eq!(
+            settings.transcription_engine.model,
+            "whisper-small-multilingual-q5-1"
         );
         assert!(!settings.allow_cloud_fallback);
         assert!(!settings.save_transcript_history);

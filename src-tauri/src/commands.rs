@@ -1,39 +1,65 @@
 use std::{sync::Arc, thread, time::Duration};
 
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::{
     audio::{
         AudioCaptureFailure, AudioCaptureStatus, CaptureFinalizer, ErrorSink, LevelSink,
         AUDIO_LEVEL_EVENT,
     },
-    domain::{AppSettings, DictationStateEvent, SessionState, SessionTrigger},
-    hud, platform, shortcut,
+    domain::{
+        AppSettings, DictationSession, DictationStateEvent, EngineConfig, EngineLocation,
+        EngineProvider, LanguagePolicy, SessionState, SessionTrigger,
+    },
+    engines::{
+        resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput,
+        DictationTranscript, EngineError, ModelLanguageSet, TranscriptionRequest,
+    },
+    hud,
+    model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
+    platform, shortcut,
     state::AppState,
 };
 
 pub const DICTATION_STATE_EVENT: &str = "dictation://state";
+pub const DICTATION_TRANSCRIPT_EVENT: &str = "dictation://transcript";
+const MAIN_WINDOW_LABEL: &str = "main";
 const SUCCESS_HUD_DWELL: Duration = Duration::from_millis(650);
 const FAILURE_HUD_DWELL: Duration = Duration::from_secs(2);
 
 #[tauri::command]
-pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
+pub fn get_settings(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    require_main_window(&window)?;
     state.settings_snapshot()
 }
 
 #[tauri::command]
 pub fn update_settings(
+    window: WebviewWindow,
     app: AppHandle,
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
+    require_main_window(&window)?;
     settings.validate()?;
     shortcut::validate(&settings.push_to_talk_shortcut)?;
+
+    let _model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
 
     let mut current = state
         .settings
         .write()
         .map_err(|_| "settings lock is poisoned".to_string())?;
+    if settings.transcription_engine != current.transcription_engine {
+        return Err("choose transcription models from Engines".into());
+    }
+    validate_selected_transcription(&settings)?;
     let previous = current.clone();
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
 
@@ -99,6 +125,140 @@ pub fn get_audio_capture_status(state: State<'_, AppState>) -> Result<AudioCaptu
 }
 
 #[tauri::command]
+pub fn get_last_transcript(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<DictationTranscript>, String> {
+    require_main_window(&window)?;
+    state.latest_transcript()
+}
+
+#[tauri::command]
+pub fn list_local_models(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<LocalModelSummary>, String> {
+    require_main_window(&window)?;
+    let settings = state.settings_snapshot()?;
+    Ok(state.models.catalog(&settings.transcription_engine.model))
+}
+
+#[tauri::command]
+pub async fn install_local_model(
+    window: WebviewWindow,
+    app: AppHandle,
+    model_id: String,
+) -> Result<LocalModelSummary, String> {
+    require_main_window(&window)?;
+    let models = Arc::clone(&app.state::<AppState>().models);
+    let progress_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        models.install(&model_id, |progress: ModelDownloadProgress| {
+            if let Err(error) =
+                progress_app.emit_to(MAIN_WINDOW_LABEL, MODEL_DOWNLOAD_PROGRESS_EVENT, progress)
+            {
+                eprintln!("could not emit model download progress: {error}");
+            }
+        })
+    })
+    .await
+    .map_err(|error| format!("local model download worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn cancel_local_model_install(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<bool, String> {
+    require_main_window(&window)?;
+    state.models.cancel_download(&model_id)
+}
+
+#[tauri::command]
+pub async fn activate_local_model(
+    window: WebviewWindow,
+    app: AppHandle,
+    model_id: String,
+) -> Result<AppSettings, String> {
+    require_main_window(&window)?;
+    let model = resolve_curated_whisper_model(&model_id)
+        .ok_or_else(|| format!("unknown local model: {model_id}"))?;
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        // The first verification may hash hundreds of megabytes. Do that
+        // before the short settings transaction so dictation can still start
+        // with the current model. Recheck from the fingerprint cache while the
+        // transaction lock is held before persisting the selection.
+        let model_path = state.models.verified_model_path(&model.id)?;
+        state
+            .whisper
+            .load(&model, &model_path)
+            .map_err(engine_error_message)?;
+        let _model_configuration = state
+            .model_configuration
+            .lock()
+            .map_err(|_| "model configuration is unavailable".to_string())?;
+        let mut updated = state.settings_snapshot()?;
+        updated.language_policy = policy_for_model_activation(&updated.language_policy, &model);
+        updated.transcription_engine =
+            EngineConfig::local(EngineProvider::WhisperCpp, model.id.clone());
+        updated.validate()?;
+        validate_selected_transcription(&updated)?;
+        state.models.verified_model_path(&model.id)?;
+        state.persist_settings(&updated)?;
+        *state
+            .settings
+            .write()
+            .map_err(|_| "settings lock is poisoned".to_string())? = updated.clone();
+        Ok(updated)
+    })
+    .await
+    .map_err(|error| format!("local model activation worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn remove_local_model(
+    window: WebviewWindow,
+    app: AppHandle,
+    model_id: String,
+) -> Result<(), String> {
+    require_main_window(&window)?;
+    let model = resolve_curated_whisper_model(&model_id)
+        .ok_or_else(|| format!("unknown local model: {model_id}"))?;
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let _model_configuration = state
+            .model_configuration
+            .lock()
+            .map_err(|_| "model configuration is unavailable".to_string())?;
+        let settings = state.settings_snapshot()?;
+        let active_id = resolve_curated_whisper_model(&settings.transcription_engine.model)
+            .map(|active| active.id.clone());
+        if active_id.as_deref() == Some(model.id.as_str()) {
+            return Err("choose another local model before removing the active one".into());
+        }
+
+        let in_use = state
+            .session
+            .lock()
+            .map_err(|_| "dictation session lock is poisoned".to_string())?
+            .snapshot();
+        if session_uses_model(&in_use, &model.id) {
+            return Err("wait for the current dictation before removing this model".into());
+        }
+
+        state.models.remove(&model.id)?;
+        state.whisper.unload(&model.id);
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("local model removal worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub fn start_dictation_session(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -136,6 +296,8 @@ pub fn cancel_dictation_session(
             .lock()
             .map_err(|_| "microphone capture lock is poisoned".to_string())?;
         let cleanup = audio.take_matching(&session_id);
+        state.cancel_transcription(&session_id)?;
+        state.finish_transcription(&session_id)?;
         let event = session.cancel(reason).map_err(|error| error.to_string())?;
         (event, cleanup)
     };
@@ -154,13 +316,72 @@ pub fn get_platform_capabilities() -> platform::PlatformCapabilities {
     platform::current_platform_capabilities()
 }
 
+fn require_main_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == MAIN_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("this command is only available from the Spick dashboard".into())
+    }
+}
+
+fn policy_for_model_activation(
+    current: &LanguagePolicy,
+    model: &crate::engines::WhisperModelManifest,
+) -> LanguagePolicy {
+    if model.languages == ModelLanguageSet::EnglishOnly {
+        LanguagePolicy::Fixed {
+            language: "en".into(),
+        }
+    } else {
+        current.clone()
+    }
+}
+
+fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String> {
+    if settings.transcription_engine.provider != EngineProvider::WhisperCpp
+        || settings.transcription_engine.location != EngineLocation::Local
+    {
+        return Ok(());
+    }
+
+    let model =
+        resolve_curated_whisper_model(&settings.transcription_engine.model).ok_or_else(|| {
+            format!(
+                "unknown local model: {}",
+                settings.transcription_engine.model
+            )
+        })?;
+    validate_whisper_model_policy(&settings.language_policy, &model).map_err(|error| {
+        format!(
+            "{} can’t use the current language setting: {}",
+            model.display_name,
+            engine_error_message(error)
+        )
+    })
+}
+
+fn session_uses_model(event: &DictationStateEvent, model_id: &str) -> bool {
+    matches!(
+        event.state,
+        SessionState::Listening | SessionState::Processing
+    ) && event.session.as_ref().is_some_and(|session| {
+        resolve_curated_whisper_model(&session.transcription_engine.model)
+            .is_some_and(|model| model.id == model_id)
+    })
+}
+
 pub(crate) fn start_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
+    let _model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
     let settings = state.settings_snapshot()?;
     let language_policy = settings.language_policy;
+    let transcription_engine = settings.transcription_engine;
     let hud_position = settings.hud.position;
     let level_app = app.clone();
     let level_sink: LevelSink = Arc::new(move |payload| {
@@ -185,13 +406,15 @@ pub(crate) fn start_session<R: Runtime>(
             .lock()
             .map_err(|_| "microphone capture lock is poisoned".to_string())?;
         let listening = session
-            .start(trigger, language_policy)
+            .start(trigger, language_policy, transcription_engine)
             .map_err(|error| error.to_string())?;
         let session_id = active_session_id(&listening)?;
+        state.begin_transcription(session_id.clone())?;
 
         match audio.start(session_id, level_sink, error_sink) {
             Ok(_) => (listening, None),
             Err(error) => {
+                state.finish_transcription(&active_session_id(&listening)?)?;
                 let failed = session
                     .fail(error.clone())
                     .map_err(|transition| transition.to_string())?;
@@ -219,7 +442,7 @@ pub(crate) fn stop_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
 ) -> Result<DictationStateEvent, String> {
-    let (processing, session_id, finalizer) = {
+    let (processing, finalizer) = {
         let mut session = state
             .session
             .lock()
@@ -231,7 +454,7 @@ pub(crate) fn stop_session<R: Runtime>(
             .map_err(|_| "microphone capture lock is poisoned".to_string())?;
         let processing = session.stop().map_err(|error| error.to_string())?;
         let finalizer = audio.take_for_session(&session_id);
-        (processing, session_id, finalizer)
+        (processing, finalizer)
     };
 
     if let Err(error) = emit_state(app, &processing) {
@@ -242,9 +465,10 @@ pub(crate) fn stop_session<R: Runtime>(
     // transition all run off the shortcut callback. The response above remains
     // Processing; the emitted terminal revision is authoritative.
     let worker_app = app.clone();
+    let worker_processing = processing.clone();
     let spawn_result = thread::Builder::new()
         .name("spick-capture-finalize".into())
-        .spawn(move || finalize_capture(&worker_app, session_id, finalizer));
+        .spawn(move || finalize_capture(&worker_app, worker_processing, finalizer));
     if let Err(error) = spawn_result {
         let message = format!("could not start microphone finalization: {error}");
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
@@ -271,21 +495,21 @@ fn active_session_id(event: &DictationStateEvent) -> Result<String, String> {
 
 fn finalize_capture<R: Runtime>(
     app: &AppHandle<R>,
-    session_id: String,
+    processing: DictationStateEvent,
     finalizer: Result<CaptureFinalizer, String>,
 ) {
+    let session_id = match active_session_id(&processing) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            eprintln!("could not identify the transcription session: {error}");
+            return;
+        }
+    };
     let capture_result = finalizer.and_then(CaptureFinalizer::finalize);
     match capture_result {
-        Ok(mut capture) => {
+        Ok(capture) => {
             let status = capture.status();
-            // Capture-only completion has no consumer yet. Exercise the future
-            // provider handoff seam, then release PCM before marking terminal.
-            let mut pcm = capture.take_pcm_16khz();
-            let sample_count = pcm.len();
-            pcm.fill(0.0);
-            pcm.clear();
-            drop(pcm);
-            drop(capture);
+            let sample_count = capture.pcm_16khz().len();
 
             if sample_count == 0 || status.sample_count == 0 {
                 fail_and_emit_if_matching(
@@ -296,19 +520,121 @@ fn finalize_capture<R: Runtime>(
                 return;
             }
 
-            match complete_session_if_matching(app.state::<AppState>().inner(), &session_id) {
-                Ok(Some(completed)) => {
-                    if let Err(error) = emit_state(app, &completed) {
-                        eprintln!("could not emit capture completion: {error}");
-                    }
-                    hide_after(app, SUCCESS_HUD_DWELL, completed.revision);
+            let Some(session) = processing.session.as_ref() else {
+                fail_and_emit_if_matching(
+                    app,
+                    &session_id,
+                    "dictation settings were unavailable".into(),
+                );
+                return;
+            };
+            let state = app.state::<AppState>();
+            let result = transcribe_capture(state.inner(), session, capture.pcm_16khz());
+
+            match result {
+                Ok(transcript) if transcript.transcript.text.trim().is_empty() => {
+                    fail_and_emit_if_matching(
+                        app,
+                        &session_id,
+                        "No speech was recognized. Try again a little closer to the microphone."
+                            .into(),
+                    );
                 }
-                Ok(None) => {}
-                Err(error) => eprintln!("could not complete capture session: {error}"),
+                Ok(transcript) => {
+                    match complete_session_with_transcript(state.inner(), &session_id, transcript) {
+                        Ok(Some((completed, transcript))) => {
+                            if let Err(error) = app.emit_to(
+                                MAIN_WINDOW_LABEL,
+                                DICTATION_TRANSCRIPT_EVENT,
+                                &transcript,
+                            ) {
+                                eprintln!("could not emit completed transcript: {error}");
+                            }
+                            if let Err(error) = emit_state(app, &completed) {
+                                eprintln!("could not emit transcription completion: {error}");
+                            }
+                            hide_after(app, SUCCESS_HUD_DWELL, completed.revision);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("could not complete transcription session: {error}")
+                        }
+                    }
+                }
+                Err(EngineError::Cancelled) => {}
+                Err(error) => {
+                    fail_and_emit_if_matching(app, &session_id, engine_error_message(error))
+                }
             }
         }
         Err(error) => fail_and_emit_if_matching(app, &session_id, error),
     }
+}
+
+fn engine_error_message(error: EngineError) -> String {
+    match error {
+        EngineError::InvalidRequest(reason)
+        | EngineError::Backend(reason)
+        | EngineError::InvalidResult(reason) => reason,
+        EngineError::UnsupportedPolicy(reason) => reason.to_string(),
+        EngineError::Cancelled => "Dictation was cancelled".into(),
+    }
+}
+
+fn transcribe_capture(
+    state: &AppState,
+    session: &DictationSession,
+    pcm_16khz: &[f32],
+) -> Result<DictationTranscript, EngineError> {
+    if session.transcription_engine.provider != EngineProvider::WhisperCpp
+        || session.transcription_engine.location != EngineLocation::Local
+    {
+        return Err(EngineError::Backend(
+            "the selected transcription engine is not connected yet".into(),
+        ));
+    }
+
+    let model =
+        resolve_curated_whisper_model(&session.transcription_engine.model).ok_or_else(|| {
+            EngineError::InvalidRequest(format!(
+                "unknown local model: {}",
+                session.transcription_engine.model
+            ))
+        })?;
+    let cancellation = state
+        .transcription_cancellation(&session.id)
+        .map_err(EngineError::Backend)?
+        .ok_or(EngineError::Cancelled)?;
+    let model_path = state
+        .models
+        .verified_model_path_cancellable(&model.id, cancellation.as_ref())
+        .map_err(|error| {
+            if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+                EngineError::Cancelled
+            } else {
+                EngineError::Backend(error)
+            }
+        })?;
+    let result = state.whisper.transcribe(
+        Arc::clone(&model),
+        &model_path,
+        TranscriptionRequest {
+            audio: AudioInput {
+                samples: pcm_16khz,
+                sample_rate_hz: 16_000,
+                channels: 1,
+            },
+            language_policy: &session.language_policy,
+            vocabulary: &[],
+            cancellation: Some(cancellation.as_ref()),
+        },
+    )?;
+
+    Ok(DictationTranscript {
+        session_id: session.id.clone(),
+        engine_id: model.id.clone(),
+        transcript: result,
+    })
 }
 
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
@@ -329,6 +655,7 @@ fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCa
                 .lock()
                 .map_err(|_| "microphone capture lock is poisoned".to_string())?;
             let cleanup = audio.take_matching(&failure.session_id);
+            state.finish_transcription(&failure.session_id)?;
             let failed = session
                 .fail(failure.message)
                 .map_err(|error| error.to_string())?;
@@ -358,10 +685,11 @@ fn session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
         .is_some_and(|session| session.id == session_id)
 }
 
-fn complete_session_if_matching(
+fn complete_session_with_transcript(
     state: &AppState,
     session_id: &str,
-) -> Result<Option<DictationStateEvent>, String> {
+    transcript: DictationTranscript,
+) -> Result<Option<(DictationStateEvent, DictationTranscript)>, String> {
     let mut session = state
         .session
         .lock()
@@ -370,10 +698,11 @@ fn complete_session_if_matching(
     if snapshot.state != SessionState::Processing || !session_matches(&snapshot, session_id) {
         return Ok(None);
     }
-    session
-        .complete()
-        .map(Some)
-        .map_err(|error| error.to_string())
+    if !state.complete_transcription(transcript.clone())? {
+        return Ok(None);
+    }
+    let completed = session.complete().map_err(|error| error.to_string())?;
+    Ok(Some((completed, transcript)))
 }
 
 fn fail_session_if_matching(
@@ -389,6 +718,7 @@ fn fail_session_if_matching(
     if !session_matches(&session.snapshot(), &session_id) {
         return Ok(None);
     }
+    state.finish_transcription(&session_id)?;
     session
         .fail(error)
         .map(Some)
@@ -473,7 +803,7 @@ fn should_hide_for_revision(event: &DictationStateEvent, revision: u64) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{DictationSession, LanguagePolicy};
+    use crate::domain::{AppSettings, DictationSession, LanguagePolicy};
 
     fn event(id: &str, state: SessionState, revision: u64) -> DictationStateEvent {
         DictationStateEvent {
@@ -484,6 +814,7 @@ mod tests {
                 state,
                 trigger: SessionTrigger::Shortcut,
                 language_policy: LanguagePolicy::Auto,
+                transcription_engine: AppSettings::default().transcription_engine,
                 started_at_ms: 1,
                 ended_at_ms: None,
                 cancel_reason: None,
@@ -520,6 +851,53 @@ mod tests {
         assert!(!should_hide_for_revision(
             &event("session-b", SessionState::Listening, 5),
             4
+        ));
+    }
+
+    #[test]
+    fn backend_errors_are_shown_without_internal_engine_prefixes() {
+        assert_eq!(
+            engine_error_message(EngineError::Backend("Download a model first".into())),
+            "Download a model first"
+        );
+    }
+
+    #[test]
+    fn english_only_activation_explicitly_pins_speech_to_english() {
+        let english_only = resolve_curated_whisper_model("whisper-base-english-q5-1").unwrap();
+        assert_eq!(
+            policy_for_model_activation(&LanguagePolicy::Auto, &english_only),
+            LanguagePolicy::Fixed {
+                language: "en".into()
+            }
+        );
+
+        let hindi = LanguagePolicy::Fixed {
+            language: "hi".into(),
+        };
+        assert_eq!(
+            policy_for_model_activation(&hindi, &english_only),
+            LanguagePolicy::Fixed {
+                language: "en".into()
+            }
+        );
+    }
+
+    #[test]
+    fn in_flight_session_keeps_its_snapshotted_model() {
+        let mut active = event("session-a", SessionState::Processing, 2);
+        active.session.as_mut().unwrap().transcription_engine =
+            EngineConfig::local(EngineProvider::WhisperCpp, "whisper-tiny-multilingual-f16");
+
+        assert!(session_uses_model(&active, "whisper-tiny-multilingual-f16"));
+        assert!(!session_uses_model(
+            &active,
+            "whisper-small-multilingual-q5-1"
+        ));
+        active.state = SessionState::Completed;
+        assert!(!session_uses_model(
+            &active,
+            "whisper-tiny-multilingual-f16"
         ));
     }
 }

@@ -12,6 +12,7 @@ mod models;
 mod providers;
 mod routing;
 mod types;
+mod whisper_cpp;
 
 pub use capabilities::{
     validate_language_policy, validate_transcription_request, LanguageCoverage,
@@ -19,16 +20,17 @@ pub use capabilities::{
 };
 pub use languages::{normalize_whisper_language_tag, whisper_language_codes};
 pub use models::{
-    curated_whisper_models, ModelLanguageSet, ModelLicense, WhisperModelFamily,
-    WhisperModelManifest, WhisperQuantization,
+    curated_whisper_models, resolve_curated_whisper_model, ModelLanguageSet, ModelLicense,
+    WhisperModelFamily, WhisperModelManifest, WhisperQuantization,
 };
 pub use providers::{
-    CleanupEngine, CloudSpeechAdapter, CloudSpeechClient, EngineDescriptor, EngineRole,
-    RuleBasedCleanupEngine, TranscriptionEngine, WhisperCppAdapter, WhisperCppDecoder,
-    WhisperDecodeRequest,
+    validate_whisper_model_policy, CleanupEngine, CloudSpeechAdapter, CloudSpeechClient,
+    EngineDescriptor, EngineRole, RuleBasedCleanupEngine, TranscriptionEngine, WhisperCppAdapter,
+    WhisperCppDecoder, WhisperDecodeRequest,
 };
 pub use routing::{PrivacyMode, RoutePlan, RoutingError};
 pub use types::{
-    AudioInput, CleanupRequest, CleanupResult, EngineError, TranscriptResult, TranscriptSegment,
-    TranscriptionRequest,
+    AudioInput, CleanupRequest, CleanupResult, DictationTranscript, EngineError, TranscriptResult,
+    TranscriptSegment, TranscriptionRequest,
 };
+pub use whisper_cpp::WhisperCppRuntime;

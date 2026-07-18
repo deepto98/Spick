@@ -30,6 +30,8 @@ import {
 
 interface SettingsViewProps {
   settings: AppSettings;
+  languageSaving: boolean;
+  nativeError?: string;
   onChange: (next: AppSettings) => void;
   onRestartOnboarding: () => void;
 }
@@ -49,6 +51,8 @@ const sectionItems: Array<{
 
 export function SettingsView({
   settings,
+  languageSaving,
+  nativeError,
   onChange,
   onRestartOnboarding,
 }: SettingsViewProps) {
@@ -70,13 +74,21 @@ export function SettingsView({
       <PageHeader
         eyebrow="PREFERENCES"
         title="Settings"
-        description="Change how Spick records and, later, how it writes."
+        description="Language changes are live. The other controls are still a preview."
         actions={
           <span className="settings-saved">
-            <Check size={14} /> Changes aren’t saved yet
+            <Check size={14} />
+            {languageSaving ? "Saving language…" : "Language saves here"}
           </span>
         }
       />
+
+      {nativeError && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Language stayed where it was</strong>
+          <span>{nativeError}</span>
+        </div>
+      )}
 
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">
@@ -221,10 +233,10 @@ export function SettingsView({
                 <SettingRow
                   icon={<BellRing size={17} />}
                   title="Hold to speak"
-                  description="The shortcut and mic work. Transcription and typing do not yet."
+                  description="The shortcut, mic, and local transcription work. Automatic typing comes next."
                   control={
                     <span className="fixed-value">
-                      <Check size={14} /> Recording works
+                      <Check size={14} /> Core ready
                     </span>
                   }
                 />
@@ -234,7 +246,7 @@ export function SettingsView({
                 <div>
                   <strong>No timing data yet</strong>
                   <span>
-                    We’ll measure latency when transcription is connected.
+                    The next pass will record transcription and insertion time.
                   </span>
                 </div>
               </div>
@@ -260,9 +272,8 @@ export function SettingsView({
                     "Bengali",
                     "Spanish",
                     "French",
-                    "Hinglish",
                   ]}
-                  hint="Auto-detect will follow the language support of the engine you choose."
+                  hint="Auto picks one language per recording. English-only models pin this setting to English."
                 />
                 <div className="cleanup-setting">
                   <span className="field__label">Cleanup style</span>
@@ -317,8 +328,8 @@ export function SettingsView({
                 <div>
                   <strong>Recordings stay in memory</strong>
                   <p>
-                    Spick discards the audio after each session. Local
-                    transcription is not connected yet.
+                    Spick discards audio after each session. Local models keep
+                    transcription on this computer.
                   </p>
                 </div>
                 <span className="privacy-grade">ON DEVICE</span>

@@ -392,9 +392,9 @@ enum CaptureCommand {
     StreamError(String),
 }
 
-/// A short-lived handoff to the future transcription provider. Capture-only
-/// completion calls `take_pcm_16khz` and drops the returned vector immediately,
-/// so PCM is never retained in process state after the terminal transition.
+/// A short-lived handoff to the transcription pipeline. PCM is borrowed by the
+/// decoder, overwritten on a best-effort basis, and released by `Drop` on
+/// success, error, cancellation, or unwinding.
 pub(crate) struct FinalizedCapture {
     samples_16khz: Vec<f32>,
     device_name: String,
@@ -423,8 +423,8 @@ impl FinalizedCapture {
         }
     }
 
-    pub(crate) fn take_pcm_16khz(&mut self) -> Vec<f32> {
-        mem::take(&mut self.samples_16khz)
+    pub(crate) fn pcm_16khz(&self) -> &[f32] {
+        &self.samples_16khz
     }
 }
 
@@ -953,8 +953,8 @@ mod tests {
     }
 
     #[test]
-    fn finalized_pcm_can_be_taken_and_is_no_longer_retained() {
-        let mut capture = FinalizedCapture {
+    fn finalized_pcm_is_borrowed_by_the_transcription_pipeline() {
+        let capture = FinalizedCapture {
             samples_16khz: vec![0.1, 0.2],
             device_name: "Test".into(),
             input_sample_rate: 48_000,
@@ -962,9 +962,8 @@ mod tests {
             dropped_chunks: 0,
         };
 
-        let samples = capture.take_pcm_16khz();
-        assert_eq!(samples, vec![0.1, 0.2]);
-        assert!(capture.samples_16khz.is_empty());
+        assert_eq!(capture.pcm_16khz(), &[0.1, 0.2]);
+        assert_eq!(capture.samples_16khz, vec![0.1, 0.2]);
     }
 
     #[test]

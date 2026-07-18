@@ -1,6 +1,9 @@
 use std::sync::{Arc, OnceLock};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum WhisperModelFamily {
     Tiny,
     Base,
@@ -21,7 +24,8 @@ impl WhisperModelFamily {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum WhisperQuantization {
     F16,
     F32,
@@ -35,13 +39,15 @@ pub enum WhisperQuantization {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ModelLanguageSet {
     Multilingual,
     EnglishOnly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelLicense {
     pub spdx_id: String,
     pub name: String,
@@ -49,7 +55,8 @@ pub struct ModelLicense {
     pub attribution: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WhisperModelManifest {
     pub id: String,
     pub display_name: String,
@@ -84,6 +91,13 @@ impl WhisperModelManifest {
         }
         if !self.file_name.ends_with(".bin") {
             return Err("whisper.cpp model files must use the .bin extension");
+        }
+        if self.file_name.contains('/')
+            || self.file_name.contains('\\')
+            || self.file_name == "."
+            || self.file_name == ".."
+        {
+            return Err("model filename must not contain a path");
         }
         if self.download_bytes == 0 {
             return Err("model download size must be greater than zero");
@@ -208,6 +222,20 @@ pub fn curated_whisper_models() -> &'static [Arc<WhisperModelManifest>] {
     })
 }
 
+/// Resolve persisted settings to curated metadata. The short identifier was
+/// used by the foundation build and remains an input alias so early settings
+/// files keep working without weakening the canonical model identity.
+pub fn resolve_curated_whisper_model(id: &str) -> Option<Arc<WhisperModelManifest>> {
+    let canonical_id = match id {
+        "small-q5_1" => "whisper-small-multilingual-q5-1",
+        value => value,
+    };
+    curated_whisper_models()
+        .iter()
+        .find(|model| model.id == canonical_id)
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -256,5 +284,13 @@ mod tests {
         let second_owner = Arc::clone(&shared);
         assert_eq!(second_owner.id, "downloaded-at-runtime");
         assert_eq!(shared.validate(), Ok(()));
+    }
+
+    #[test]
+    fn legacy_settings_resolve_to_the_canonical_model() {
+        let legacy = resolve_curated_whisper_model("small-q5_1").unwrap();
+        let canonical = resolve_curated_whisper_model("whisper-small-multilingual-q5-1").unwrap();
+        assert_eq!(legacy, canonical);
+        assert!(resolve_curated_whisper_model("unknown").is_none());
     }
 }

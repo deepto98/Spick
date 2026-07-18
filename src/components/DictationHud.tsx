@@ -139,27 +139,38 @@ export function DictationHud({
       )}
 
       {state === "processing" && (
-        <div className="hud-status-copy">
-          <strong>Finishing recording</strong>
-          <span className="hud-loading">
-            <i />
-            <i />
-            <i />
-          </span>
-        </div>
+        <>
+          <div className="hud-status-copy">
+            <strong>Writing that down</strong>
+            <span className="hud-loading">
+              <i />
+              <i />
+              <i />
+            </span>
+          </div>
+          <button
+            type="button"
+            className="hud-stop"
+            onClick={() => transitionTo("idle")}
+            aria-label="Cancel transcription"
+            disabled={disabled}
+          >
+            <X size={15} />
+          </button>
+        </>
       )}
 
       {state === "success" && (
         <div className="hud-status-copy">
-          <strong>Recording finished</strong>
-          <span>Transcription isn’t connected yet</span>
+          <strong>Transcript ready</strong>
+          <span>Kept in memory for now</span>
         </div>
       )}
 
       {state === "error" && (
         <>
           <div className="hud-status-copy">
-            <strong>Microphone unavailable</strong>
+            <strong>Couldn’t finish</strong>
             <span>{errorMessage ?? "Check access and try again"}</span>
           </div>
           <button

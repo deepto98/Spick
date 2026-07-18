@@ -91,8 +91,8 @@ export function Onboarding({
                 <em>Skip the typing.</em>
               </h1>
               <p>
-                Hold a shortcut and speak. This early build records audio;
-                transcription and typing come next.
+                Hold a shortcut and speak. Spick can already listen and
+                transcribe on this Mac. Typing into the field comes next.
               </p>
               <button
                 type="button"
@@ -128,7 +128,7 @@ export function Onboarding({
                     <i />
                   </div>
                   <div className="mock-cleanup-badge">
-                    <Eraser size={13} /> Preview · 3 fillers removed
+                    <Eraser size={13} /> Example · cleanup comes later
                   </div>
                 </div>
               </div>
@@ -136,8 +136,8 @@ export function Onboarding({
                 <DictationHud state="listening" />
               </div>
               <div className="welcome-demo__note">
-                <Check size={13} /> Planned for browsers, editors, and desktop
-                apps
+                <Check size={13} /> Local transcription works in the desktop
+                build
               </div>
             </div>
           </section>
@@ -200,7 +200,7 @@ export function Onboarding({
                   Speech language
                 </span>
                 <div className="language-choice-grid">
-                  {["Auto-detect", "English", "Hindi", "Hinglish"].map(
+                  {["Auto-detect", "English", "Hindi", "Bengali"].map(
                     (language) => (
                       <button
                         type="button"
@@ -228,8 +228,8 @@ export function Onboarding({
                   )}
                 </div>
                 <span className="setup-field-group__hint">
-                  <Globe2 size={13} /> Auto-detect is planned to handle language
-                  changes between phrases.
+                  <Globe2 size={13} /> Auto lets the model choose one language
+                  for each recording.
                 </span>
               </div>
               <div className="setup-field-group">
@@ -242,10 +242,8 @@ export function Onboarding({
                       <ShieldCheck size={18} />
                     </span>
                     <div>
-                      <strong>On this Mac (planned)</strong>
-                      <small>
-                        No audio upload once the runtime is connected
-                      </small>
+                      <strong>On this Mac</strong>
+                      <small>Works offline after you download a model</small>
                     </div>
                     <span className="recommended-label">SUGGESTED</span>
                     <CheckCircle2 size={17} />
@@ -262,7 +260,7 @@ export function Onboarding({
                   </button>
                 </div>
                 <span className="setup-field-group__hint">
-                  These choices are examples until Spick checks this Mac.
+                  You’ll choose the actual model from Engines after setup.
                 </span>
               </div>
             </div>
@@ -276,7 +274,7 @@ export function Onboarding({
               icon={<Keyboard size={21} />}
               eyebrow="ONE LAST THING"
               title="Give the shortcut a try."
-              description="The desktop build can record audio now. It doesn’t transcribe or type it yet."
+              description="The desktop build records and transcribes locally. Automatic typing is the next piece."
             />
             <div
               className={`shortcut-practice ${shortcutPressed ? "shortcut-practice--pressed" : ""}`}
@@ -307,7 +305,7 @@ export function Onboarding({
                 <Check size={14} />
                 <div>
                   <strong>Engine</strong>
-                  <small>whisper.cpp · not connected yet</small>
+                  <small>whisper.cpp · choose a model next</small>
                 </div>
               </span>
               <span>
@@ -340,7 +338,7 @@ export function Onboarding({
 
       <footer className="onboarding-footer">
         <span>Early macOS build</span>
-        <span>Mic capture works · typing comes next</span>
+        <span>Local transcription works · typing comes next</span>
       </footer>
     </main>
   );

@@ -1,0 +1,4 @@
+[env]
+# whisper-rs ships bindings for its pinned whisper.cpp revision. Reusing them
+# avoids making libclang a build-time requirement for Spick contributors.
+WHISPER_DONT_GENERATE_BINDINGS = "1"

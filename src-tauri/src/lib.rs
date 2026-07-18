@@ -3,6 +3,7 @@ mod commands;
 pub mod domain;
 pub mod engines;
 mod hud;
+mod model_store;
 pub mod platform;
 mod session;
 mod shortcut;
@@ -58,12 +59,15 @@ pub fn run() {
         })
         .setup(|app| {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let state = AppState::load(settings_path).map_err(setup_error)?;
+            let models_path = app.path().app_local_data_dir()?.join("models");
+            let state =
+                AppState::load_with_models(settings_path, models_path).map_err(setup_error)?;
             let settings = state.settings_snapshot().map_err(setup_error)?;
 
             if !app.manage(state) {
                 return Err(setup_error("application state was already initialized"));
             }
+            preload_active_model(app.handle().clone());
 
             // A missing monitor or an unavailable global binding should not make
             // the settings window unusable. Both can be corrected after launch.
@@ -87,6 +91,12 @@ pub fn run() {
             commands::update_settings,
             commands::get_dictation_session,
             commands::get_audio_capture_status,
+            commands::get_last_transcript,
+            commands::list_local_models,
+            commands::install_local_model,
+            commands::cancel_local_model_install,
+            commands::activate_local_model,
+            commands::remove_local_model,
             commands::start_dictation_session,
             commands::stop_dictation_session,
             commands::cancel_dictation_session,
@@ -108,6 +118,54 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = (app, event);
     });
+}
+
+fn preload_active_model<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    let spawn_result = std::thread::Builder::new()
+        .name("spick-model-preload".into())
+        .spawn(move || {
+            let state = app.state::<AppState>();
+            let Ok(settings) = state.settings_snapshot() else {
+                return;
+            };
+            if settings.transcription_engine.provider != domain::EngineProvider::WhisperCpp
+                || settings.transcription_engine.location != domain::EngineLocation::Local
+            {
+                return;
+            }
+            let Some(model) =
+                engines::resolve_curated_whisper_model(&settings.transcription_engine.model)
+            else {
+                return;
+            };
+            let should_load = state
+                .models
+                .catalog(&model.id)
+                .into_iter()
+                .find(|summary| summary.manifest.id == model.id)
+                .is_some_and(|summary| {
+                    matches!(
+                        summary.state,
+                        model_store::ModelInstallationState::Installed
+                            | model_store::ModelInstallationState::NeedsVerification
+                    )
+                });
+            if !should_load {
+                return;
+            }
+
+            let result = state
+                .models
+                .verified_model_path(&model.id)
+                .map_err(engines::EngineError::Backend)
+                .and_then(|path| state.whisper.load(&model, &path));
+            if let Err(error) = result {
+                eprintln!("could not preload the active local model: {error}");
+            }
+        });
+    if let Err(error) = spawn_result {
+        eprintln!("could not start local model preloading: {error}");
+    }
 }
 
 fn reveal_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {

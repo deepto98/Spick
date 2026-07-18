@@ -2,7 +2,10 @@ use std::{
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
 };
 
 use tempfile::Builder as TempFileBuilder;
@@ -10,6 +13,8 @@ use tempfile::Builder as TempFileBuilder;
 use crate::{
     audio::AudioCaptureController,
     domain::{AppSettings, SETTINGS_SCHEMA_VERSION},
+    engines::{DictationTranscript, WhisperCppRuntime},
+    model_store::ModelStore,
     session::SessionController,
 };
 
@@ -22,16 +27,32 @@ pub struct AppState {
     pub settings: RwLock<AppSettings>,
     pub session: Mutex<SessionController>,
     pub audio: Mutex<AudioCaptureController>,
+    pub models: Arc<ModelStore>,
+    pub whisper: WhisperCppRuntime,
+    /// Serializes model selection/removal with settings writes so an active
+    /// model cannot disappear between verification and persistence.
+    pub model_configuration: Mutex<()>,
+    transcripts: Mutex<TranscriptStore>,
     settings_path: PathBuf,
 }
 
 impl AppState {
+    #[cfg(test)]
     pub fn load(settings_path: PathBuf) -> Result<Self, String> {
+        let models_path = parent_directory(&settings_path).join("models");
+        Self::load_with_models(settings_path, models_path)
+    }
+
+    pub fn load_with_models(settings_path: PathBuf, models_path: PathBuf) -> Result<Self, String> {
         let settings = load_settings(&settings_path)?;
         Ok(Self {
             settings: RwLock::new(settings),
             session: Mutex::new(SessionController::default()),
             audio: Mutex::new(AudioCaptureController::default()),
+            models: Arc::new(ModelStore::new(models_path)),
+            whisper: WhisperCppRuntime::default(),
+            model_configuration: Mutex::new(()),
+            transcripts: Mutex::new(TranscriptStore::default()),
             settings_path,
         })
     }
@@ -45,6 +66,121 @@ impl AppState {
 
     pub fn persist_settings(&self, settings: &AppSettings) -> Result<(), String> {
         write_settings(&self.settings_path, settings)
+    }
+
+    pub fn begin_transcription(&self, session_id: String) -> Result<Arc<AtomicBool>, String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| transcripts.begin(session_id))
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn cancel_transcription(&self, session_id: &str) -> Result<(), String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| transcripts.cancel(session_id))
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn transcription_cancellation(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<AtomicBool>>, String> {
+        self.transcripts
+            .lock()
+            .map(|transcripts| {
+                transcripts
+                    .active
+                    .as_ref()
+                    .filter(|active| active.session_id == session_id)
+                    .map(|active| Arc::clone(&active.cancellation))
+            })
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn finish_transcription(&self, session_id: &str) -> Result<(), String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| transcripts.finish(session_id))
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn complete_transcription(&self, transcript: DictationTranscript) -> Result<bool, String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| transcripts.complete(transcript))
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn latest_transcript(&self) -> Result<Option<DictationTranscript>, String> {
+        self.transcripts
+            .lock()
+            .map(|transcripts| transcripts.latest.clone())
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+}
+
+#[derive(Default)]
+struct TranscriptStore {
+    active: Option<ActiveTranscription>,
+    latest: Option<DictationTranscript>,
+}
+
+struct ActiveTranscription {
+    session_id: String,
+    cancellation: Arc<AtomicBool>,
+}
+
+impl TranscriptStore {
+    fn begin(&mut self, session_id: String) -> Arc<AtomicBool> {
+        if let Some(active) = self.active.take() {
+            active.cancellation.store(true, Ordering::Relaxed);
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.active = Some(ActiveTranscription {
+            session_id,
+            cancellation: Arc::clone(&cancellation),
+        });
+        self.latest = None;
+        cancellation
+    }
+
+    fn cancel(&mut self, session_id: &str) {
+        if let Some(active) = self
+            .active
+            .as_ref()
+            .filter(|active| active.session_id == session_id)
+        {
+            active.cancellation.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn finish(&mut self, session_id: &str) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.session_id == session_id)
+        {
+            self.active = None;
+        }
+    }
+
+    fn complete(&mut self, transcript: DictationTranscript) -> bool {
+        let Some(active) = self
+            .active
+            .as_ref()
+            .filter(|active| active.session_id == transcript.session_id)
+        else {
+            return false;
+        };
+        if active.cancellation.load(Ordering::Relaxed) {
+            self.active = None;
+            return false;
+        }
+
+        self.active = None;
+        self.latest = Some(transcript);
+        true
     }
 }
 
@@ -271,7 +407,10 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::domain::{EngineLocation, EngineProvider, LanguagePolicy};
+    use crate::{
+        domain::{EngineLocation, EngineProvider, LanguagePolicy},
+        engines::TranscriptResult,
+    };
     use tempfile::TempDir;
 
     fn test_path() -> (TempDir, PathBuf) {
@@ -400,5 +539,33 @@ mod tests {
 
         assert!(error.contains("could not read settings"));
         assert!(path.is_dir());
+    }
+
+    #[test]
+    fn transcript_store_rejects_cancelled_and_stale_results() {
+        let mut store = TranscriptStore::default();
+        let cancellation = store.begin("session-a".into());
+        assert!(!cancellation.load(Ordering::Relaxed));
+        assert!(!store.complete(transcript("session-b", "stale")));
+
+        store.cancel("session-a");
+        assert!(cancellation.load(Ordering::Relaxed));
+        assert!(!store.complete(transcript("session-a", "cancelled")));
+        assert!(store.latest.is_none());
+
+        store.begin("session-c".into());
+        assert!(store.complete(transcript("session-c", "kept")));
+        assert_eq!(store.latest.as_ref().unwrap().transcript.text, "kept");
+
+        store.begin("session-d".into());
+        assert!(store.latest.is_none());
+    }
+
+    fn transcript(session_id: &str, text: &str) -> DictationTranscript {
+        DictationTranscript {
+            session_id: session_id.into(),
+            engine_id: "whisper-test".into(),
+            transcript: TranscriptResult::final_text(text),
+        }
     }
 }

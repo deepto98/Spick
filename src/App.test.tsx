@@ -77,12 +77,30 @@ describe("Spick product shell", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Finish recording" }));
-    expect(screen.getByText("Finishing recording")).toBeInTheDocument();
+    expect(screen.getByText("Writing that down")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Cancel transcription" }),
+    ).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1150));
-    expect(screen.getByText("Recording finished")).toBeInTheDocument();
+    expect(screen.getByText("Transcript ready")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1250));
+    expect(
+      screen.getByRole("button", { name: "Start recording" }),
+    ).toBeInTheDocument();
+  });
+
+  it("can leave processing without waiting for the preview", () => {
+    window.history.replaceState({}, "", "/?window=hud");
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish recording" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel transcription" }),
+    );
+
     expect(
       screen.getByRole("button", { name: "Start recording" }),
     ).toBeInTheDocument();

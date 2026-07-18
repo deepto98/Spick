@@ -4157,6 +4157,53 @@ select:focus-visible {
   box-shadow: 0 0 0 2px rgba(179, 84, 50, 0.065);
 }
 
+.engine-inline-error {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  color: #743723;
+  background: #fff4ec;
+  border: 1px solid #dfb29e;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.engine-inline-error span {
+  color: #755b4f;
+}
+
+.dictation-row--real {
+  background: #fff9f1;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.app-tile--spick {
+  color: #fff9ef;
+  background: var(--accent) !important;
+  font-family: var(--font-display);
+}
+
+.sample-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 13px;
+  color: #877d70;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.65px;
+}
+
+.sample-divider::before,
+.sample-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: #e2d7c9;
+}
+
 .shortcut-practice {
   background: var(--surface);
   border-color: var(--line);

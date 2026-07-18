@@ -19,6 +19,14 @@ Deliver the smallest complete path: hold a configurable global shortcut, capture
 
 Begin compatibility testing with TextEdit, a Chromium browser, and VS Code. Permission onboarding covers microphone and Accessibility access.
 
+Current checkpoint:
+
+- The shortcut, non-activating HUD, bounded in-memory microphone capture, and cancellation path are working.
+- Curated models can be downloaded or cancelled, size-checked, SHA-256 verified, selected, removed, and loaded through a cached Metal-enabled `whisper.cpp` runtime.
+- Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
+- Final transcripts are kept in memory and shown on Today for copy recovery.
+- Focused-field capture, Accessibility permission handling, cleanup, and automatic text insertion remain to complete this milestone.
+
 Exit criteria:
 
 - Shortcut press starts capture and shortcut release finalizes the session.
@@ -42,7 +50,7 @@ Exit criteria:
 
 ## Milestone 3: multilingual local models
 
-Add a curated local model manager for compatible Whisper models. Support download progress, verification, activation, removal, disk requirements, and clear distinction between multilingual and English-only models.
+Expand the curated model manager introduced in Milestone 1. Add disk-space preflight, RAM and speed guidance, model migration, and measured recommendations while keeping the distinction between multilingual and English-only models clear.
 
 Expose Auto and Fixed language policies first. Add Preferred and Mixed policies only after phrase-level behavior is measurable in representative language pairs. Keep translation and transliteration explicit.
 

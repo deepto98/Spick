@@ -5,7 +5,7 @@ export type HudState =
 
 export type EngineKind = "local" | "cloud";
 
-export type EngineStatus = "active" | "ready" | "available";
+export type EngineStatus = "active" | "ready" | "available" | "invalid";
 
 export interface Engine {
   id: string;

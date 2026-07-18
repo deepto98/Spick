@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::domain::{EngineLocation, EngineProvider, LanguagePolicy};
 
 use super::capabilities::{
-    validate_transcription_request, LanguageCoverage, LanguageHintSupport,
-    TranscriptionCapabilities, VocabularySupport,
+    validate_language_policy, validate_transcription_request, LanguageCoverage,
+    LanguageHintSupport, TranscriptionCapabilities, VocabularySupport,
 };
 use super::languages::{normalize_whisper_policy, whisper_language_codes};
 use super::models::{ModelLanguageSet, WhisperModelManifest};
@@ -159,7 +159,7 @@ impl EngineDescriptor {
     }
 }
 
-mod private {
+pub(super) mod private {
     pub trait Sealed {}
 }
 
@@ -179,7 +179,7 @@ pub trait CleanupEngine: private::Sealed + Send + Sync {
     fn cleanup(&self, request: CleanupRequest<'_>) -> Result<CleanupResult, EngineError>;
 }
 
-/// The narrow seam the future whisper.cpp FFI implementation must satisfy.
+/// The narrow seam the whisper.cpp runtime must satisfy.
 /// It is sealed so only trusted application code may implement the decoder and
 /// receive a local execution identity.
 pub trait WhisperCppDecoder: private::Sealed + Send + Sync {
@@ -195,6 +195,7 @@ pub struct WhisperDecodeRequest<'a> {
     pub language_hint: Option<&'a str>,
     pub translate_to_english: bool,
     pub prompt_vocabulary: &'a [&'a str],
+    pub cancellation: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 pub struct WhisperCppAdapter<D> {
@@ -218,26 +219,7 @@ where
             .validate()
             .map_err(|reason| EngineError::InvalidRequest(reason.into()))?;
 
-        let multilingual = model.languages == ModelLanguageSet::Multilingual;
-        let capabilities = TranscriptionCapabilities {
-            batch: true,
-            streaming: false,
-            language_detection: multilingual,
-            language_hints: LanguageHintSupport::Single,
-            // Base Whisper chooses one language token for a decoding task. It
-            // may incidentally emit borrowed words, but does not promise
-            // segment-level language preservation.
-            code_switching: false,
-            translation: multilingual,
-            vocabulary: VocabularySupport::PromptBiasing,
-            offline: true,
-            input_languages: LanguageCoverage::Explicit(whisper_language_codes(&model)),
-            translation_targets: if multilingual {
-                LanguageCoverage::explicit(["en"])
-            } else {
-                LanguageCoverage::None
-            },
-        };
+        let capabilities = whisper_model_capabilities(&model);
         capabilities
             .validate_declaration()
             .map_err(|reason| EngineError::InvalidRequest(reason.into()))?;
@@ -253,6 +235,44 @@ where
     pub fn model(&self) -> &Arc<WhisperModelManifest> {
         &self.model
     }
+}
+
+fn whisper_model_capabilities(model: &WhisperModelManifest) -> TranscriptionCapabilities {
+    let multilingual = model.languages == ModelLanguageSet::Multilingual;
+    TranscriptionCapabilities {
+        batch: true,
+        streaming: false,
+        language_detection: multilingual,
+        language_hints: LanguageHintSupport::Single,
+        // Base Whisper chooses one language token for a decoding task. It may
+        // incidentally emit borrowed words, but does not promise segment-level
+        // language preservation.
+        code_switching: false,
+        translation: multilingual,
+        vocabulary: VocabularySupport::PromptBiasing,
+        offline: true,
+        input_languages: LanguageCoverage::Explicit(whisper_language_codes(model)),
+        translation_targets: if multilingual {
+            LanguageCoverage::explicit(["en"])
+        } else {
+            LanguageCoverage::None
+        },
+    }
+}
+
+/// Checks a saved language policy before a model becomes active. Keeping this
+/// at the adapter boundary prevents the model manager and decoder from
+/// disagreeing about English-only or multilingual behavior.
+pub fn validate_whisper_model_policy(
+    policy: &LanguagePolicy,
+    model: &WhisperModelManifest,
+) -> Result<(), EngineError> {
+    model
+        .validate()
+        .map_err(|reason| EngineError::InvalidRequest(reason.into()))?;
+    let normalized = normalize_whisper_policy(policy, model)?;
+    validate_language_policy(&normalized, &whisper_model_capabilities(model))
+        .map_err(EngineError::UnsupportedPolicy)
 }
 
 impl<D> TranscriptionEngine for WhisperCppAdapter<D>
@@ -283,6 +303,7 @@ where
             language_hint,
             translate_to_english,
             prompt_vocabulary: request.vocabulary,
+            cancellation: request.cancellation,
         })?;
         validate_batch_result(&result)?;
         Ok(result)
@@ -538,6 +559,7 @@ mod tests {
             },
             language_policy: policy,
             vocabulary,
+            cancellation: None,
         }
     }
 
@@ -560,6 +582,22 @@ mod tests {
             *adapter.decoder.invocation.lock().unwrap(),
             Some((Some("en".into()), false, vec!["Spick".into()]))
         );
+    }
+
+    #[test]
+    fn model_policy_validation_rejects_auto_for_english_only_weights() {
+        let english_only = &curated_whisper_models()[1];
+        assert!(matches!(
+            validate_whisper_model_policy(&LanguagePolicy::Auto, english_only),
+            Err(EngineError::UnsupportedPolicy(_))
+        ));
+        assert!(validate_whisper_model_policy(
+            &LanguagePolicy::Fixed {
+                language: "en-IN".into(),
+            },
+            english_only,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -635,6 +673,7 @@ mod tests {
             },
             language_policy: &policy,
             vocabulary: &[],
+            cancellation: None,
         };
         assert!(adapter.transcribe(wrong_rate).is_err());
 
@@ -646,6 +685,7 @@ mod tests {
             },
             language_policy: &policy,
             vocabulary: &[],
+            cancellation: None,
         };
         assert!(adapter.transcribe(stereo).is_err());
         assert!(adapter
