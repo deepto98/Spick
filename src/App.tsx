@@ -6,13 +6,8 @@ import { Onboarding } from "./components/Onboarding";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { initialEngines, initialVocabulary } from "./data/mockData";
-import type {
-  AppSettings,
-  Engine,
-  HudState,
-  ViewId,
-  VocabularyEntry,
-} from "./types";
+import { useDictationController } from "./hooks/useDictationController";
+import type { AppSettings, Engine, ViewId, VocabularyEntry } from "./types";
 import { EnginesView } from "./views/EnginesView";
 import { SettingsView } from "./views/SettingsView";
 import { TodayView } from "./views/TodayView";
@@ -38,7 +33,9 @@ function App() {
   const [vocabulary, setVocabulary] =
     useState<VocabularyEntry[]>(initialVocabulary);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const [hudState, setHudState] = useState<HudState>("idle");
+  const dictation = useDictationController({
+    autoComplete: !hudOnly,
+  });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(
     () => window.localStorage.getItem("spick-onboarding-complete") === "true",
@@ -89,9 +86,10 @@ function App() {
     return (
       <div className="hud-window-surface">
         <DictationHud
+          autoAdvance={false}
           floating
-          state={hudState}
-          onStateChange={setHudState}
+          state={dictation.state}
+          onStateChange={dictation.transitionTo}
           language="AUTO"
         />
       </div>
@@ -135,8 +133,8 @@ function App() {
           {activeView === "today" && (
             <TodayView
               onOpenEngines={() => navigate("engines")}
-              hudState={hudState}
-              onHudStateChange={setHudState}
+              hudState={dictation.state}
+              onHudStateChange={dictation.transitionTo}
             />
           )}
           {activeView === "engines" && (
@@ -169,11 +167,18 @@ function App() {
       </div>
       {settings.showWidget && activeView !== "today" && (
         <DictationHud
+          autoAdvance={false}
           floating
-          state={hudState}
-          onStateChange={setHudState}
+          state={dictation.state}
+          onStateChange={dictation.transitionTo}
           language="AUTO"
         />
+      )}
+      {dictation.error && (
+        <div className="native-error-toast" role="alert">
+          <strong>Dictation unavailable</strong>
+          <span>{dictation.error}</span>
+        </div>
       )}
     </div>
   );

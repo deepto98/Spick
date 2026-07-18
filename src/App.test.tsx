@@ -1,5 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 describe("Spick product shell", () => {
@@ -10,6 +16,7 @@ describe("Spick product shell", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
   });
 
   it("gates onboarding progress on both simulated permissions", () => {
@@ -57,5 +64,27 @@ describe("Spick product shell", () => {
     expect(
       screen.queryByRole("button", { name: "Set up Spick" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("runs the browser HUD through its preview lifecycle", () => {
+    vi.useFakeTimers();
+    window.history.replaceState({}, "", "/?window=hud");
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start dictation" }));
+    expect(
+      screen.getByRole("button", { name: "Finish dictation" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish dictation" }));
+    expect(screen.getByText("Polishing your words")).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1150));
+    expect(screen.getByText("Preview complete")).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1250));
+    expect(
+      screen.getByRole("button", { name: "Start dictation" }),
+    ).toBeInTheDocument();
   });
 });

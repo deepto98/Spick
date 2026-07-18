@@ -263,7 +263,11 @@ export function TodayView({
             Try the animation. This preview does not capture microphone audio.
           </p>
           <div className="try-panel__hud">
-            <DictationHud state={hudState} onStateChange={onHudStateChange} />
+            <DictationHud
+              autoAdvance={false}
+              state={hudState}
+              onStateChange={onHudStateChange}
+            />
           </div>
           <div className="try-panel__footer">
             <span>

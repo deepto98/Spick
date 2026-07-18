@@ -7,6 +7,7 @@ interface DictationHudProps {
   onStateChange?: (state: HudState) => void;
   floating?: boolean;
   language?: string;
+  autoAdvance?: boolean;
 }
 
 const sampleBars = [
@@ -18,6 +19,7 @@ export function DictationHud({
   onStateChange,
   floating = false,
   language = "EN",
+  autoAdvance = true,
 }: DictationHudProps) {
   const [internalState, setInternalState] = useState<HudState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -43,16 +45,16 @@ export function DictationHud({
   }, [state]);
 
   useEffect(() => {
-    if (state !== "processing") return;
+    if (!autoAdvance || state !== "processing") return;
     const timeout = window.setTimeout(() => transitionTo("success"), 1150);
     return () => window.clearTimeout(timeout);
-  }, [state, transitionTo]);
+  }, [autoAdvance, state, transitionTo]);
 
   useEffect(() => {
-    if (state !== "success") return;
+    if (!autoAdvance || state !== "success") return;
     const timeout = window.setTimeout(() => transitionTo("idle"), 1250);
     return () => window.clearTimeout(timeout);
-  }, [state, transitionTo]);
+  }, [autoAdvance, state, transitionTo]);
 
   const time = useMemo(() => {
     const minutes = Math.floor(elapsed / 60);
