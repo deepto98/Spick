@@ -8,8 +8,11 @@ edition = "2021"
 [features]
 default = []
 # The helper is buildable and testable, but release enablement still requires
-# signed mutual peer authentication and a measured application matrix.
+# a measured application matrix.
 macos-input-method-prototype = ["dep:objc2", "dep:objc2-app-kit"]
+# Never ship this feature. It permits same-user, ad-hoc development bundles
+# after the secure signed-peer check fails.
+macos-input-method-unsafe-dev-peers = ["macos-input-method-prototype"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,6 +24,7 @@ name = "spick_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]

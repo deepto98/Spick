@@ -8,6 +8,11 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
+source "${script_dir}/lib/input-method-signing.sh"
+
+signing_mode="${SPICK_INPUT_SIGNING_MODE:-check}"
+spick_validate_input_signing_configuration "${signing_mode}"
+
 source_dir="${project_dir}/macos-input-method"
 default_output_dir="${project_dir}/target/input-method"
 output_dir="${SPICK_INPUT_OUTPUT_DIR:-${default_output_dir}}"
@@ -16,6 +21,24 @@ bundle_dir="${output_dir}/Spick Input.app"
 contents_dir="${bundle_dir}/Contents"
 executable_dir="${contents_dir}/MacOS"
 resources_dir="${contents_dir}/Resources"
+helper_compiler_definitions=("-DSPICK_ALLOW_UNSAFE_ADHOC_PEERS=0")
+signing_identity="-"
+codesign_options=("--timestamp=none")
+
+case "${signing_mode}" in
+  check) ;;
+  unsafe-adhoc)
+    helper_compiler_definitions=("-DSPICK_ALLOW_UNSAFE_ADHOC_PEERS=1")
+    ;;
+  development)
+    signing_identity="${APPLE_SIGNING_IDENTITY}"
+    codesign_options=("--options" "runtime" "--timestamp=none")
+    ;;
+  release)
+    signing_identity="${APPLE_SIGNING_IDENTITY}"
+    codesign_options=("--options" "runtime" "--timestamp")
+    ;;
+esac
 
 mkdir -p "${project_dir}/target"
 if ! /usr/bin/shlock -p "$$" -f "${lock_file}"; then
@@ -65,8 +88,11 @@ xcrun --sdk macosx clang \
   -framework Cocoa \
   -framework Carbon \
   -framework InputMethodKit \
+  -framework Security \
+  "${helper_compiler_definitions[@]}" \
   "${source_dir}/Sources/main.m" \
   "${source_dir}/Sources/SpickInputController.m" \
+  "${source_dir}/Sources/SpickPeerIdentity.m" \
   "${source_dir}/Sources/SpickWireProtocol.m" \
   -o "${executable_dir}/SpickInput"
 
@@ -93,12 +119,17 @@ if [[ ! "${build_number}" =~ ^[1-9][0-9]*(\.[0-9]+){0,2}$ ]]; then
 fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${build_number}" "${contents_dir}/Info.plist"
 plutil -lint "${contents_dir}/Info.plist" >/dev/null
+/usr/bin/codesign --force --sign "${signing_identity}" \
+  --identifier "${spick_input_helper_identifier}" \
+  "${codesign_options[@]}" "${bundle_dir}" >/dev/null
+/usr/bin/codesign --force --sign "${signing_identity}" \
+  --identifier "${spick_input_tool_identifier}" \
+  "${codesign_options[@]}" "${output_dir}/spick-input-source-tool" >/dev/null
+spick_verify_input_artifacts "${signing_mode}" "${bundle_dir}" \
+  "${output_dir}/spick-input-source-tool"
 "${executable_dir}/SpickInput" --protocol-self-test
-codesign --force --deep --sign - "${bundle_dir}" >/dev/null
-codesign --force --sign - "${output_dir}/spick-input-source-tool" >/dev/null
+"${executable_dir}/SpickInput" --peer-auth-runtime-self-test
 lipo "${executable_dir}/SpickInput" -verify_arch arm64 x86_64
 lipo "${output_dir}/spick-input-source-tool" -verify_arch arm64 x86_64
-codesign --verify --deep --strict "${bundle_dir}"
-codesign --verify --strict "${output_dir}/spick-input-source-tool"
 
-echo "Built ${bundle_dir}"
+echo "Built ${bundle_dir} (${signing_mode})"

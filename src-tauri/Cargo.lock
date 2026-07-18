@@ -3467,6 +3467,7 @@ dependencies = [
 name = "spick-desktop"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "cpal",
  "libc",
  "objc2",

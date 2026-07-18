@@ -2,7 +2,10 @@
 #import <InputMethodKit/InputMethodKit.h>
 
 #import "SpickInputController.h"
+#import "SpickPeerIdentity.h"
 #import "SpickWireProtocol.h"
+
+#include <stdio.h>
 
 @interface SpickApplicationDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) IMKServer *inputMethodServer;
@@ -25,7 +28,21 @@
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "--protocol-self-test") == 0) {
-            return SpickRunWireProtocolSelfTests() ? EXIT_SUCCESS : EXIT_FAILURE;
+            return SpickRunWireProtocolSelfTests() && SpickRunPeerIdentitySelfTests()
+                       ? EXIT_SUCCESS
+                       : EXIT_FAILURE;
+        }
+        if (argc == 2 && strcmp(argv[1], "--peer-auth-runtime-self-test") == 0) {
+            return SpickRunPeerIdentityRuntimeSelfTest(
+                       "app.spick.desktop.input-method")
+                       ? EXIT_SUCCESS
+                       : EXIT_FAILURE;
+        }
+        if (argc == 2 && strcmp(argv[1], "--print-peer-auth-mode") == 0) {
+            puts(SpickPeerAuthenticationAllowsUnsafeDevelopment()
+                     ? "unsafe-adhoc"
+                     : "secure");
+            return EXIT_SUCCESS;
         }
 
         NSApplication *application = NSApplication.sharedApplication;

@@ -76,9 +76,25 @@ const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
 #[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
 #[cfg(feature = "macos-input-method-prototype")]
-const INPUT_METHOD_BUNDLE_IDENTIFIER: &str = "app.spick.desktop.input-method";
-#[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_TIMEOUT: Duration = Duration::from_millis(800);
+#[cfg(feature = "macos-input-method-prototype")]
+const DESKTOP_SIGNING_IDENTIFIER: &[u8] = b"app.spick.desktop\0";
+#[cfg(feature = "macos-input-method-prototype")]
+const INPUT_METHOD_SIGNING_IDENTIFIER: &[u8] = b"app.spick.desktop.input-method\0";
+#[cfg(feature = "macos-input-method-prototype")]
+const PEER_TRUST_SECURE: u32 = 0;
+#[cfg(feature = "macos-input-method-prototype")]
+const PEER_TRUST_UNSAFE_DEVELOPMENT: u32 = 1;
+
+#[cfg(feature = "macos-input-method-prototype")]
+extern "C" {
+    fn SpickVerifyPeerSocket(
+        descriptor: libc::c_int,
+        expected_self_identifier: *const libc::c_char,
+        expected_peer_identifier: *const libc::c_char,
+    ) -> u32;
+    fn SpickPeerAuthenticationAllowsUnsafeDevelopment() -> bool;
+}
 
 #[derive(Default)]
 pub(super) struct MacTextTargetController {
@@ -671,6 +687,7 @@ impl InputMethodConnection {
         let stream = connect_unix_with_deadline(&socket_path, deadline)
             .map_err(map_input_method_connect_error)?;
         authenticate_input_method_peer(&stream)?;
+        remaining_input_method_time(deadline)?;
         Ok(Self { stream })
     }
 
@@ -957,34 +974,21 @@ fn wait_for_socket_io(
 #[cfg(feature = "macos-input-method-prototype")]
 fn authenticate_input_method_peer(stream: &UnixStream) -> Result<(), TextTargetError> {
     let descriptor = stream.as_raw_fd();
-    let mut peer_user = 0;
-    let mut peer_group = 0;
-    if unsafe { libc::getpeereid(descriptor, &mut peer_user, &mut peer_group) } != 0
-        || peer_user != unsafe { libc::geteuid() }
-    {
-        return Err(untrusted_input_method_error());
-    }
-    let _ = peer_group;
-    let mut peer_pid: pid_t = 0;
-    let mut peer_pid_length = std::mem::size_of::<pid_t>() as libc::socklen_t;
-    const SOL_LOCAL: libc::c_int = 0;
-    const LOCAL_PEERPID: libc::c_int = 0x002;
-    if unsafe {
-        libc::getsockopt(
+    let trust = unsafe {
+        SpickVerifyPeerSocket(
             descriptor,
-            SOL_LOCAL,
-            LOCAL_PEERPID,
-            std::ptr::addr_of_mut!(peer_pid).cast(),
-            &mut peer_pid_length,
+            DESKTOP_SIGNING_IDENTIFIER.as_ptr().cast(),
+            INPUT_METHOD_SIGNING_IDENTIFIER.as_ptr().cast(),
         )
-    } != 0
-        || peer_pid <= 0
-        || application_bundle_identifier(peer_pid).as_deref()
-            != Some(INPUT_METHOD_BUNDLE_IDENTIFIER)
+    };
+    let unsafe_development_allowed = unsafe { SpickPeerAuthenticationAllowsUnsafeDevelopment() };
+    if trust == PEER_TRUST_SECURE
+        || (trust == PEER_TRUST_UNSAFE_DEVELOPMENT && unsafe_development_allowed)
     {
-        return Err(untrusted_input_method_error());
+        Ok(())
+    } else {
+        Err(untrusted_input_method_error())
     }
-    Ok(())
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
@@ -1740,5 +1744,24 @@ mod tests {
                 expected_kind
             );
         }
+    }
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    #[test]
+    fn peer_authentication_build_mode_is_explicit() {
+        let allows_unsafe_development = unsafe { SpickPeerAuthenticationAllowsUnsafeDevelopment() };
+        assert_eq!(
+            allows_unsafe_development,
+            cfg!(feature = "macos-input-method-unsafe-dev-peers")
+        );
+
+        let invalid_socket_result = unsafe {
+            SpickVerifyPeerSocket(
+                -1,
+                DESKTOP_SIGNING_IDENTIFIER.as_ptr().cast(),
+                INPUT_METHOD_SIGNING_IDENTIFIER.as_ptr().cast(),
+            )
+        };
+        assert_eq!(invalid_socket_result, 10);
     }
 }

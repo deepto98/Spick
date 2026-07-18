@@ -1,5 +1,6 @@
 #import "SpickInputController.h"
 
+#import "SpickPeerIdentity.h"
 #import "SpickWireProtocol.h"
 
 #include <Carbon/Carbon.h>
@@ -15,7 +16,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-static NSString *const SpickDesktopBundleIdentifier = @"app.spick.desktop";
+static const char SpickDesktopSigningIdentifier[] = "app.spick.desktop";
+static const char SpickInputMethodSigningIdentifier[] =
+    "app.spick.desktop.input-method";
 static const uint64_t SpickLeaseLifetimeNanoseconds = 30ULL * 60 * NSEC_PER_SEC;
 static const uint64_t SpickConnectionLifetimeNanoseconds = NSEC_PER_SEC;
 static const NSUInteger SpickMaximumLiveLeases = 64;
@@ -196,23 +199,12 @@ static BOOL SpickWriteExactly(int descriptor,
 }
 
 static BOOL SpickPeerIsDesktopApplication(int descriptor) {
-    uid_t peerUser = 0;
-    gid_t peerGroup = 0;
-    if (getpeereid(descriptor, &peerUser, &peerGroup) != 0 || peerUser != geteuid()) {
-        return NO;
-    }
-    (void)peerGroup;
-
-    pid_t peerProcess = 0;
-    socklen_t peerProcessLength = sizeof(peerProcess);
-    if (getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &peerProcess,
-                   &peerProcessLength) != 0 ||
-        peerProcess <= 0) {
-        return NO;
-    }
-    NSRunningApplication *application =
-        [NSRunningApplication runningApplicationWithProcessIdentifier:peerProcess];
-    return [application.bundleIdentifier isEqualToString:SpickDesktopBundleIdentifier];
+    const SpickPeerTrustResult result = SpickVerifyPeerSocket(
+        descriptor, SpickInputMethodSigningIdentifier,
+        SpickDesktopSigningIdentifier);
+    return result == SpickPeerTrustSecure ||
+           (result == SpickPeerTrustUnsafeDevelopment &&
+            SpickPeerAuthenticationAllowsUnsafeDevelopment());
 }
 
 static SpickInputResult SpickResult(SpickInsertStatus status, uint64_t leaseID) {
@@ -331,7 +323,17 @@ static void SpickCancelTimedOutRequest(SpickInputRequest *request) {
 }
 
 - (void)handleClient:(int)client {
+    const uint64_t acceptedAt = SpickMonotonicNanoseconds();
+    if (acceptedAt == 0 ||
+        acceptedAt > UINT64_MAX - SpickConnectionLifetimeNanoseconds) {
+        return;
+    }
+    const uint64_t frameDeadline =
+        acceptedAt + SpickConnectionLifetimeNanoseconds;
     if (!SpickPeerIsDesktopApplication(client)) {
+        return;
+    }
+    if (SpickDeadlinePassed(frameDeadline)) {
         return;
     }
     const int enabled = 1;
@@ -343,14 +345,6 @@ static void SpickCancelTimedOutRequest(SpickInputRequest *request) {
         fcntl(client, F_SETFL, statusFlags | O_NONBLOCK) != 0) {
         return;
     }
-
-    const uint64_t acceptedAt = SpickMonotonicNanoseconds();
-    if (acceptedAt == 0 ||
-        acceptedAt > UINT64_MAX - SpickConnectionLifetimeNanoseconds) {
-        return;
-    }
-    const uint64_t frameDeadline =
-        acceptedAt + SpickConnectionLifetimeNanoseconds;
 
     NSMutableData *frame = [NSMutableData dataWithLength:SpickRequestHeaderLength];
     if (!SpickReadExactly(client, frame.mutableBytes, SpickRequestHeaderLength,

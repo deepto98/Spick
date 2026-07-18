@@ -1,3 +1,6 @@
+#[cfg(all(feature = "macos-input-method-unsafe-dev-peers", not(debug_assertions)))]
+compile_error!("macos-input-method-unsafe-dev-peers is forbidden in release builds");
+
 mod audio;
 mod commands;
 pub mod domain;
