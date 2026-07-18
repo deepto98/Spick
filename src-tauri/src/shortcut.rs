@@ -25,11 +25,14 @@ pub fn replace<R: Runtime>(app: &AppHandle<R>, previous: &str, next: &str) -> Re
     }
 
     register(app, next)?;
-    if let Err(error) = app.global_shortcut().unregister(previous) {
-        let _ = app.global_shortcut().unregister(next);
-        return Err(format!(
-            "could not unregister the previous push-to-talk shortcut: {error}"
-        ));
+    let shortcuts = app.global_shortcut();
+    if shortcuts.is_registered(previous) {
+        if let Err(error) = shortcuts.unregister(previous) {
+            let _ = shortcuts.unregister(next);
+            return Err(format!(
+                "could not unregister the previous push-to-talk shortcut: {error}"
+            ));
+        }
     }
 
     Ok(())

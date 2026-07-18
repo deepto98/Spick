@@ -2,9 +2,9 @@
 
 Spick is a macOS-first desktop dictation utility for speaking into any text field. It is designed as a quiet utility: hold a shortcut, receive immediate visual feedback, and return clean text without leaving the application you are using.
 
-The project is currently at the foundation milestone. It combines a Tauri 2 shell, a Rust application core, and a React/TypeScript interface. The current product surfaces and statistics use development data, while native commands model the dictation session lifecycle and floating HUD states. This makes the interaction and architecture testable before real audio and insertion are connected.
+The project has completed its foundation milestone and is entering the macOS offline vertical slice. It combines a Tauri 2 shell, a Rust application core, and a React/TypeScript interface. The native core now owns the global shortcut lifecycle and ephemeral microphone capture, while the HUD displays live audio level feedback. Dashboard statistics and model-management surfaces still use clearly labeled development data.
 
-> Spick does not yet record or transcribe audio, call cloud providers, run `whisper.cpp`, or insert text into other applications. Do not treat the current build as a working dictation tool.
+> Spick records microphone audio in memory during an active session, but it does not yet transcribe speech, call cloud providers, run `whisper.cpp`, or insert text into other applications. Do not treat the current build as a working dictation tool yet.
 
 ## Prerequisites
 
@@ -26,12 +26,10 @@ For frontend-only work, use `npm run dev`. The browser build cannot exercise Tau
 Run the project checks before committing:
 
 ```sh
-npm run check
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run check:all
 ```
 
-`npm run check` verifies formatting, linting, frontend tests, TypeScript, and the production web build.
+`npm run check:all` verifies formatting, linting, frontend tests, TypeScript, the production web build, Rust tests, strict Clippy, and the native compile check. Use `npm run check` when you only need the frontend gate.
 
 ## Architecture
 
@@ -51,11 +49,12 @@ These are architectural requirements. Features that enforce them will be verifie
 
 ## Current limitations
 
-- Dictation states and usage data are development scaffolding, not results from live speech.
-- Microphone capture, voice activity detection, transcription, filler-word cleanup, and translation are not implemented.
+- Usage data and transcript content are development scaffolding; native session states now reflect live capture.
+- Microphone capture and a live level meter are implemented; voice activity detection, transcription, filler-word cleanup, and translation are not.
 - Local model download and execution, cloud provider adapters, and API-key storage are not implemented.
 - Cross-application focus tracking and text insertion are not implemented.
 - macOS is the first validation target; Windows and Linux native integrations come later.
+- The transparent HUD currently uses Tauri's macOS private API and therefore targets direct signed/notarized distribution; an App Store build would need an App-Store-safe window treatment.
 - Packaging, signing, notarization, updates, and production accessibility review remain future work.
 
-The next goal is the [macOS offline vertical slice](docs/milestones.md#milestone-1-macos-offline-vertical-slice): shortcut-to-audio capture, a local multilingual Whisper model, visible session progress, and safe text insertion into a measured set of applications.
+The next vertical slice connects the captured 16 kHz mono buffer to a local multilingual Whisper model, then adds safe text insertion into a measured set of macOS applications.

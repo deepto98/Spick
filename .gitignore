@@ -11,6 +11,15 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+
+# Local speech assets are downloaded at runtime and must not enter Git.
+/models/
+/recordings/
+*.ggml
+*.gguf
 
 # Editor directories and files
 .vscode/*

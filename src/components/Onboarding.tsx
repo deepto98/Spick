@@ -273,7 +273,7 @@ export function Onboarding({
               icon={<Keyboard size={21} />}
               eyebrow="YOUR NEW SHORTCUT"
               title="Ready when you are."
-              description="Hold the shortcut anywhere you can type. Speak, release, and your words appear."
+              description="Preview the hold-to-speak interaction now. Audio transcription and text insertion are the next native milestone."
             />
             <div
               className={`shortcut-practice ${shortcutPressed ? "shortcut-practice--pressed" : ""}`}

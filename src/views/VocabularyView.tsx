@@ -63,7 +63,7 @@ export function VocabularyView({
       <PageHeader
         eyebrow="Personalization"
         title="Vocabulary"
-        description="Teach Spick the names and terms you use. Corrections stay consistent across every engine."
+        description="Preview a shared vocabulary for names and technical terms. Engine adapters are not connected yet."
         actions={
           <button
             type="button"
@@ -80,19 +80,19 @@ export function VocabularyView({
           <BookOpenText size={22} />
         </div>
         <div>
-          <strong>{vocabulary.length} saved phrases</strong>
-          <span>Applied automatically to every dictation</span>
+          <strong>{vocabulary.length} sample phrases</strong>
+          <span>Editable in this preview; not persisted or applied yet</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>94%</strong>
-          <span>recognized first try</span>
+          <strong>Searchable</strong>
+          <span>sample library</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>+18%</strong>
-          <span>technical accuracy</span>
+          <strong>Local</strong>
+          <span>preview state</span>
         </div>
         <span className="sync-badge">
-          <Check size={13} /> Up to date
+          <Check size={13} /> Preview data
         </span>
       </section>
 
@@ -132,8 +132,8 @@ export function VocabularyView({
             </button>
           ))}
         </div>
-        <button type="button" className="button button--secondary">
-          <Upload size={15} /> Import
+        <button type="button" className="button button--secondary" disabled>
+          <Upload size={15} /> Import planned
         </button>
       </div>
 

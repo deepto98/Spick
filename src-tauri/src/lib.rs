@@ -14,9 +14,20 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
+const MAIN_WINDOW_LABEL: &str = "main";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Keep settings writes and global shortcut ownership process-local. The
+    // single-instance plugin must be registered before every other plugin.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        reveal_main_window(app);
+    }));
+
+    let app = builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -24,7 +35,27 @@ pub fn run() {
                 })
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if window.label() == MAIN_WINDOW_LABEL {
+                #[cfg(target_os = "macos")]
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Spick remains available to the global shortcut after the
+                    // dashboard closes. Dock reopen or a second launch reveals
+                    // this same window, while the app menu still provides Quit.
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!("could not hide the Spick dashboard: {error}");
+                    }
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                    // Until Spick has a tray menu with an explicit Quit action,
+                    // closing its only user-facing window must end the process.
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .setup(|app| {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let state = AppState::load(settings_path).map_err(setup_error)?;
@@ -39,8 +70,14 @@ pub fn run() {
             if let Err(error) = hud::create(app.handle(), settings.hud.position) {
                 eprintln!("{error}");
             }
-            if let Err(error) = shortcut::register(app.handle(), &settings.push_to_talk_shortcut) {
-                eprintln!("{error}");
+            if platform::current_platform_capabilities().supports_global_shortcut {
+                if let Err(error) =
+                    shortcut::register(app.handle(), &settings.push_to_talk_shortcut)
+                {
+                    eprintln!("{error}");
+                }
+            } else {
+                eprintln!("global shortcuts are unavailable in this desktop session");
             }
 
             Ok(())
@@ -55,8 +92,30 @@ pub fn run() {
             commands::cancel_dictation_session,
             commands::get_platform_capabilities,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Spick");
+        .build(tauri::generate_context!())
+        .expect("error while building Spick");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = event
+        {
+            reveal_main_window(app);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
+}
+
+fn reveal_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 fn setup_error(message: impl Into<String>) -> Box<dyn std::error::Error> {

@@ -2,18 +2,18 @@
 
 The plan delivers one useful macOS dictation path first, then expands language, provider, and dashboard capabilities before porting the native seams to Windows and Linux. Each milestone ends with a runnable build, focused verification, and a short record of completed work and known limitations.
 
-## Milestone 0: Project foundation
+## Milestone 0: Project foundation — complete
 
 Establish the Tauri, React/TypeScript, and Rust workspace with formatting, linting, tests, application configuration, and a shared visual foundation. Define the dictation session states and the boundaries between the interface, core, providers, storage, and platform integrations.
 
 Exit criteria:
 
 - The desktop shell opens a dashboard and a non-activating widget in development.
-- React receives a simulated dictation state sequence from Rust.
+- React receives revisioned dictation lifecycle events and live microphone-level events from Rust.
 - The project has repeatable local checks and documented development commands.
 - No secrets or generated model files are tracked by Git.
 
-## Milestone 1: macOS offline vertical slice
+## Milestone 1: macOS offline vertical slice — in progress
 
 Deliver the smallest complete path: hold a configurable global shortcut, capture microphone audio, show listening feedback, transcribe through one supported local `whisper.cpp` model, and insert final text into the control that was focused when dictation began.
 

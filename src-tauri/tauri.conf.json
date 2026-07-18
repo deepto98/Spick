@@ -25,7 +25,27 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost",
+        "font-src": "'self'",
+        "img-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self' http://localhost:1420",
+        "connect-src": "ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421",
+        "font-src": "'self' http://localhost:1420",
+        "img-src": "'self' data: http://localhost:1420",
+        "style-src": "'self' 'unsafe-inline' http://localhost:1420",
+        "script-src": "'self' http://localhost:1420",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "frame-ancestors": "'none'"
+      }
     }
   },
   "bundle": {

@@ -38,6 +38,12 @@ pub fn update_settings(
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
 
     if shortcut_changed {
+        if !platform::current_platform_capabilities().supports_global_shortcut {
+            return Err(
+                "global shortcuts are unavailable in the current desktop session; settings were not changed"
+                    .into(),
+            );
+        }
         shortcut::replace(
             &app,
             &previous.push_to_talk_shortcut,
@@ -153,7 +159,9 @@ pub(crate) fn start_session<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
-    let language_policy = state.settings_snapshot()?.language_policy;
+    let settings = state.settings_snapshot()?;
+    let language_policy = settings.language_policy;
+    let hud_position = settings.hud.position;
     let level_app = app.clone();
     let level_sink: LevelSink = Arc::new(move |payload| {
         if let Err(error) = level_app.emit(AUDIO_LEVEL_EVENT, payload) {
@@ -198,7 +206,7 @@ pub(crate) fn start_session<R: Runtime>(
         return Err(error);
     }
 
-    if let Err(error) = hud::show(app) {
+    if let Err(error) = hud::show(app, hud_position) {
         eprintln!("dictation started but the HUD could not be shown: {error}");
     }
     if let Err(error) = emit_state(app, &event) {
