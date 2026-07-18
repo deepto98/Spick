@@ -19,23 +19,15 @@ describe("Spick product shell", () => {
     vi.useRealTimers();
   });
 
-  it("gates onboarding progress on both simulated permissions", () => {
+  it("explains real permissions without pretending to grant them", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
 
     const continueButton = screen.getByRole("button", { name: "Continue" });
-    expect(continueButton).toBeDisabled();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Simulate mic approval" }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Simulate Accessibility approval",
-      }),
-    );
-
+    expect(screen.getByText("Asked on first use")).toBeInTheDocument();
+    expect(screen.getByText("Not needed in this preview")).toBeInTheDocument();
+    expect(screen.queryByText(/simulate/i)).not.toBeInTheDocument();
     expect(continueButton).toBeEnabled();
   });
 
@@ -83,7 +75,7 @@ describe("Spick product shell", () => {
     ).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1150));
-    expect(screen.getByText("Transcript ready")).toBeInTheDocument();
+    expect(screen.getByText("Got it")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1250));
     expect(

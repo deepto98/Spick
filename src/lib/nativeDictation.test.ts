@@ -7,6 +7,7 @@ describe("native dictation state mapping", () => {
     ["idle", "idle"],
     ["listening", "listening"],
     ["processing", "processing"],
+    ["inserting", "inserting"],
     ["completed", "success"],
     ["cancelled", "idle"],
     ["failed", "error"],

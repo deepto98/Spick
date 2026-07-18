@@ -28,6 +28,9 @@ serde_json = "1"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "AXError", "AXUIElement", "AXValue", "HIServices"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString"] }
 whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

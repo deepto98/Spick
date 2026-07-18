@@ -69,7 +69,7 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
           <ShieldCheck size={16} />
           <div>
             <strong>Local transcription</strong>
-            <span>Automatic typing is next</span>
+            <span>Blocks protected fields</span>
           </div>
           <span className="status-dot" aria-label="Early build" />
         </div>

@@ -54,17 +54,19 @@ These integrations share application-level contracts but are tested independentl
 
 One push-to-talk session follows this sequence:
 
-1. On shortcut press, record the focused application/control identity and start microphone capture.
+1. On shortcut press, capture the focused application/control identity and reject unsupported or secure targets before starting microphone capture.
 2. Show the listening widget without changing focus.
 3. Apply voice activity detection and stream audio to the selected transcription engine when that engine supports streaming.
 4. Publish partial transcripts for feedback without inserting unstable text into the target control.
 5. On shortcut release, finalize transcription and apply the selected language policy.
 6. Run deterministic normalization, followed by optional model-based cleanup according to the selected cleanup mode.
-7. Confirm that the intended target is still valid and is not a secure field.
-8. Insert the final text at the caret or replace the original selection.
+7. Atomically claim the session for delivery, then confirm that the same target, focus, and selection are still valid and non-secure and that no observed change invalidated the target.
+8. Insert the final text at the original caret or replace the original selection. Never retry automatically after a write may have occurred.
 9. Record non-sensitive session measurements and expose a recoverable error or copy action if insertion fails.
 
-The user-visible session state is limited to idle, listening, transcribing, cleaning, inserting, success, and error. Cancellation can occur before insertion without modifying the target application.
+The user-visible session state is limited to idle, listening, transcribing, cleaning, inserting, success, and error. Cancellation can win before the insertion claim. Once a future insertion begins, the result must be reported as inserted, failed, or indeterminate instead of claiming that nothing was typed.
+
+The current checkpoint stops before step 8. It revalidates the captured target, retains the transcript in memory, and asks the user to copy it explicitly. Automatic mutation remains disabled until Spick has a native insertion primitive whose safety contract matches the claims above.
 
 ## Transcription and cleanup engines
 
@@ -117,11 +119,13 @@ Mixed-language routing uses stable phrase boundaries and confidence data when av
 
 Text insertion is a platform capability with an ordered set of strategies and a shared safety contract.
 
-- **macOS:** use Accessibility APIs when the focused control permits direct editing. Use a clipboard-and-paste fallback only after preserving clipboard contents and validating focus before insertion and restoration.
+- **macOS (current):** a private, one-use target token anchors the frontmost application, focused element, editable element, and original selection. Accessibility notifications permanently invalidate the token when focus, selection, value, application activity, or element lifetime changes. Capture accepts standard `AXTextField` and `AXTextArea` controls, blocks `AXSecureTextField` and `AXContainsProtectedContent`, and never retains the field’s contents. The checkpoint does not write to the target.
+- **macOS (research):** prototype a bundled InputMethodKit client because `NSTextInputClient` exposes native insertion and replacement semantics. Whole-field `AXValue` replacement is rejected: Accessibility has no compare-and-set, so a concurrent keystroke could be overwritten.
+- **macOS (experimental fallback):** a future clipboard-and-paste transaction must be serialized, local to the current host, and explicit about its weaker contract. Paste dispatch and clipboard restoration are not atomic; unconfirmed delivery is indeterminate and is never retried.
 - **Windows:** use UI Automation for compatible controls, with a clipboard-and-paste fallback where required.
 - **Linux:** use AT-SPI for accessible controls. X11 and Wayland behavior must be validated separately because desktop environments differ in global shortcut, window positioning, and synthetic input support.
 
-The insertion layer refuses known secure/password controls, preserves an existing selection until commit, reports unsupported targets, and avoids inserting when focus has moved unexpectedly. Clipboard fallback must restore the previous clipboard without overwriting a newer user change.
+The target layer refuses known secure/password/protected controls before audio capture, preserves the original selection until revalidation, reports unsupported targets, and detects focus or content movement. It does not retain field contents. Any later clipboard path may restore prior contents only while Spick can still prove ownership; it must never overwrite a newer user clipboard change.
 
 ## Privacy and security
 
@@ -152,6 +156,6 @@ Statistics are derived locally. Speaking speed uses words and voiced duration ra
 
 ## Reliability boundaries
 
-The core treats transcription success and insertion success as distinct outcomes. A valid transcript remains available to copy when the target application rejects insertion. Provider, model, microphone, permission, focus, and insertion errors have separate user-facing states so recovery does not require repeating a successful earlier stage unnecessarily.
+The core treats transcription success and insertion success as distinct outcomes. A valid transcript remains available to copy when a non-secure target rejects insertion. Secure targets never produce a recoverable transcript. Provider, model, microphone, permission, focus, and insertion errors have separate user-facing states so recovery does not require repeating a successful earlier stage unnecessarily. An indeterminate result tells the user to inspect the field before copying and is never retried automatically.
 
 Compatibility is verified against a maintained application matrix. Passing on one accessible text control does not imply support for all controls in the same application.

@@ -24,8 +24,9 @@ Current checkpoint:
 - The shortcut, non-activating HUD, bounded in-memory microphone capture, and cancellation path are working.
 - Curated models can be downloaded or cancelled, size-checked, SHA-256 verified, selected, removed, and loaded through a cached Metal-enabled `whisper.cpp` runtime.
 - Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
-- Final transcripts are kept in memory and shown on Today for copy recovery.
-- Focused-field capture, Accessibility permission handling, cleanup, and automatic text insertion remain to complete this milestone.
+- Focused-field capture, live Accessibility permission handling, exact-target revalidation, secure/protected-field preflight, and structured copy recovery are working.
+- Final transcripts are kept in memory and shown on Today for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
+- Cleanup and a safe automatic text-input primitive remain to complete this milestone. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
 
 Exit criteria:
 
@@ -37,13 +38,13 @@ Exit criteria:
 
 ## Milestone 2: macOS insertion and session hardening
 
-Make the vertical slice dependable across common control types. Add focus revalidation, selection replacement, clipboard preservation and restoration, insertion fallback, cancellation, retry, and one-step recovery from an insertion error. Instrument the stages needed to diagnose perceived latency without logging dictated content.
+Make the vertical slice dependable across common control types. Prove a native InputMethodKit insertion path, then evaluate a separately gated best-effort paste fallback. Keep exact focus revalidation, cancellation/write linearization, at-most-once delivery, and explicit recovery. Instrument the stages needed to diagnose perceived latency without logging dictated content.
 
 Expand the compatibility matrix to include a native editor, browser text fields and editors, VS Code, a terminal, and one Electron communication app.
 
 Exit criteria:
 
-- Direct Accessibility insertion and fallback behavior are independently tested.
+- The selected native insertion primitive and any best-effort fallback are independently tested and honestly labelled.
 - Focus changes, clipboard races, permission denial, microphone loss, and empty speech have defined outcomes.
 - Stage timings are visible in diagnostics without exposing transcript or audio content.
 - Compatibility results identify supported controls and known limitations rather than claiming application-wide support.

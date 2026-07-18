@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { initialEngines, initialVocabulary } from "./data/mockData";
 import { useAudioLevel } from "./hooks/useAudioLevel";
+import { useAccessibilityPermission } from "./hooks/useAccessibilityPermission";
 import { useDictationController } from "./hooks/useDictationController";
 import {
   activateLocalModel,
@@ -72,6 +73,9 @@ function App() {
     useState<VocabularyEntry[]>(initialVocabulary);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const dictation = useDictationController(!hudOnly);
+  const accessibility = useAccessibilityPermission(
+    dictation.native && !hudOnly,
+  );
   const audioFrame = useAudioLevel(dictation.state === "listening");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(
@@ -350,6 +354,7 @@ function App() {
           audioLevel={audioFrame?.level}
           disabled={dictation.pending}
           errorMessage={dictation.error ?? undefined}
+          delivery={dictation.delivery}
           floating
           state={dictation.state}
           onStateChange={dictation.transitionTo}
@@ -362,7 +367,12 @@ function App() {
   if (!onboardingComplete) {
     return (
       <Onboarding
+        accessibilityError={accessibility.error ?? undefined}
+        accessibilityPending={accessibility.pending}
+        accessibilityStatus={accessibility.status}
         settings={settings}
+        onRefreshAccessibility={() => void accessibility.refresh()}
+        onRequestAccessibility={() => void accessibility.request()}
         onSettingsChange={changeSettings}
         onComplete={completeOnboarding}
       />
@@ -400,6 +410,7 @@ function App() {
               audioLevel={audioFrame?.level}
               dictationPending={dictation.pending}
               dictationError={dictation.error ?? undefined}
+              delivery={dictation.delivery}
               lastTranscript={dictation.lastTranscript}
               language={hudLanguage}
               native={dictation.native}
@@ -434,9 +445,14 @@ function App() {
           {activeView === "settings" && (
             <SettingsView
               settings={settings}
+              accessibilityError={accessibility.error ?? undefined}
+              accessibilityPending={accessibility.pending}
+              accessibilityStatus={accessibility.status}
               languageSaving={languageSaving}
               nativeError={settingsError ?? undefined}
               onChange={changeSettings}
+              onRefreshAccessibility={() => void accessibility.refresh()}
+              onRequestAccessibility={() => void accessibility.request()}
               onRestartOnboarding={restartOnboarding}
             />
           )}
@@ -448,6 +464,7 @@ function App() {
           audioLevel={audioFrame?.level}
           disabled={dictation.pending}
           errorMessage={dictation.error ?? undefined}
+          delivery={dictation.delivery}
           floating
           state={dictation.state}
           onStateChange={dictation.transitionTo}

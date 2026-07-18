@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   ArrowUpRight,
+  CheckCircle2,
   ChevronRight,
   Clock3,
   Copy,
@@ -12,7 +13,10 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { languages, recentDictations, weeklyWords } from "../data/mockData";
-import type { NativeDictationTranscript } from "../lib/nativeDictation";
+import type {
+  NativeDeliveryOutcome,
+  NativeDictationTranscript,
+} from "../lib/nativeDictation";
 import type { HudState } from "../types";
 import { DictationHud } from "../components/DictationHud";
 import { PageHeader } from "../components/Ui";
@@ -23,6 +27,7 @@ interface TodayViewProps {
   audioLevel?: number;
   dictationPending?: boolean;
   dictationError?: string;
+  delivery: NativeDeliveryOutcome | null;
   lastTranscript: NativeDictationTranscript | null;
   language: string;
   native: boolean;
@@ -35,13 +40,16 @@ export function TodayView({
   audioLevel,
   dictationPending,
   dictationError,
+  delivery,
   lastTranscript,
   language,
   native,
   onHudStateChange,
 }: TodayViewProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [checkedFieldId, setCheckedFieldId] = useState<string | null>(null);
   const maxWords = Math.max(...weeklyWords.map((item) => item.words));
+  const latestDelivery = lastTranscript?.delivery ?? delivery;
 
   const copyText = async (id: string, value: string) => {
     try {
@@ -58,7 +66,7 @@ export function TodayView({
       <PageHeader
         eyebrow="EARLY BUILD"
         title="Today"
-        description="The stats are sample data. Your latest local transcript stays in memory until the next recording."
+        description="The stats are sample data. Your latest dictation stays here until the next recording."
         actions={
           <button
             type="button"
@@ -224,7 +232,7 @@ export function TodayView({
         <section className="panel recent-panel">
           <header className="panel__header">
             <div>
-              <h2>{lastTranscript ? "Latest transcript" : "A few examples"}</h2>
+              <h2>{lastTranscript ? "Last dictation" : "A few examples"}</h2>
               <p>
                 {lastTranscript
                   ? "Not saved to disk"
@@ -241,10 +249,13 @@ export function TodayView({
                 <span className="app-tile app-tile--spick">S</span>
                 <div className="dictation-row__body">
                   <div className="dictation-row__meta">
-                    <strong>Spick</strong>
+                    <strong>
+                      {lastTranscript.delivery.targetApp ?? "Spick"}
+                    </strong>
                     <span>Just now</span>
                   </div>
                   <p>{lastTranscript.transcript.text}</p>
+                  <DeliveryNote delivery={lastTranscript.delivery} />
                   <div className="dictation-row__details">
                     <span>
                       {lastTranscript.transcript.detectedLanguage?.toUpperCase() ??
@@ -261,19 +272,45 @@ export function TodayView({
                 </div>
                 <button
                   type="button"
-                  className="icon-button icon-button--subtle"
-                  onClick={() =>
+                  className={`button button--secondary dictation-copy-button ${
+                    lastTranscript.delivery.status === "inserted"
+                      ? ""
+                      : "dictation-copy-button--recovery"
+                  }`}
+                  onClick={() => {
+                    if (
+                      lastTranscript.delivery.status === "indeterminate" &&
+                      checkedFieldId !== lastTranscript.sessionId
+                    ) {
+                      setCheckedFieldId(lastTranscript.sessionId);
+                      return;
+                    }
                     void copyText(
                       lastTranscript.sessionId,
                       lastTranscript.transcript.text,
-                    )
+                    );
+                  }}
+                  aria-label={
+                    lastTranscript.delivery.status === "indeterminate" &&
+                    checkedFieldId !== lastTranscript.sessionId
+                      ? "Confirm field checked before copy"
+                      : "Copy latest transcript"
                   }
-                  aria-label="Copy latest transcript"
+                  disabled={!lastTranscript.delivery.transcriptAvailable}
                 >
                   {copiedId === lastTranscript.sessionId ? (
-                    <span className="copied-label">Copied</span>
+                    <>
+                      <CheckCircle2 size={14} /> Copied
+                    </>
+                  ) : lastTranscript.delivery.status === "indeterminate" &&
+                    checkedFieldId !== lastTranscript.sessionId ? (
+                    <>
+                      <CheckCircle2 size={14} /> I checked the field
+                    </>
                   ) : (
-                    <Copy size={15} />
+                    <>
+                      <Copy size={14} /> Copy text
+                    </>
                   )}
                 </button>
               </article>
@@ -327,7 +364,7 @@ export function TodayView({
           <h2>Try the shortcut</h2>
           <p>
             {native
-              ? "Hold the shortcut and talk. Spick records and transcribes locally; automatic typing is the next piece."
+              ? "Hold the shortcut and talk. Your transcript will appear above, ready for you to copy."
               : "This page only shows the animation. Use the desktop build to record audio."}
           </p>
           <div className="try-panel__hud">
@@ -336,6 +373,7 @@ export function TodayView({
               audioLevel={audioLevel}
               disabled={dictationPending}
               errorMessage={dictationError}
+              delivery={latestDelivery}
               language={language}
               state={hudState}
               onStateChange={onHudStateChange}
@@ -347,8 +385,12 @@ export function TodayView({
             </span>
             <strong>
               {native
-                ? lastTranscript
-                  ? "Transcript ready"
+                ? latestDelivery
+                  ? latestDelivery.status === "inserted"
+                    ? "Typed where you started"
+                    : latestDelivery.transcriptAvailable
+                      ? "Ready to copy"
+                      : "Field left alone"
                   : "Local recorder ready"
                 : "Animation only"}
             </strong>
@@ -357,4 +399,77 @@ export function TodayView({
       </div>
     </div>
   );
+}
+
+function DeliveryNote({ delivery }: { delivery: NativeDeliveryOutcome }) {
+  const presentation = describeDelivery(delivery);
+  return (
+    <div
+      className={`delivery-note delivery-note--${presentation.tone}`}
+      role="status"
+    >
+      {delivery.status === "inserted" ? (
+        <CheckCircle2 size={14} />
+      ) : (
+        <Copy size={14} />
+      )}
+      <span>
+        <strong>{presentation.title}</strong>
+        <small>{presentation.detail}</small>
+      </span>
+    </div>
+  );
+}
+
+function describeDelivery(delivery: NativeDeliveryOutcome) {
+  const app = delivery.targetApp;
+  switch (delivery.status) {
+    case "inserted":
+      return {
+        tone: "inserted",
+        title: app ? `Typed into ${app}` : "Typed where you started",
+        detail:
+          delivery.caretRepositioned === false
+            ? "The text arrived, but the final caret position wasn’t confirmed."
+            : "The field was still yours, so Spick put the words back.",
+      };
+    case "focusChanged":
+      return {
+        tone: "recovery",
+        title: "Not typed—the cursor moved",
+        detail:
+          "Spick left the new field alone. Copy the text when you’re ready.",
+      };
+    case "secureField":
+      return {
+        tone: "recovery",
+        title: "Not typed into a secure field",
+        detail: "Password and private fields are always left alone.",
+      };
+    case "accessibilityMissing":
+      return {
+        tone: "recovery",
+        title: "Accessibility access is off",
+        detail: "Allow it in Settings, or copy this text yourself.",
+      };
+    case "unsupported":
+      return {
+        tone: "recovery",
+        title: "This field needs a paste",
+        detail: "Spick kept the transcript here instead of guessing.",
+      };
+    case "failed":
+      return {
+        tone: "recovery",
+        title: "The field wouldn’t take the text",
+        detail: "Nothing else was changed. You can copy the transcript below.",
+      };
+    case "indeterminate":
+      return {
+        tone: "recovery",
+        title: "Spick couldn’t confirm the field",
+        detail:
+          "Check the field first; copy only if the words aren’t already there.",
+      };
+  }
 }

@@ -8,8 +8,9 @@ use crate::{
         AUDIO_LEVEL_EVENT,
     },
     domain::{
-        AppSettings, DictationSession, DictationStateEvent, EngineConfig, EngineLocation,
-        EngineProvider, LanguagePolicy, SessionState, SessionTrigger,
+        AppSettings, DictationDelivery, DictationDeliveryStatus, DictationSession,
+        DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, LanguagePolicy,
+        SessionState, SessionTrigger,
     },
     engines::{
         resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput,
@@ -17,7 +18,8 @@ use crate::{
     },
     hud,
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
-    platform, shortcut,
+    platform::{self, TextTargetError, TextTargetErrorKind},
+    shortcut,
     state::AppState,
 };
 
@@ -26,6 +28,23 @@ pub const DICTATION_TRANSCRIPT_EVENT: &str = "dictation://transcript";
 const MAIN_WINDOW_LABEL: &str = "main";
 const SUCCESS_HUD_DWELL: Duration = Duration::from_millis(650);
 const FAILURE_HUD_DWELL: Duration = Duration::from_secs(2);
+
+struct PendingDictationTranscript {
+    session_id: String,
+    engine_id: String,
+    transcript: crate::engines::TranscriptResult,
+}
+
+impl PendingDictationTranscript {
+    fn finish(self, delivery: DictationDelivery) -> DictationTranscript {
+        DictationTranscript {
+            session_id: self.session_id,
+            engine_id: self.engine_id,
+            transcript: self.transcript,
+            delivery,
+        }
+    }
+}
 
 #[tauri::command]
 pub fn get_settings(
@@ -285,12 +304,20 @@ pub fn cancel_dictation_session(
     state: State<'_, AppState>,
     reason: Option<String>,
 ) -> Result<DictationStateEvent, String> {
-    let (event, cleanup) = {
+    let (event, cleanup, target) = {
         let mut session = state
             .session
             .lock()
             .map_err(|_| "dictation session lock is poisoned".to_string())?;
         let session_id = active_session_id(&session.snapshot())?;
+        let target = state
+            .transcription_operation(&session_id)?
+            .and_then(|operation| operation.target)
+            .map(|target| target.token);
+        // This transition is the cancellation linearization point. Once a
+        // worker has claimed Inserting, cancellation returns an error and must
+        // not clear its target or claim that no text was written.
+        let event = session.cancel(reason).map_err(|error| error.to_string())?;
         let mut audio = state
             .audio
             .lock()
@@ -298,10 +325,12 @@ pub fn cancel_dictation_session(
         let cleanup = audio.take_matching(&session_id);
         state.cancel_transcription(&session_id)?;
         state.finish_transcription(&session_id)?;
-        let event = session.cancel(reason).map_err(|error| error.to_string())?;
-        (event, cleanup)
+        (event, cleanup, target)
     };
 
+    if let Some(target) = target {
+        state.text_targets.discard(target);
+    }
     discard_on_worker(cleanup);
 
     emit_state(&app, &event)?;
@@ -314,6 +343,27 @@ pub fn cancel_dictation_session(
 #[tauri::command]
 pub fn get_platform_capabilities() -> platform::PlatformCapabilities {
     platform::current_platform_capabilities()
+}
+
+#[tauri::command]
+pub fn get_accessibility_permission_status(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<platform::AccessibilityPermissionStatus, String> {
+    require_main_window(&window)?;
+    Ok(state.text_targets.permission_status())
+}
+
+#[tauri::command]
+pub fn request_accessibility_permission(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<platform::AccessibilityPermissionStatus, String> {
+    require_main_window(&window)?;
+    state
+        .text_targets
+        .request_permission()
+        .map_err(|error| error.to_string())
 }
 
 fn require_main_window(window: &WebviewWindow) -> Result<(), String> {
@@ -363,7 +413,7 @@ fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String>
 fn session_uses_model(event: &DictationStateEvent, model_id: &str) -> bool {
     matches!(
         event.state,
-        SessionState::Listening | SessionState::Processing
+        SessionState::Listening | SessionState::Processing | SessionState::Inserting
     ) && event.session.as_ref().is_some_and(|session| {
         resolve_curated_whisper_model(&session.transcription_engine.model)
             .is_some_and(|model| model.id == model_id)
@@ -375,11 +425,38 @@ pub(crate) fn start_session<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
-    let _model_configuration = state
-        .model_configuration
-        .lock()
-        .map_err(|_| "model configuration is unavailable".to_string())?;
-    let settings = state.settings_snapshot()?;
+    // Shortcut sessions must prove a concrete, non-secure editable target
+    // before any session state, audio capture, or HUD window is created.
+    let captured_target = if trigger == SessionTrigger::Shortcut {
+        match state.text_targets.capture() {
+            Ok(target) => Some(target),
+            Err(error) => return fail_target_preflight(app, state, trigger, error),
+        }
+    } else {
+        // The dashboard owns focus for UI-triggered recordings. Those remain
+        // an explicit transcript/copy test and never type into another app.
+        None
+    };
+    let target_token = captured_target.as_ref().map(|target| target.token);
+
+    let model_configuration = match state.model_configuration.lock() {
+        Ok(configuration) => configuration,
+        Err(_) => {
+            if let Some(target) = target_token {
+                state.text_targets.discard(target);
+            }
+            return Err("model configuration is unavailable".into());
+        }
+    };
+    let settings = match state.settings_snapshot() {
+        Ok(settings) => settings,
+        Err(error) => {
+            if let Some(target) = target_token {
+                state.text_targets.discard(target);
+            }
+            return Err(error);
+        }
+    };
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
     let hud_position = settings.hud.position;
@@ -394,9 +471,9 @@ pub(crate) fn start_session<R: Runtime>(
         handle_audio_capture_failure(&error_app, failure);
     });
 
-    // Both locks are held only while creating a session and spawning the owner
-    // thread. No microphone API is called on this shortcut-handler path.
-    let (event, start_error) = {
+    // These locks are held only while creating the session and spawning the
+    // microphone owner thread. Accessibility calls completed above.
+    let transaction = (|| -> Result<(DictationStateEvent, Option<String>), String> {
         let mut session = state
             .session
             .lock()
@@ -409,21 +486,42 @@ pub(crate) fn start_session<R: Runtime>(
             .start(trigger, language_policy, transcription_engine)
             .map_err(|error| error.to_string())?;
         let session_id = active_session_id(&listening)?;
-        state.begin_transcription(session_id.clone())?;
+        if let Err(error) = state.begin_transcription(session_id.clone(), captured_target.clone()) {
+            let failed = session
+                .fail(error.clone())
+                .map_err(|transition| transition.to_string())?;
+            return Ok((failed, Some(error)));
+        }
 
         match audio.start(session_id, level_sink, error_sink) {
-            Ok(_) => (listening, None),
+            Ok(_) => Ok((listening, None)),
             Err(error) => {
                 state.finish_transcription(&active_session_id(&listening)?)?;
                 let failed = session
                     .fail(error.clone())
                     .map_err(|transition| transition.to_string())?;
-                (failed, Some(error))
+                Ok((failed, Some(error)))
             }
+        }
+    })();
+    drop(model_configuration);
+    let (event, start_error) = match transaction {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(target) = target_token {
+                state.text_targets.discard(target);
+            }
+            return Err(error);
         }
     };
 
     if let Some(error) = start_error {
+        if let Some(target) = target_token {
+            state.text_targets.discard(target);
+        }
+        if let Err(show_error) = hud::show(app, hud_position) {
+            eprintln!("dictation failed but the HUD could not be shown: {show_error}");
+        }
         let _ = emit_state(app, &event);
         hide_after(app, FAILURE_HUD_DWELL, event.revision);
         return Err(error);
@@ -436,6 +534,40 @@ pub(crate) fn start_session<R: Runtime>(
         eprintln!("could not emit listening state: {error}");
     }
     Ok(event)
+}
+
+fn fail_target_preflight<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    trigger: SessionTrigger,
+    error: TextTargetError,
+) -> Result<DictationStateEvent, String> {
+    let settings = state.settings_snapshot()?;
+    let hud_position = settings.hud.position;
+    let delivery = delivery_for_target_error(&error, false, None);
+    let failed = {
+        let mut session = state
+            .session
+            .lock()
+            .map_err(|_| "dictation session lock is poisoned".to_string())?;
+        session
+            .start(
+                trigger,
+                settings.language_policy,
+                settings.transcription_engine,
+            )
+            .and_then(|_| session.fail_with_delivery(error.to_string(), delivery))
+            .map_err(|transition| transition.to_string())?
+    };
+
+    if let Err(show_error) = hud::show(app, hud_position) {
+        eprintln!("target check failed but the HUD could not be shown: {show_error}");
+    }
+    if let Err(emit_error) = emit_state(app, &failed) {
+        eprintln!("could not emit text-target failure: {emit_error}");
+    }
+    hide_after(app, FAILURE_HUD_DWELL, failed.revision);
+    Err(error.to_string())
 }
 
 pub(crate) fn stop_session<R: Runtime>(
@@ -471,6 +603,7 @@ pub(crate) fn stop_session<R: Runtime>(
         .spawn(move || finalize_capture(&worker_app, worker_processing, finalizer));
     if let Err(error) = spawn_result {
         let message = format!("could not start microphone finalization: {error}");
+        discard_target_for_session(state, &active_session_id(&processing)?);
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
             let _ = emit_state(app, &failed);
             hide_after(app, FAILURE_HUD_DWELL, failed.revision);
@@ -541,19 +674,51 @@ fn finalize_capture<R: Runtime>(
                     );
                 }
                 Ok(transcript) => {
+                    let inserting = match claim_session_insertion(state.inner(), &session_id) {
+                        Ok(Some(inserting)) => inserting,
+                        Ok(None) => {
+                            discard_target_for_session(state.inner(), &session_id);
+                            return;
+                        }
+                        Err(error) => {
+                            fail_and_emit_if_matching(app, &session_id, error);
+                            return;
+                        }
+                    };
+                    if let Err(error) = emit_state(app, &inserting) {
+                        eprintln!("could not emit insertion state: {error}");
+                    }
+
+                    let delivery =
+                        deliver_transcript(state.inner(), &session_id, &transcript.transcript.text);
+                    let transcript = transcript.finish(delivery.clone());
                     match complete_session_with_transcript(state.inner(), &session_id, transcript) {
                         Ok(Some((completed, transcript))) => {
-                            if let Err(error) = app.emit_to(
-                                MAIN_WINDOW_LABEL,
-                                DICTATION_TRANSCRIPT_EVENT,
-                                &transcript,
-                            ) {
-                                eprintln!("could not emit completed transcript: {error}");
+                            if transcript.delivery.transcript_available {
+                                if let Err(error) = app.emit_to(
+                                    MAIN_WINDOW_LABEL,
+                                    DICTATION_TRANSCRIPT_EVENT,
+                                    &transcript,
+                                ) {
+                                    eprintln!("could not emit completed transcript: {error}");
+                                }
                             }
                             if let Err(error) = emit_state(app, &completed) {
                                 eprintln!("could not emit transcription completion: {error}");
                             }
-                            hide_after(app, SUCCESS_HUD_DWELL, completed.revision);
+                            match delivery.status {
+                                DictationDeliveryStatus::Inserted => {
+                                    hide_after(app, SUCCESS_HUD_DWELL, completed.revision)
+                                }
+                                DictationDeliveryStatus::SecureField => {
+                                    hide_after(app, FAILURE_HUD_DWELL, completed.revision)
+                                }
+                                DictationDeliveryStatus::FocusChanged
+                                | DictationDeliveryStatus::AccessibilityMissing
+                                | DictationDeliveryStatus::Unsupported
+                                | DictationDeliveryStatus::Failed
+                                | DictationDeliveryStatus::Indeterminate => {}
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => {
@@ -585,7 +750,7 @@ fn transcribe_capture(
     state: &AppState,
     session: &DictationSession,
     pcm_16khz: &[f32],
-) -> Result<DictationTranscript, EngineError> {
+) -> Result<PendingDictationTranscript, EngineError> {
     if session.transcription_engine.provider != EngineProvider::WhisperCpp
         || session.transcription_engine.location != EngineLocation::Local
     {
@@ -630,15 +795,116 @@ fn transcribe_capture(
         },
     )?;
 
-    Ok(DictationTranscript {
+    Ok(PendingDictationTranscript {
         session_id: session.id.clone(),
         engine_id: model.id.clone(),
         transcript: result,
     })
 }
 
+fn claim_session_insertion(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<DictationStateEvent>, String> {
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "dictation session lock is poisoned".to_string())?;
+    let snapshot = session.snapshot();
+    if snapshot.state != SessionState::Processing || !session_matches(&snapshot, session_id) {
+        return Ok(None);
+    }
+    let Some(operation) = state.transcription_operation(session_id)? else {
+        return Ok(None);
+    };
+    if operation
+        .cancellation
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Ok(None);
+    }
+    session
+        .begin_insertion()
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn deliver_transcript(state: &AppState, session_id: &str, transcript: &str) -> DictationDelivery {
+    let operation = state.transcription_operation(session_id);
+    let Ok(Some(operation)) = operation else {
+        return DictationDelivery {
+            status: DictationDeliveryStatus::Failed,
+            transcript_available: true,
+            target_app: None,
+            caret_repositioned: None,
+        };
+    };
+    let target = operation.target;
+    if operation
+        .cancellation
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return DictationDelivery {
+            status: DictationDeliveryStatus::Failed,
+            transcript_available: true,
+            target_app: target.and_then(|target| target.target_app),
+            caret_repositioned: None,
+        };
+    }
+
+    let Some(target) = target else {
+        return DictationDelivery {
+            status: DictationDeliveryStatus::Unsupported,
+            transcript_available: true,
+            target_app: None,
+            caret_repositioned: None,
+        };
+    };
+    let target_app = target.target_app.clone();
+    match state.text_targets.commit(target.token, transcript) {
+        Ok(receipt) => DictationDelivery {
+            status: DictationDeliveryStatus::Inserted,
+            transcript_available: true,
+            target_app: receipt.target_app.or(target_app),
+            caret_repositioned: Some(receipt.caret_repositioned),
+        },
+        Err(error) => delivery_for_target_error(&error, true, target_app),
+    }
+}
+
+fn delivery_for_target_error(
+    error: &TextTargetError,
+    transcript_available: bool,
+    target_app: Option<String>,
+) -> DictationDelivery {
+    let status = match error.kind {
+        TextTargetErrorKind::AccessibilityMissing => DictationDeliveryStatus::AccessibilityMissing,
+        TextTargetErrorKind::SecureField => DictationDeliveryStatus::SecureField,
+        TextTargetErrorKind::FocusChanged
+        | TextTargetErrorKind::SelectionChanged
+        | TextTargetErrorKind::ContentChanged
+        | TextTargetErrorKind::TargetGone => DictationDeliveryStatus::FocusChanged,
+        TextTargetErrorKind::NoFocusedTarget
+        | TextTargetErrorKind::OwnApplication
+        | TextTargetErrorKind::NotEditable
+        | TextTargetErrorKind::Unsupported => DictationDeliveryStatus::Unsupported,
+        TextTargetErrorKind::Indeterminate => DictationDeliveryStatus::Indeterminate,
+        TextTargetErrorKind::TimedOut | TextTargetErrorKind::Platform => {
+            DictationDeliveryStatus::Failed
+        }
+    };
+    DictationDelivery {
+        status,
+        transcript_available: transcript_available
+            && status != DictationDeliveryStatus::SecureField,
+        target_app,
+        caret_repositioned: None,
+    }
+}
+
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
     let state = app.state::<AppState>();
+    discard_target_for_session(state.inner(), &failure.session_id);
     let transition =
         (|| -> Result<Option<(DictationStateEvent, Option<CaptureFinalizer>)>, String> {
             let mut session = state
@@ -678,7 +944,7 @@ fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCa
 fn session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
     matches!(
         event.state,
-        SessionState::Listening | SessionState::Processing
+        SessionState::Listening | SessionState::Processing | SessionState::Inserting
     ) && event
         .session
         .as_ref()
@@ -688,20 +954,31 @@ fn session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
 fn complete_session_with_transcript(
     state: &AppState,
     session_id: &str,
-    transcript: DictationTranscript,
+    mut transcript: DictationTranscript,
 ) -> Result<Option<(DictationStateEvent, DictationTranscript)>, String> {
     let mut session = state
         .session
         .lock()
         .map_err(|_| "dictation session lock is poisoned".to_string())?;
     let snapshot = session.snapshot();
-    if snapshot.state != SessionState::Processing || !session_matches(&snapshot, session_id) {
+    if snapshot.state != SessionState::Inserting || !session_matches(&snapshot, session_id) {
         return Ok(None);
     }
-    if !state.complete_transcription(transcript.clone())? {
-        return Ok(None);
+    let mut delivery = transcript.delivery.clone();
+    if delivery.transcript_available {
+        if !state.complete_transcription(transcript.clone())? {
+            delivery.status = DictationDeliveryStatus::Failed;
+            delivery.transcript_available = false;
+            delivery.caret_repositioned = None;
+            transcript.delivery = delivery.clone();
+            state.finish_transcription(session_id)?;
+        }
+    } else {
+        state.finish_transcription(session_id)?;
     }
-    let completed = session.complete().map_err(|error| error.to_string())?;
+    let completed = session
+        .complete(delivery)
+        .map_err(|error| error.to_string())?;
     Ok(Some((completed, transcript)))
 }
 
@@ -727,6 +1004,7 @@ fn fail_session_if_matching(
 
 fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, error: String) {
     let state = app.state::<AppState>();
+    discard_target_for_session(state.inner(), session_id);
     let expected = state.session.lock().map(|session| session.snapshot());
     let event = match expected {
         Ok(expected) if session_matches(&expected, session_id) => {
@@ -745,6 +1023,17 @@ fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, e
         }
         Ok(None) => {}
         Err(error) => eprintln!("could not fail capture session: {error}"),
+    }
+}
+
+fn discard_target_for_session(state: &AppState, session_id: &str) {
+    let target = state
+        .transcription_operation(session_id)
+        .ok()
+        .flatten()
+        .and_then(|operation| operation.target);
+    if let Some(target) = target {
+        state.text_targets.discard(target.token);
     }
 }
 
@@ -819,6 +1108,7 @@ mod tests {
                 ended_at_ms: None,
                 cancel_reason: None,
                 error: None,
+                delivery: None,
             }),
         }
     }

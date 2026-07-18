@@ -15,6 +15,7 @@ use crate::{
     domain::{AppSettings, SETTINGS_SCHEMA_VERSION},
     engines::{DictationTranscript, WhisperCppRuntime},
     model_store::ModelStore,
+    platform::{CapturedTextTarget, TextTargetController},
     session::SessionController,
 };
 
@@ -29,11 +30,17 @@ pub struct AppState {
     pub audio: Mutex<AudioCaptureController>,
     pub models: Arc<ModelStore>,
     pub whisper: WhisperCppRuntime,
+    pub text_targets: TextTargetController,
     /// Serializes model selection/removal with settings writes so an active
     /// model cannot disappear between verification and persistence.
     pub model_configuration: Mutex<()>,
     transcripts: Mutex<TranscriptStore>,
     settings_path: PathBuf,
+}
+
+pub struct TranscriptionOperation {
+    pub cancellation: Arc<AtomicBool>,
+    pub target: Option<CapturedTextTarget>,
 }
 
 impl AppState {
@@ -51,6 +58,7 @@ impl AppState {
             audio: Mutex::new(AudioCaptureController::default()),
             models: Arc::new(ModelStore::new(models_path)),
             whisper: WhisperCppRuntime::default(),
+            text_targets: TextTargetController::default(),
             model_configuration: Mutex::new(()),
             transcripts: Mutex::new(TranscriptStore::default()),
             settings_path,
@@ -68,10 +76,14 @@ impl AppState {
         write_settings(&self.settings_path, settings)
     }
 
-    pub fn begin_transcription(&self, session_id: String) -> Result<Arc<AtomicBool>, String> {
+    pub fn begin_transcription(
+        &self,
+        session_id: String,
+        target: Option<CapturedTextTarget>,
+    ) -> Result<Arc<AtomicBool>, String> {
         self.transcripts
             .lock()
-            .map(|mut transcripts| transcripts.begin(session_id))
+            .map(|mut transcripts| transcripts.begin(session_id, target))
             .map_err(|_| "transcript store is unavailable".into())
     }
 
@@ -94,6 +106,25 @@ impl AppState {
                     .as_ref()
                     .filter(|active| active.session_id == session_id)
                     .map(|active| Arc::clone(&active.cancellation))
+            })
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn transcription_operation(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<TranscriptionOperation>, String> {
+        self.transcripts
+            .lock()
+            .map(|transcripts| {
+                transcripts
+                    .active
+                    .as_ref()
+                    .filter(|active| active.session_id == session_id)
+                    .map(|active| TranscriptionOperation {
+                        cancellation: Arc::clone(&active.cancellation),
+                        target: active.target.clone(),
+                    })
             })
             .map_err(|_| "transcript store is unavailable".into())
     }
@@ -129,10 +160,11 @@ struct TranscriptStore {
 struct ActiveTranscription {
     session_id: String,
     cancellation: Arc<AtomicBool>,
+    target: Option<CapturedTextTarget>,
 }
 
 impl TranscriptStore {
-    fn begin(&mut self, session_id: String) -> Arc<AtomicBool> {
+    fn begin(&mut self, session_id: String, target: Option<CapturedTextTarget>) -> Arc<AtomicBool> {
         if let Some(active) = self.active.take() {
             active.cancellation.store(true, Ordering::Relaxed);
         }
@@ -140,6 +172,7 @@ impl TranscriptStore {
         self.active = Some(ActiveTranscription {
             session_id,
             cancellation: Arc::clone(&cancellation),
+            target,
         });
         self.latest = None;
         cancellation
@@ -408,7 +441,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        domain::{EngineLocation, EngineProvider, LanguagePolicy},
+        domain::{
+            DictationDelivery, DictationDeliveryStatus, EngineLocation, EngineProvider,
+            LanguagePolicy,
+        },
         engines::TranscriptResult,
     };
     use tempfile::TempDir;
@@ -544,7 +580,7 @@ mod tests {
     #[test]
     fn transcript_store_rejects_cancelled_and_stale_results() {
         let mut store = TranscriptStore::default();
-        let cancellation = store.begin("session-a".into());
+        let cancellation = store.begin("session-a".into(), None);
         assert!(!cancellation.load(Ordering::Relaxed));
         assert!(!store.complete(transcript("session-b", "stale")));
 
@@ -553,11 +589,11 @@ mod tests {
         assert!(!store.complete(transcript("session-a", "cancelled")));
         assert!(store.latest.is_none());
 
-        store.begin("session-c".into());
+        store.begin("session-c".into(), None);
         assert!(store.complete(transcript("session-c", "kept")));
         assert_eq!(store.latest.as_ref().unwrap().transcript.text, "kept");
 
-        store.begin("session-d".into());
+        store.begin("session-d".into(), None);
         assert!(store.latest.is_none());
     }
 
@@ -566,6 +602,12 @@ mod tests {
             session_id: session_id.into(),
             engine_id: "whisper-test".into(),
             transcript: TranscriptResult::final_text(text),
+            delivery: DictationDelivery {
+                status: DictationDeliveryStatus::Unsupported,
+                transcript_available: true,
+                target_app: None,
+                caret_repositioned: None,
+            },
         }
     }
 }

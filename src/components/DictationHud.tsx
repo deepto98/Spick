@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, LoaderCircle, Mic, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, LoaderCircle, Mic, X } from "lucide-react";
+import type { NativeDeliveryOutcome } from "../lib/nativeDictation";
 import type { HudState } from "../types";
 
 interface DictationHudProps {
@@ -11,6 +12,7 @@ interface DictationHudProps {
   audioLevel?: number;
   disabled?: boolean;
   errorMessage?: string;
+  delivery?: NativeDeliveryOutcome | null;
 }
 
 const sampleBars = [
@@ -26,6 +28,7 @@ export function DictationHud({
   audioLevel,
   disabled = false,
   errorMessage,
+  delivery,
 }: DictationHudProps) {
   const [internalState, setInternalState] = useState<HudState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -67,6 +70,8 @@ export function DictationHud({
     const seconds = elapsed % 60;
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   }, [elapsed]);
+  const delivered = delivery?.status === "inserted";
+  const deliveryCopy = describeHudDelivery(delivery);
 
   if (state === "idle") {
     return (
@@ -90,7 +95,11 @@ export function DictationHud({
 
   return (
     <div
-      className={`dictation-hud dictation-hud--${state} ${floating ? "dictation-hud--floating" : ""}`}
+      className={`dictation-hud dictation-hud--${state} ${
+        state === "success" && delivery && !delivered
+          ? "dictation-hud--recovery"
+          : ""
+      } ${floating ? "dictation-hud--floating" : ""}`}
       role="status"
       aria-live="polite"
       aria-busy={disabled}
@@ -98,7 +107,9 @@ export function DictationHud({
       <span className="hud-orb" aria-hidden="true">
         {state === "listening" && <Mic size={17} />}
         {state === "processing" && <LoaderCircle size={17} />}
-        {state === "success" && <Check size={18} />}
+        {state === "inserting" && <LoaderCircle size={17} />}
+        {state === "success" &&
+          (delivery && !delivered ? <Copy size={17} /> : <Check size={18} />)}
         {state === "error" && <AlertTriangle size={17} />}
       </span>
 
@@ -160,10 +171,17 @@ export function DictationHud({
         </>
       )}
 
+      {state === "inserting" && (
+        <div className="hud-status-copy">
+          <strong>Preparing your text</strong>
+          <span>Checking where you started</span>
+        </div>
+      )}
+
       {state === "success" && (
         <div className="hud-status-copy">
-          <strong>Transcript ready</strong>
-          <span>Kept in memory for now</span>
+          <strong>{deliveryCopy.title}</strong>
+          <span>{deliveryCopy.detail}</span>
         </div>
       )}
 
@@ -185,4 +203,44 @@ export function DictationHud({
       )}
     </div>
   );
+}
+
+function describeHudDelivery(delivery?: NativeDeliveryOutcome | null) {
+  if (!delivery) {
+    return {
+      title: "Got it",
+      detail: "Ready when you need it",
+    };
+  }
+
+  if (delivery.status === "inserted") {
+    return {
+      title: "Typed",
+      detail: delivery.targetApp
+        ? `Back in ${delivery.targetApp}`
+        : "Back where you started",
+    };
+  }
+
+  const detail = (() => {
+    switch (delivery.status) {
+      case "focusChanged":
+        return "Your cursor moved—copy from Spick";
+      case "secureField":
+        return "Password fields are always left alone";
+      case "accessibilityMissing":
+        return "Allow Accessibility, or copy from Spick";
+      case "unsupported":
+        return "This field needs a manual paste";
+      case "failed":
+        return "The field refused it—copy from Spick";
+      case "indeterminate":
+        return "Check the field before copying";
+    }
+  })();
+
+  return {
+    title: delivery.transcriptAvailable ? "Text ready to copy" : "Not typed",
+    detail,
+  };
 }

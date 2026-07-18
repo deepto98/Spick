@@ -101,6 +101,8 @@ pub fn run() {
             commands::stop_dictation_session,
             commands::cancel_dictation_session,
             commands::get_platform_capabilities,
+            commands::get_accessibility_permission_status,
+            commands::request_accessibility_permission,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Spick");

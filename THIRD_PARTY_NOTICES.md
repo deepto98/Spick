@@ -86,3 +86,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Each model shown in Spick also carries its source URL, SHA-256 digest, license identifier, and attribution in the curated model manifest.
+
+## objc2 framework crates
+
+Spick uses `objc2-application-services` and `objc2-core-foundation` to call the
+macOS Accessibility and Core Foundation APIs.
+
+Source: <https://github.com/madsmtm/objc2>
+
+These crates are offered under the Zlib, Apache-2.0, or MIT licenses. Spick
+uses them under the MIT option; the MIT terms are reproduced above.

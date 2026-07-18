@@ -230,9 +230,33 @@ pub enum SessionState {
     Idle,
     Listening,
     Processing,
+    Inserting,
     Completed,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DictationDeliveryStatus {
+    Inserted,
+    FocusChanged,
+    SecureField,
+    AccessibilityMissing,
+    Unsupported,
+    Failed,
+    /// A native write returned an ambiguous result. Spick must not retry or
+    /// offer one-click copy until the user checks the target for duplicates.
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationDelivery {
+    pub status: DictationDeliveryStatus,
+    pub transcript_available: bool,
+    pub target_app: Option<String>,
+    pub caret_repositioned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +282,9 @@ pub struct DictationSession {
     pub ended_at_ms: Option<u64>,
     pub cancel_reason: Option<String>,
     pub error: Option<String>,
+    /// Structured terminal delivery result. This intentionally contains no
+    /// transcript text, field contents, process IDs, or native identifiers.
+    pub delivery: Option<DictationDelivery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -20,6 +20,7 @@ import {
   Volume2,
 } from "lucide-react";
 import type { AppSettings } from "../types";
+import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import {
   PageHeader,
   SelectField,
@@ -30,9 +31,14 @@ import {
 
 interface SettingsViewProps {
   settings: AppSettings;
+  accessibilityStatus: AccessibilityPermissionStatus | null;
+  accessibilityPending: boolean;
+  accessibilityError?: string;
   languageSaving: boolean;
   nativeError?: string;
   onChange: (next: AppSettings) => void;
+  onRequestAccessibility: () => void;
+  onRefreshAccessibility: () => void;
   onRestartOnboarding: () => void;
 }
 
@@ -49,11 +55,31 @@ const sectionItems: Array<{
   { id: "privacy", label: "Privacy & history", icon: ShieldCheck },
 ];
 
+function accessibilityPermissionDescription(
+  status: AccessibilityPermissionStatus | null,
+) {
+  switch (status?.state) {
+    case "granted":
+      return "Spick can remember and re-check the field where recording began.";
+    case "missing":
+      return "Allow Accessibility so the shortcut can verify fields in other apps and avoid protected controls.";
+    case "unsupported":
+      return "Field tracking currently ships in the macOS desktop build.";
+    default:
+      return "Checking whether Spick can reach fields in other apps.";
+  }
+}
+
 export function SettingsView({
   settings,
+  accessibilityStatus,
+  accessibilityPending,
+  accessibilityError,
   languageSaving,
   nativeError,
   onChange,
+  onRequestAccessibility,
+  onRefreshAccessibility,
   onRestartOnboarding,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("general");
@@ -74,7 +100,7 @@ export function SettingsView({
       <PageHeader
         eyebrow="PREFERENCES"
         title="Settings"
-        description="Language changes are live. The other controls are still a preview."
+        description="Language and Accessibility are live. Preview-only controls are marked."
         actions={
           <span className="settings-saved">
             <Check size={14} />
@@ -87,6 +113,13 @@ export function SettingsView({
         <div className="engine-inline-error" role="alert">
           <strong>Language stayed where it was</strong>
           <span>{nativeError}</span>
+        </div>
+      )}
+
+      {accessibilityError && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Couldn’t check Accessibility</strong>
+          <span>{accessibilityError}</span>
         </div>
       )}
 
@@ -233,20 +266,54 @@ export function SettingsView({
                 <SettingRow
                   icon={<BellRing size={17} />}
                   title="Hold to speak"
-                  description="The shortcut, mic, and local transcription work. Automatic typing comes next."
+                  description="Spick records while the shortcut is held, then keeps the latest text ready on Today."
                   control={
                     <span className="fixed-value">
-                      <Check size={14} /> Core ready
+                      <Check size={14} /> Ready
                     </span>
+                  }
+                />
+                <SettingRow
+                  icon={<LockKeyhole size={17} />}
+                  title="Track the starting field"
+                  description={accessibilityPermissionDescription(
+                    accessibilityStatus,
+                  )}
+                  control={
+                    accessibilityStatus?.state === "granted" ? (
+                      <span className="fixed-value permission-value--granted">
+                        <Check size={14} /> Allowed
+                      </span>
+                    ) : accessibilityStatus?.state === "unsupported" ? (
+                      <span className="fixed-value">macOS only</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={
+                          accessibilityStatus?.canRequest
+                            ? onRequestAccessibility
+                            : onRefreshAccessibility
+                        }
+                        disabled={accessibilityPending}
+                      >
+                        {accessibilityPending
+                          ? "Checking…"
+                          : accessibilityStatus?.canRequest
+                            ? "Allow access"
+                            : "Check again"}
+                      </button>
+                    )
                   }
                 />
               </section>
               <div className="settings-callout">
                 <Gauge size={17} />
                 <div>
-                  <strong>No timing data yet</strong>
+                  <strong>A careful handoff</strong>
                   <span>
-                    The next pass will record transcription and insertion time.
+                    This checkpoint never pastes automatically. Your latest
+                    words stay in Spick for an explicit copy.
                   </span>
                 </div>
               </div>
@@ -362,8 +429,8 @@ export function SettingsView({
                 <SettingRow
                   icon={<LockKeyhole size={17} />}
                   title="Secure fields"
-                  description="Typing into password fields will be blocked."
-                  control={<span className="fixed-value">Planned</span>}
+                  description="Spick refuses to record from password and other protected fields."
+                  control={<span className="fixed-value">Always blocked</span>}
                 />
               </section>
               <section className="danger-card">

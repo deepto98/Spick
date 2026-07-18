@@ -7,7 +7,29 @@ export const DICTATION_STATE_EVENT = "dictation://state";
 export const DICTATION_TRANSCRIPT_EVENT = "dictation://transcript";
 
 export type NativeSessionState =
-  "idle" | "listening" | "processing" | "completed" | "cancelled" | "failed";
+  | "idle"
+  | "listening"
+  | "processing"
+  | "inserting"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export type NativeDeliveryStatus =
+  | "inserted"
+  | "focusChanged"
+  | "secureField"
+  | "accessibilityMissing"
+  | "unsupported"
+  | "failed"
+  | "indeterminate";
+
+export interface NativeDeliveryOutcome {
+  status: NativeDeliveryStatus;
+  transcriptAvailable: boolean;
+  targetApp: string | null;
+  caretRepositioned: boolean | null;
+}
 
 export interface NativeDictationSession {
   id: string;
@@ -17,6 +39,7 @@ export interface NativeDictationSession {
   endedAtMs: number | null;
   cancelReason: string | null;
   error: string | null;
+  delivery: NativeDeliveryOutcome | null;
 }
 
 export interface NativeDictationStateEvent {
@@ -45,6 +68,7 @@ export interface NativeDictationTranscript {
   sessionId: string;
   engineId: string;
   transcript: NativeTranscriptResult;
+  delivery: NativeDeliveryOutcome;
 }
 
 export function hasNativeRuntime() {
@@ -57,6 +81,8 @@ export function toHudState(state: NativeSessionState): HudState {
       return "listening";
     case "processing":
       return "processing";
+    case "inserting":
+      return "inserting";
     case "completed":
       return "success";
     case "failed":

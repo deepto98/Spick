@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::domain::{
-    DictationSession, DictationStateEvent, EngineConfig, LanguagePolicy, SessionState,
-    SessionTrigger,
+    DictationDelivery, DictationSession, DictationStateEvent, EngineConfig, LanguagePolicy,
+    SessionState, SessionTrigger,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,18 +71,36 @@ impl SessionController {
         self.stop_at(now_ms())
     }
 
+    /// Atomically claim the native side effect. Cancellation is deliberately
+    /// unavailable after this transition, so it can never report success while
+    /// another worker is still able to mutate the target field.
+    pub fn begin_insertion(&mut self) -> Result<DictationStateEvent, SessionError> {
+        self.begin_insertion_at()
+    }
+
     pub fn cancel(&mut self, reason: Option<String>) -> Result<DictationStateEvent, SessionError> {
         self.cancel_at(reason, now_ms())
     }
 
     /// Complete processing after a transcription backend has produced output.
-    pub fn complete(&mut self) -> Result<DictationStateEvent, SessionError> {
-        self.complete_at(now_ms())
+    pub fn complete(
+        &mut self,
+        delivery: DictationDelivery,
+    ) -> Result<DictationStateEvent, SessionError> {
+        self.complete_at(delivery, now_ms())
     }
 
     /// Fail the active session while keeping the diagnostic available to the UI.
     pub fn fail(&mut self, error: String) -> Result<DictationStateEvent, SessionError> {
-        self.fail_at(error, now_ms())
+        self.fail_at(error, None, now_ms())
+    }
+
+    pub fn fail_with_delivery(
+        &mut self,
+        error: String,
+        delivery: DictationDelivery,
+    ) -> Result<DictationStateEvent, SessionError> {
+        self.fail_at(error, Some(delivery), now_ms())
     }
 
     fn start_at(
@@ -95,7 +113,7 @@ impl SessionController {
         if let Some(session) = &self.current {
             if matches!(
                 session.state,
-                SessionState::Listening | SessionState::Processing
+                SessionState::Listening | SessionState::Processing | SessionState::Inserting
             ) {
                 return Err(SessionError::AlreadyActive(session.state));
             }
@@ -113,6 +131,7 @@ impl SessionController {
             ended_at_ms: None,
             cancel_reason: None,
             error: None,
+            delivery: None,
         });
 
         Ok(self.snapshot())
@@ -161,10 +180,29 @@ impl SessionController {
         Ok(self.snapshot())
     }
 
-    fn complete_at(&mut self, timestamp_ms: u64) -> Result<DictationStateEvent, SessionError> {
+    fn begin_insertion_at(&mut self) -> Result<DictationStateEvent, SessionError> {
         {
             let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
             if session.state != SessionState::Processing {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "begin insertion for",
+                });
+            }
+            session.state = SessionState::Inserting;
+        }
+        self.revision = self.revision.saturating_add(1);
+        Ok(self.snapshot())
+    }
+
+    fn complete_at(
+        &mut self,
+        delivery: DictationDelivery,
+        timestamp_ms: u64,
+    ) -> Result<DictationStateEvent, SessionError> {
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if session.state != SessionState::Inserting {
                 return Err(SessionError::InvalidTransition {
                     from: session.state,
                     action: "complete",
@@ -173,6 +211,7 @@ impl SessionController {
 
             session.state = SessionState::Completed;
             session.ended_at_ms = Some(timestamp_ms);
+            session.delivery = Some(delivery);
         }
         self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
@@ -181,6 +220,7 @@ impl SessionController {
     fn fail_at(
         &mut self,
         error: String,
+        delivery: Option<DictationDelivery>,
         timestamp_ms: u64,
     ) -> Result<DictationStateEvent, SessionError> {
         {
@@ -198,6 +238,7 @@ impl SessionController {
             session.state = SessionState::Failed;
             session.ended_at_ms = Some(timestamp_ms);
             session.error = Some(error);
+            session.delivery = delivery;
         }
         self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
@@ -216,7 +257,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::AppSettings;
+    use crate::domain::{AppSettings, DictationDeliveryStatus};
 
     fn engine() -> EngineConfig {
         AppSettings::default().transcription_engine
@@ -224,6 +265,15 @@ mod tests {
 
     fn session(event: &DictationStateEvent) -> &DictationSession {
         event.session.as_ref().expect("expected a session")
+    }
+
+    fn delivery() -> DictationDelivery {
+        DictationDelivery {
+            status: DictationDeliveryStatus::Inserted,
+            transcript_available: true,
+            target_app: Some("Notes".into()),
+            caret_repositioned: Some(true),
+        }
     }
 
     #[test]
@@ -303,11 +353,14 @@ mod tests {
             )
             .unwrap();
         controller.stop_at(150).unwrap();
+        let inserting = controller.begin_insertion_at().unwrap();
+        assert_eq!(inserting.state, SessionState::Inserting);
 
-        let completed = controller.complete_at(300).unwrap();
+        let completed = controller.complete_at(delivery(), 300).unwrap();
         assert_eq!(completed.state, SessionState::Completed);
-        assert_eq!(completed.revision, 3);
+        assert_eq!(completed.revision, 4);
         assert_eq!(session(&completed).ended_at_ms, Some(300));
+        assert_eq!(session(&completed).delivery.as_ref(), Some(&delivery()));
 
         let next = controller
             .start_at(
@@ -318,7 +371,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next.state, SessionState::Listening);
-        assert_eq!(next.revision, 4);
+        assert_eq!(next.revision, 5);
         assert_ne!(session(&completed).id, session(&next).id);
     }
 
@@ -350,7 +403,7 @@ mod tests {
     fn only_active_sessions_can_fail() {
         let mut controller = SessionController::default();
         assert_eq!(
-            controller.fail_at("microphone unavailable".into(), 100),
+            controller.fail_at("microphone unavailable".into(), None, 100),
             Err(SessionError::NoSession)
         );
 
@@ -363,12 +416,35 @@ mod tests {
             )
             .unwrap();
         let failed = controller
-            .fail_at("microphone unavailable".into(), 120)
+            .fail_at("microphone unavailable".into(), None, 120)
             .unwrap();
         assert_eq!(failed.state, SessionState::Failed);
         assert_eq!(
             session(&failed).error.as_deref(),
             Some("microphone unavailable")
+        );
+    }
+
+    #[test]
+    fn cancellation_cannot_claim_success_after_insertion_is_claimed() {
+        let mut controller = SessionController::default();
+        controller
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                100,
+            )
+            .unwrap();
+        controller.stop_at(150).unwrap();
+        controller.begin_insertion_at().unwrap();
+
+        assert_eq!(
+            controller.cancel_at(Some("too late".into()), 160),
+            Err(SessionError::InvalidTransition {
+                from: SessionState::Inserting,
+                action: "cancel",
+            })
         );
     }
 }

@@ -16,12 +16,18 @@ import {
   Mic2,
   ShieldCheck,
 } from "lucide-react";
+import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { AppSettings } from "../types";
 import { DictationHud } from "./DictationHud";
 import { ShortcutKeys, SpickLogo } from "./Ui";
 
 interface OnboardingProps {
+  accessibilityStatus: AccessibilityPermissionStatus | null;
+  accessibilityPending: boolean;
+  accessibilityError?: string;
   settings: AppSettings;
+  onRequestAccessibility: () => void;
+  onRefreshAccessibility: () => void;
   onSettingsChange: (settings: AppSettings) => void;
   onComplete: () => void;
 }
@@ -29,14 +35,21 @@ interface OnboardingProps {
 const totalSteps = 4;
 
 export function Onboarding({
+  accessibilityStatus,
+  accessibilityPending,
+  accessibilityError,
   settings,
+  onRequestAccessibility,
+  onRefreshAccessibility,
   onSettingsChange,
   onComplete,
 }: OnboardingProps) {
   const [step, setStep] = useState(0);
-  const [microphoneReady, setMicrophoneReady] = useState(false);
-  const [accessibilityReady, setAccessibilityReady] = useState(false);
   const [shortcutPressed, setShortcutPressed] = useState(false);
+
+  const accessibilityReady =
+    accessibilityStatus?.state === "granted" ||
+    accessibilityStatus?.state === "unsupported";
 
   useEffect(() => {
     if (step !== 3) return;
@@ -88,11 +101,11 @@ export function Onboarding({
               <h1>
                 Talk it out.
                 <br />
-                <em>Skip the typing.</em>
+                <em>Catch the thought.</em>
               </h1>
               <p>
-                Hold a shortcut and speak. Spick can already listen and
-                transcribe on this Mac. Typing into the field comes next.
+                Hold a shortcut and speak. Spick listens on this Mac, turns your
+                voice into text, and keeps it ready for you.
               </p>
               <button
                 type="button"
@@ -136,8 +149,7 @@ export function Onboarding({
                 <DictationHud state="listening" />
               </div>
               <div className="welcome-demo__note">
-                <Check size={13} /> Local transcription works in the desktop
-                build
+                <Check size={13} /> Local dictation, without sending audio away
               </div>
             </div>
           </section>
@@ -148,40 +160,67 @@ export function Onboarding({
             <SetupHeading
               icon={<LockKeyhole size={21} />}
               eyebrow="BEFORE YOU START"
-              title="A quick permission check."
-              description="Recording needs the microphone. Typing into other apps will need Accessibility when insertion is ready."
+              title="Two small permissions."
+              description="Microphone lets Spick hear you. Accessibility lets it remember where you started and stay out of private fields."
             />
             <div className="permission-list">
               <PermissionCard
                 number="01"
                 icon={<Mic2 size={21} />}
                 title="Microphone"
-                description="Used only while you hold the shortcut."
-                ready={microphoneReady}
-                button="Simulate mic approval"
-                onGrant={() => setMicrophoneReady(true)}
+                description="Used only while you’re recording. macOS will ask the first time."
+                ready={false}
+                status="Asked on first use"
               />
               <PermissionCard
                 number="02"
                 icon={<Keyboard size={21} />}
                 title="Accessibility"
-                description="Will let Spick type into the field you’re using."
-                ready={accessibilityReady}
-                button="Simulate Accessibility approval"
-                onGrant={() => setAccessibilityReady(true)}
+                description="Keeps the shortcut tied to the field where you began. Automatic paste is still being hardened."
+                ready={accessibilityStatus?.state === "granted"}
+                status={
+                  accessibilityStatus?.state === "unsupported"
+                    ? "Not needed in this preview"
+                    : accessibilityStatus?.state === "granted"
+                      ? "Allowed"
+                      : undefined
+                }
+                button={
+                  accessibilityStatus?.state === "missing"
+                    ? accessibilityStatus.canRequest
+                      ? "Allow in System Settings"
+                      : "Check again"
+                    : accessibilityStatus === null
+                      ? accessibilityPending
+                        ? "Checking…"
+                        : "Check again"
+                      : undefined
+                }
+                disabled={accessibilityPending}
+                onGrant={
+                  accessibilityStatus?.canRequest
+                    ? onRequestAccessibility
+                    : onRefreshAccessibility
+                }
               />
             </div>
-            <div className="simulation-note">
+            <div className="permission-note">
               <Info size={15} />
               <span>
-                These buttons only move the walkthrough along. Permission
-                handling in macOS Settings is still being wired up.
+                Spick checks the field before recording and again when your
+                words are ready. If your cursor moves, the new field is left
+                alone. Password fields are blocked before recording.
               </span>
             </div>
+            {accessibilityError && (
+              <div className="permission-error" role="alert">
+                {accessibilityError}
+              </div>
+            )}
             <StepActions
               onBack={previous}
               onNext={next}
-              nextDisabled={!microphoneReady || !accessibilityReady}
+              nextDisabled={!accessibilityReady}
             />
           </section>
         )}
@@ -274,7 +313,7 @@ export function Onboarding({
               icon={<Keyboard size={21} />}
               eyebrow="ONE LAST THING"
               title="Give the shortcut a try."
-              description="The desktop build records and transcribes locally. Automatic typing is the next piece."
+              description="Spick records and transcribes locally, then keeps the words ready to copy from Today."
             />
             <div
               className={`shortcut-practice ${shortcutPressed ? "shortcut-practice--pressed" : ""}`}
@@ -338,7 +377,7 @@ export function Onboarding({
 
       <footer className="onboarding-footer">
         <span>Early macOS build</span>
-        <span>Local transcription works · typing comes next</span>
+        <span>Local transcription · careful field handoff</span>
       </footer>
     </main>
   );
@@ -371,8 +410,10 @@ interface PermissionCardProps {
   title: string;
   description: string;
   ready: boolean;
-  button: string;
-  onGrant: () => void;
+  status?: string;
+  button?: string;
+  disabled?: boolean;
+  onGrant?: () => void;
 }
 
 function PermissionCard({
@@ -381,7 +422,9 @@ function PermissionCard({
   title,
   description,
   ready,
+  status,
   button,
+  disabled,
   onGrant,
 }: PermissionCardProps) {
   return (
@@ -396,22 +439,22 @@ function PermissionCard({
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <button
-        type="button"
-        className={`button ${ready ? "button--success" : "button--secondary"}`}
-        onClick={onGrant}
-        disabled={ready}
-      >
-        {ready ? (
-          <>
-            <Check size={15} /> Done
-          </>
-        ) : (
-          <>
-            {button} <ChevronRight size={15} />
-          </>
-        )}
-      </button>
+      {ready ? (
+        <span className="permission-card__status permission-card__status--ready">
+          <Check size={15} /> {status ?? "Done"}
+        </span>
+      ) : button && onGrant ? (
+        <button
+          type="button"
+          className="button button--secondary"
+          onClick={onGrant}
+          disabled={disabled}
+        >
+          {button} <ChevronRight size={15} />
+        </button>
+      ) : (
+        <span className="permission-card__status">{status}</span>
+      )}
     </article>
   );
 }

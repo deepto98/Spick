@@ -5,7 +5,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::domain::LanguagePolicy;
+use crate::domain::{DictationDelivery, LanguagePolicy};
 
 use super::capabilities::PolicyCompatibilityError;
 
@@ -126,6 +126,7 @@ pub struct DictationTranscript {
     pub session_id: String,
     pub engine_id: String,
     pub transcript: TranscriptResult,
+    pub delivery: DictationDelivery,
 }
 
 impl TranscriptResult {
