@@ -6,7 +6,6 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  Cloud,
   Eraser,
   Globe2,
   Info,
@@ -19,6 +18,7 @@ import {
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { AppSettings } from "../types";
 import { DictationHud } from "./DictationHud";
+import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
 import { ShortcutKeys, SpickLogo } from "./Ui";
 
 interface OnboardingProps {
@@ -26,8 +26,12 @@ interface OnboardingProps {
   accessibilityPending: boolean;
   accessibilityError?: string;
   settings: AppSettings;
+  settingsError?: string;
+  settingsReady: boolean;
+  settingsSaving: boolean;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
+  onRetrySettings: () => void;
   onSettingsChange: (settings: AppSettings) => void;
   onComplete: () => void;
 }
@@ -39,8 +43,12 @@ export function Onboarding({
   accessibilityPending,
   accessibilityError,
   settings,
+  settingsError,
+  settingsReady,
+  settingsSaving,
   onRequestAccessibility,
   onRefreshAccessibility,
+  onRetrySettings,
   onSettingsChange,
   onComplete,
 }: OnboardingProps) {
@@ -141,7 +149,7 @@ export function Onboarding({
                     <i />
                   </div>
                   <div className="mock-cleanup-badge">
-                    <Eraser size={13} /> Example · cleanup comes later
+                    <Eraser size={13} /> Example · light cleanup
                   </div>
                 </div>
               </div>
@@ -230,80 +238,132 @@ export function Onboarding({
             <SetupHeading
               icon={<Languages size={21} />}
               eyebrow="A STARTING POINT"
-              title="Pick your language."
-              description="Choose a default. You can change it later."
+              title="Make it sound like you."
+              description="Choose what you speak and how much Spick should touch."
             />
+            {settingsError && (
+              <div
+                className="permission-error setup-settings-error"
+                role="alert"
+              >
+                <span>{settingsError}</span>
+                {!settingsReady && (
+                  <button
+                    type="button"
+                    className="button button--secondary button--small"
+                    onClick={onRetrySettings}
+                  >
+                    Try again
+                  </button>
+                )}
+              </div>
+            )}
             <div className="personalize-grid">
               <div className="setup-field-group">
                 <span className="setup-field-group__label">
                   Speech language
                 </span>
                 <div className="language-choice-grid">
-                  {["Auto-detect", "English", "Hindi", "Bengali"].map(
-                    (language) => (
-                      <button
-                        type="button"
-                        key={language}
-                        className={
-                          settings.language === language ? "active" : ""
-                        }
-                        onClick={() =>
-                          onSettingsChange({ ...settings, language })
-                        }
-                      >
-                        <span>
-                          {language === "Auto-detect" ? (
-                            <Globe2 size={18} />
-                          ) : (
-                            language.slice(0, 2).toUpperCase()
-                          )}
-                        </span>
-                        <strong>{language}</strong>
-                        {settings.language === language && (
-                          <CheckCircle2 size={16} />
+                  {SPEECH_LANGUAGE_OPTIONS.map((language) => (
+                    <button
+                      type="button"
+                      key={language}
+                      className={settings.language === language ? "active" : ""}
+                      disabled={settingsSaving || !settingsReady}
+                      onClick={() =>
+                        onSettingsChange({ ...settings, language })
+                      }
+                    >
+                      <span>
+                        {language === "Auto-detect" ? (
+                          <Globe2 size={18} />
+                        ) : (
+                          language.slice(0, 2).toUpperCase()
                         )}
-                      </button>
-                    ),
-                  )}
+                      </span>
+                      <strong>{language}</strong>
+                      {settings.language === language && (
+                        <CheckCircle2 size={16} />
+                      )}
+                    </button>
+                  ))}
                 </div>
                 <span className="setup-field-group__hint">
-                  <Globe2 size={13} /> Auto lets the model choose one language
-                  for each recording.
+                  <Globe2 size={13} />
+                  {!settingsReady
+                    ? settingsError
+                      ? "Saved choices aren’t available yet."
+                      : "Loading your saved choices…"
+                    : settingsSaving
+                      ? "Saving this choice…"
+                      : "Auto lets the model choose one language for each recording."}
                 </span>
               </div>
               <div className="setup-field-group">
-                <span className="setup-field-group__label">
-                  Where transcription runs
-                </span>
+                <span className="setup-field-group__label">Cleanup</span>
                 <div className="processing-choice-list">
-                  <button type="button" className="active">
+                  <button
+                    type="button"
+                    className={
+                      settings.cleanupLevel === "Verbatim" ? "active" : ""
+                    }
+                    aria-pressed={settings.cleanupLevel === "Verbatim"}
+                    disabled={settingsSaving || !settingsReady}
+                    onClick={() =>
+                      onSettingsChange({
+                        ...settings,
+                        cleanupLevel: "Verbatim",
+                      })
+                    }
+                  >
                     <span className="choice-icon">
-                      <ShieldCheck size={18} />
+                      <AudioLines size={18} />
                     </span>
                     <div>
-                      <strong>On this Mac</strong>
-                      <small>Works offline after you download a model</small>
+                      <strong>As transcribed</strong>
+                      <small>Keep every word whisper.cpp returns</small>
                     </div>
-                    <span className="recommended-label">SUGGESTED</span>
-                    <CheckCircle2 size={17} />
+                    {settings.cleanupLevel === "Verbatim" && (
+                      <CheckCircle2 size={17} />
+                    )}
                   </button>
-                  <button type="button">
+                  <button
+                    type="button"
+                    className={
+                      settings.cleanupLevel === "Clean" ? "active" : ""
+                    }
+                    aria-pressed={settings.cleanupLevel === "Clean"}
+                    disabled={settingsSaving || !settingsReady}
+                    onClick={() =>
+                      onSettingsChange({ ...settings, cleanupLevel: "Clean" })
+                    }
+                  >
                     <span className="choice-icon">
-                      <Cloud size={18} />
+                      <Eraser size={18} />
                     </span>
                     <div>
-                      <strong>Cloud provider (planned)</strong>
-                      <small>Bring an API key when adapters are ready</small>
+                      <strong>Trim obvious fillers</strong>
+                      <small>
+                        English “um,” “uh,” and “erm” when pause-marked
+                      </small>
                     </div>
-                    <ChevronRight size={17} />
+                    {settings.cleanupLevel === "Clean" && (
+                      <CheckCircle2 size={17} />
+                    )}
                   </button>
                 </div>
                 <span className="setup-field-group__hint">
-                  You’ll choose the actual model from Engines after setup.
+                  <ShieldCheck size={13} />
+                  Both stay on this Mac. Bare words and other languages are left
+                  alone.
                 </span>
               </div>
             </div>
-            <StepActions onBack={previous} onNext={next} />
+            <StepActions
+              onBack={previous}
+              onNext={next}
+              nextDisabled={settingsSaving || !settingsReady}
+            />
           </section>
         )}
 
@@ -351,7 +411,11 @@ export function Onboarding({
                 <Check size={14} />
                 <div>
                   <strong>Cleanup</strong>
-                  <small>Clean mode · planned</small>
+                  <small>
+                    {settings.cleanupLevel === "Clean"
+                      ? "Trim obvious English fillers"
+                      : "As transcribed"}
+                  </small>
                 </div>
               </span>
             </div>
@@ -367,6 +431,7 @@ export function Onboarding({
                 type="button"
                 className="button button--primary button--large"
                 onClick={onComplete}
+                disabled={settingsSaving || !settingsReady}
               >
                 Finish setup <ArrowRight size={17} />
               </button>

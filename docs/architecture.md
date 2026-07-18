@@ -59,7 +59,7 @@ One push-to-talk session follows this sequence:
 3. Apply voice activity detection and stream audio to the selected transcription engine when that engine supports streaming.
 4. Publish partial transcripts for feedback without inserting unstable text into the target control.
 5. On shortcut release, finalize transcription and apply the selected language policy.
-6. Run deterministic normalization, followed by optional model-based cleanup according to the selected cleanup mode.
+6. Apply the cleanup choice captured when the session began. The current opt-in local cleaner only removes a few pause-marked English hesitation words when punctuation repair is unambiguous; choosing as-transcribed output leaves the recognizer result untouched.
 7. Atomically claim the session for delivery, then confirm that the same target, focus, and selection are still valid and non-secure and that no observed change invalidated the target.
 8. Insert the final text at the original caret or replace the original selection. Never retry automatically after a write may have occurred.
 9. Record non-sensitive session measurements and expose a recoverable error or copy action if insertion fails.
@@ -74,7 +74,9 @@ The current checkpoint stops before step 8. It revalidates the captured target, 
 
 `whisper.cpp` is the initial local speech-to-text runtime. Multilingual behavior comes from the downloaded Whisper model: multilingual models support language detection or a fixed language, while `.en` variants are English-only. Model metadata must state language coverage, format, size, memory expectations, license, source, and checksum.
 
-A local cleanup engine may be added independently. Deterministic cleanup remains available when no cleanup model is installed.
+The built-in `readable-v1` cleaner is local, deterministic, and opt-in. It removes pause-marked English “um”, “uh”, and “erm” outside quoted or explicitly referenced text, and only when adjacent punctuation can be repaired conservatively. Bare words and identifiers are treated as ambiguous and preserved. Unknown and non-English transcripts pass through byte-for-byte. Choosing no cleanup engine preserves the recognizer result, and changing the setting during a recording affects only the next session. When cleanup changes text, raw recognizer segments are discarded because their text and offsets no longer describe the delivered transcript.
+
+Settings schema v2 records an explicit cleanup choice. The v1 migration turns cleanup off because older builds wrote `readable-v1` as a default before the cleaner was connected; that stored value cannot prove consent. The migration preserves the rest of the settings and keeps the original file as a backup.
 
 ### Cloud engines
 

@@ -6,8 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub(crate) const LEGACY_SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+pub const BUILTIN_READABLE_CLEANUP_MODEL: &str = "readable-v1";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -148,6 +150,12 @@ impl EngineConfig {
 
         Ok(())
     }
+
+    pub fn is_builtin_readable_cleanup(&self) -> bool {
+        self.provider == EngineProvider::BuiltIn
+            && self.location == EngineLocation::Local
+            && self.model == BUILTIN_READABLE_CLEANUP_MODEL
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,7 +196,8 @@ impl Default for AppSettings {
                 EngineProvider::WhisperCpp,
                 "whisper-small-multilingual-q5-1",
             ),
-            cleanup_engine: Some(EngineConfig::local(EngineProvider::BuiltIn, "readable-v1")),
+            // Cleanup changes a user's words, so it is an explicit opt-in.
+            cleanup_engine: None,
             hud: HudSettings::default(),
             allow_cloud_fallback: false,
             save_transcript_history: false,
@@ -197,6 +206,22 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Upgrade settings written before cleanup required explicit consent.
+    ///
+    /// Schema v1 could contain a cleanup selection even though cleanup was not
+    /// connected. It therefore cannot prove the user opted into changing their
+    /// words. Migrating to v2 always disables cleanup while preserving every
+    /// unrelated setting.
+    pub(crate) fn migrate_legacy_schema(&mut self) -> bool {
+        if self.schema_version != LEGACY_SETTINGS_SCHEMA_VERSION {
+            return false;
+        }
+
+        self.schema_version = SETTINGS_SCHEMA_VERSION;
+        self.cleanup_engine = None;
+        true
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SETTINGS_SCHEMA_VERSION {
             return Err(format!(
@@ -212,6 +237,11 @@ impl AppSettings {
         self.transcription_engine.validate()?;
         if let Some(cleanup_engine) = &self.cleanup_engine {
             cleanup_engine.validate()?;
+            if !cleanup_engine.is_builtin_readable_cleanup() {
+                return Err(
+                    "only the built-in readable-v1 cleanup engine is available right now".into(),
+                );
+            }
         }
 
         if !self.allow_cloud_fallback && self.transcription_engine.location == EngineLocation::Cloud
@@ -278,6 +308,10 @@ pub struct DictationSession {
     /// Snapshot the engine for the same reason. A model switch only affects the
     /// next dictation session.
     pub transcription_engine: EngineConfig,
+    /// `None` means as-spoken output. The selected cleanup engine is captured
+    /// with the session so a settings edit cannot alter words already being
+    /// transcribed.
+    pub cleanup_engine: Option<EngineConfig>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub cancel_reason: Option<String>,
@@ -333,6 +367,7 @@ mod tests {
             settings.transcription_engine.model,
             "whisper-small-multilingual-q5-1"
         );
+        assert_eq!(settings.cleanup_engine, None);
         assert!(!settings.allow_cloud_fallback);
         assert!(!settings.save_transcript_history);
         assert!(settings.validate().is_ok());
@@ -363,5 +398,54 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn settings_accept_as_spoken_or_the_available_deterministic_cleanup_only() {
+        let mut settings = AppSettings {
+            cleanup_engine: None,
+            ..AppSettings::default()
+        };
+        assert!(settings.validate().is_ok());
+
+        settings.cleanup_engine = Some(EngineConfig::local(
+            EngineProvider::BuiltIn,
+            BUILTIN_READABLE_CLEANUP_MODEL,
+        ));
+        assert!(settings.validate().is_ok());
+
+        settings.cleanup_engine = Some(EngineConfig::local(
+            EngineProvider::LlamaCpp,
+            "unconnected-polisher",
+        ));
+        assert_eq!(
+            settings.validate(),
+            Err("only the built-in readable-v1 cleanup engine is available right now".into())
+        );
+    }
+
+    #[test]
+    fn schema_v1_migration_disables_every_legacy_cleanup_selection() {
+        for cleanup_engine in [
+            EngineConfig::local(EngineProvider::BuiltIn, BUILTIN_READABLE_CLEANUP_MODEL),
+            EngineConfig::local(EngineProvider::LlamaCpp, "old-local-polisher"),
+        ] {
+            let mut legacy = AppSettings {
+                schema_version: LEGACY_SETTINGS_SCHEMA_VERSION,
+                push_to_talk_shortcut: "Control+Option+D".into(),
+                cleanup_engine: Some(cleanup_engine),
+                ..AppSettings::default()
+            };
+
+            assert!(legacy.migrate_legacy_schema());
+            assert_eq!(legacy.schema_version, SETTINGS_SCHEMA_VERSION);
+            assert_eq!(legacy.cleanup_engine, None);
+            assert_eq!(legacy.push_to_talk_shortcut, "Control+Option+D");
+            assert!(legacy.validate().is_ok());
+        }
+
+        let mut current = AppSettings::default();
+        assert!(!current.migrate_legacy_schema());
+        assert_eq!(current, AppSettings::default());
     }
 }

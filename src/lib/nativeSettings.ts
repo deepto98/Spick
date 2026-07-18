@@ -28,6 +28,14 @@ export interface NativeAppSettings {
   saveTranscriptHistory: boolean;
 }
 
+export type NativeCleanupLevel = "Verbatim" | "Clean";
+
+const BUILTIN_CLEANUP_ENGINE: NativeEngineConfig = {
+  provider: "builtIn",
+  model: "readable-v1",
+  location: "local",
+};
+
 const LANGUAGE_TAGS: Record<string, string> = {
   English: "en",
   Hindi: "hi",
@@ -35,6 +43,11 @@ const LANGUAGE_TAGS: Record<string, string> = {
   Spanish: "es",
   French: "fr",
 };
+
+export const SPEECH_LANGUAGE_OPTIONS = [
+  "Auto-detect",
+  ...Object.keys(LANGUAGE_TAGS),
+];
 
 const LANGUAGE_NAMES = Object.fromEntries(
   Object.entries(LANGUAGE_TAGS).map(([name, tag]) => [tag, name]),
@@ -72,6 +85,27 @@ export function languagePolicyBadge(policy: NativeLanguagePolicy) {
   const language =
     policy.mode === "fixed" ? policy.language : policy.outputLanguage;
   return baseLanguage(language).toUpperCase();
+}
+
+export function cleanupLevelForEngine(
+  engine: NativeEngineConfig | null,
+): NativeCleanupLevel | null {
+  if (!engine) return "Verbatim";
+  if (
+    engine.provider === BUILTIN_CLEANUP_ENGINE.provider &&
+    engine.model === BUILTIN_CLEANUP_ENGINE.model &&
+    engine.location === BUILTIN_CLEANUP_ENGINE.location
+  ) {
+    return "Clean";
+  }
+  return null;
+}
+
+export function cleanupEngineForLevel(
+  level: NativeCleanupLevel,
+): NativeEngineConfig | null {
+  if (level === "Verbatim") return null;
+  return { ...BUILTIN_CLEANUP_ENGINE };
 }
 
 function baseLanguage(language: string) {

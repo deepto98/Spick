@@ -13,8 +13,9 @@ use crate::{
         SessionState, SessionTrigger,
     },
     engines::{
-        resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput,
-        DictationTranscript, EngineError, ModelLanguageSet, TranscriptionRequest,
+        resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput, CleanupEngine,
+        CleanupRequest, DictationTranscript, EngineError, ModelLanguageSet, RuleBasedCleanupEngine,
+        TranscriptResult, TranscriptionRequest,
     },
     hud,
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
@@ -459,6 +460,7 @@ pub(crate) fn start_session<R: Runtime>(
     };
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
+    let cleanup_engine = settings.cleanup_engine;
     let hud_position = settings.hud.position;
     let level_app = app.clone();
     let level_sink: LevelSink = Arc::new(move |payload| {
@@ -483,7 +485,12 @@ pub(crate) fn start_session<R: Runtime>(
             .lock()
             .map_err(|_| "microphone capture lock is poisoned".to_string())?;
         let listening = session
-            .start(trigger, language_policy, transcription_engine)
+            .start(
+                trigger,
+                language_policy,
+                transcription_engine,
+                cleanup_engine,
+            )
             .map_err(|error| error.to_string())?;
         let session_id = active_session_id(&listening)?;
         if let Err(error) = state.begin_transcription(session_id.clone(), captured_target.clone()) {
@@ -555,6 +562,7 @@ fn fail_target_preflight<R: Runtime>(
                 trigger,
                 settings.language_policy,
                 settings.transcription_engine,
+                settings.cleanup_engine,
             )
             .and_then(|_| session.fail_with_delivery(error.to_string(), delivery))
             .map_err(|transition| transition.to_string())?
@@ -780,7 +788,7 @@ fn transcribe_capture(
                 EngineError::Backend(error)
             }
         })?;
-    let result = state.whisper.transcribe(
+    let mut result = state.whisper.transcribe(
         Arc::clone(&model),
         &model_path,
         TranscriptionRequest {
@@ -794,12 +802,40 @@ fn transcribe_capture(
             cancellation: Some(cancellation.as_ref()),
         },
     )?;
+    apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
 
     Ok(PendingDictationTranscript {
         session_id: session.id.clone(),
         engine_id: model.id.clone(),
         transcript: result,
     })
+}
+
+fn apply_configured_cleanup(
+    cleanup_engine: Option<&EngineConfig>,
+    transcript: &mut TranscriptResult,
+) -> Result<(), EngineError> {
+    let Some(cleanup_engine) = cleanup_engine else {
+        return Ok(());
+    };
+    if !cleanup_engine.is_builtin_readable_cleanup() {
+        return Err(EngineError::InvalidRequest(
+            "the selected cleanup engine is not connected yet".into(),
+        ));
+    }
+
+    let cleanup = RuleBasedCleanupEngine::default().cleanup(CleanupRequest {
+        transcript,
+        output_language: None,
+    })?;
+    if cleanup.changed {
+        transcript.text = cleanup.text;
+        // Timing segments describe the raw recognizer output. Once tokens are
+        // removed, keeping them would expose stale filler text and imply
+        // offsets that no longer match the delivered transcript.
+        transcript.segments.clear();
+    }
+    Ok(())
 }
 
 fn claim_session_insertion(
@@ -1104,6 +1140,7 @@ mod tests {
                 trigger: SessionTrigger::Shortcut,
                 language_policy: LanguagePolicy::Auto,
                 transcription_engine: AppSettings::default().transcription_engine,
+                cleanup_engine: AppSettings::default().cleanup_engine,
                 started_at_ms: 1,
                 ended_at_ms: None,
                 cancel_reason: None,
@@ -1150,6 +1187,53 @@ mod tests {
             engine_error_message(EngineError::Backend("Download a model first".into())),
             "Download a model first"
         );
+    }
+
+    #[test]
+    fn no_cleanup_engine_preserves_as_spoken_text_exactly() {
+        let mut transcript = TranscriptResult::final_text("Um,  keep this as spoken.");
+        transcript.detected_language = Some("en".into());
+
+        apply_configured_cleanup(None, &mut transcript).unwrap();
+
+        assert_eq!(transcript.text, "Um,  keep this as spoken.");
+    }
+
+    #[test]
+    fn configured_readable_cleanup_changes_the_live_transcript_text() {
+        let cleanup_engine = EngineConfig::local(
+            EngineProvider::BuiltIn,
+            crate::domain::BUILTIN_READABLE_CLEANUP_MODEL,
+        );
+        let mut transcript = TranscriptResult::final_text("Um,  this is, uh, ready.");
+        transcript.detected_language = Some("en-US".into());
+        transcript.segments.push(crate::engines::TranscriptSegment {
+            text: transcript.text.clone(),
+            start_ms: 0,
+            end_ms: 800,
+            language: Some("en".into()),
+            confidence: None,
+        });
+
+        apply_configured_cleanup(Some(&cleanup_engine), &mut transcript).unwrap();
+
+        assert_eq!(transcript.text, "this is ready.");
+        assert!(transcript.segments.is_empty());
+    }
+
+    #[test]
+    fn live_pipeline_rejects_an_unconnected_polishing_engine() {
+        let unsupported = EngineConfig::local(EngineProvider::LlamaCpp, "local-polisher");
+        let mut transcript = TranscriptResult::final_text("Um, hello.");
+        transcript.detected_language = Some("en".into());
+
+        assert_eq!(
+            apply_configured_cleanup(Some(&unsupported), &mut transcript),
+            Err(EngineError::InvalidRequest(
+                "the selected cleanup engine is not connected yet".into()
+            ))
+        );
+        assert_eq!(transcript.text, "Um, hello.");
     }
 
     #[test]

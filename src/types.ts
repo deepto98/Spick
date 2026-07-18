@@ -47,5 +47,5 @@ export interface AppSettings {
   showWidget: boolean;
   keepHistory: boolean;
   cloudFallback: boolean;
-  cleanupLevel: "Verbatim" | "Clean" | "Polished";
+  cleanupLevel: "Verbatim" | "Clean";
 }

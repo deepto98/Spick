@@ -74,6 +74,7 @@ interface SelectFieldProps {
   onChange: (value: string) => void;
   options: string[];
   hint?: string;
+  disabled?: boolean;
 }
 
 export function SelectField({
@@ -82,6 +83,7 @@ export function SelectField({
   onChange,
   options,
   hint,
+  disabled = false,
 }: SelectFieldProps) {
   return (
     <label className="field">
@@ -89,6 +91,7 @@ export function SelectField({
       <span className="select-wrap">
         <select
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.currentTarget.value)}
         >
           {options.map((option) => (

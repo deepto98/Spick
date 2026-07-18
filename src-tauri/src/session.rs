@@ -63,8 +63,15 @@ impl SessionController {
         trigger: SessionTrigger,
         language_policy: LanguagePolicy,
         transcription_engine: EngineConfig,
+        cleanup_engine: Option<EngineConfig>,
     ) -> Result<DictationStateEvent, SessionError> {
-        self.start_at(trigger, language_policy, transcription_engine, now_ms())
+        self.start_at(
+            trigger,
+            language_policy,
+            transcription_engine,
+            cleanup_engine,
+            now_ms(),
+        )
     }
 
     pub fn stop(&mut self) -> Result<DictationStateEvent, SessionError> {
@@ -108,6 +115,7 @@ impl SessionController {
         trigger: SessionTrigger,
         language_policy: LanguagePolicy,
         transcription_engine: EngineConfig,
+        cleanup_engine: Option<EngineConfig>,
         timestamp_ms: u64,
     ) -> Result<DictationStateEvent, SessionError> {
         if let Some(session) = &self.current {
@@ -127,6 +135,7 @@ impl SessionController {
             trigger,
             language_policy,
             transcription_engine,
+            cleanup_engine,
             started_at_ms: timestamp_ms,
             ended_at_ms: None,
             cancel_reason: None,
@@ -257,10 +266,19 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{AppSettings, DictationDeliveryStatus};
+    use crate::domain::{
+        AppSettings, DictationDeliveryStatus, EngineProvider, BUILTIN_READABLE_CLEANUP_MODEL,
+    };
 
     fn engine() -> EngineConfig {
         AppSettings::default().transcription_engine
+    }
+
+    fn cleanup_engine() -> Option<EngineConfig> {
+        Some(EngineConfig::local(
+            EngineProvider::BuiltIn,
+            BUILTIN_READABLE_CLEANUP_MODEL,
+        ))
     }
 
     fn session(event: &DictationStateEvent) -> &DictationSession {
@@ -286,6 +304,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 100,
             )
             .unwrap();
@@ -300,22 +319,23 @@ mod tests {
     }
 
     #[test]
-    fn session_keeps_the_engine_selected_when_recording_started() {
+    fn session_keeps_its_engine_choices_when_recording_started() {
         let mut controller = SessionController::default();
-        let selected = EngineConfig::local(
-            crate::domain::EngineProvider::WhisperCpp,
-            "whisper-tiny-multilingual-f16",
-        );
+        let selected =
+            EngineConfig::local(EngineProvider::WhisperCpp, "whisper-tiny-multilingual-f16");
+        let selected_cleanup = cleanup_engine();
         let listening = controller
             .start_at(
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 selected.clone(),
+                selected_cleanup.clone(),
                 100,
             )
             .unwrap();
 
         assert_eq!(session(&listening).transcription_engine, selected);
+        assert_eq!(session(&listening).cleanup_engine, selected_cleanup);
     }
 
     #[test]
@@ -326,6 +346,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 100,
             )
             .unwrap();
@@ -335,6 +356,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 101
             ),
             Err(SessionError::AlreadyActive(SessionState::Listening))
@@ -349,6 +371,7 @@ mod tests {
                 SessionTrigger::UserInterface,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 100,
             )
             .unwrap();
@@ -367,6 +390,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 400,
             )
             .unwrap();
@@ -383,6 +407,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 100,
             )
             .unwrap();
@@ -412,6 +437,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 110,
             )
             .unwrap();
@@ -433,6 +459,7 @@ mod tests {
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
                 engine(),
+                cleanup_engine(),
                 100,
             )
             .unwrap();

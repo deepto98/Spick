@@ -3168,7 +3168,7 @@ p {
 }
 .cleanup-options {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 7px;
   margin-top: 9px;
 }
@@ -3201,6 +3201,12 @@ p {
   position: absolute;
   top: 8px;
   right: 8px;
+}
+.cleanup-note {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
 }
 .privacy-hero {
   display: grid;
@@ -4461,6 +4467,17 @@ select:focus-visible {
   background: #fff4ec;
   border: 1px solid #dfb29e;
   border-radius: 8px;
+}
+
+.setup-settings-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.setup-settings-error .button {
+  flex: 0 0 auto;
 }
 
 .permission-value--granted {

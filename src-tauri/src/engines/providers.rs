@@ -437,13 +437,11 @@ where
     }
 }
 
-/// Fast, private cleanup used as the no-model baseline. It only removes exact
-/// filler tokens and normalizes whitespace; it never sends text off-device or
-/// rewrites the user's meaning.
-///
-/// P2: this baseline is English/ASCII-oriented and has no cleanup-language
-/// capability contract yet. Register it only for English sessions until
-/// Unicode tokenization and language-specific filler policies are modeled.
+/// Fast, private cleanup used as the no-model baseline. For English
+/// transcripts, it removes pause-punctuated filler tokens outside quoted or
+/// explicitly referenced text and normalizes whitespace. Ambiguous bare words,
+/// unknown languages, and non-English transcripts pass through until stronger
+/// language-specific policies are modeled.
 pub struct RuleBasedCleanupEngine {
     fillers: Vec<String>,
     descriptor: EngineDescriptor,
@@ -475,10 +473,101 @@ impl RuleBasedCleanupEngine {
     }
 
     fn is_filler(&self, token: &str) -> bool {
-        let normalized = token
-            .trim_matches(|character: char| character.is_ascii_punctuation())
-            .to_ascii_lowercase();
+        let trimmed = token.trim_matches(is_spoken_filler_punctuation);
+        // A bare word is ambiguous: it may be a variable, acronym, or term of
+        // art. Pause punctuation is the minimum evidence this deliberately
+        // conservative cleaner requires before removing it.
+        if trimmed == token {
+            return false;
+        }
+        let normalized = trimmed.to_ascii_lowercase();
         self.fillers.iter().any(|filler| filler == &normalized)
+    }
+
+    fn is_explicit_reference(&self, tokens: &[&str], index: usize) -> bool {
+        let token = tokens[index];
+        let normalized = normalized_token(token);
+        let letters = token
+            .chars()
+            .filter(|character| character.is_ascii_alphabetic())
+            .collect::<String>();
+        if letters.len() > 1
+            && letters
+                .chars()
+                .all(|character| character.is_ascii_uppercase())
+        {
+            return true;
+        }
+
+        if token.eq_ignore_ascii_case(&normalized)
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(*next, "=" | ":=" | "=>" | "==" | "(" | "["))
+        {
+            return true;
+        }
+
+        let Some(previous) = index.checked_sub(1).map(|previous| tokens[previous]) else {
+            return false;
+        };
+        let previous = normalized_token(previous);
+        if matches!(
+            previous.as_str(),
+            "say"
+                | "says"
+                | "said"
+                | "word"
+                | "term"
+                | "phrase"
+                | "called"
+                | "means"
+                | "write"
+                | "writes"
+                | "wrote"
+                | "type"
+                | "typed"
+                | "spell"
+                | "spelled"
+                | "variable"
+                | "identifier"
+                | "symbol"
+                | "parameter"
+                | "argument"
+                | "function"
+                | "method"
+                | "class"
+                | "struct"
+                | "enum"
+                | "constant"
+                | "field"
+                | "property"
+                | "key"
+                | "column"
+                | "label"
+                | "command"
+                | "option"
+                | "flag"
+                | "module"
+                | "package"
+                | "namespace"
+                | "let"
+                | "var"
+                | "const"
+                | "call"
+                | "named"
+                | "name"
+                | "set"
+                | "assign"
+                | "rename"
+                | "use"
+                | "declare"
+        ) {
+            return true;
+        }
+
+        // A bare filler after a determiner is likely being used as a noun
+        // ("an um"), while punctuation such as "a, um," still marks a pause.
+        matches!(previous.as_str(), "a" | "an" | "the") && token.eq_ignore_ascii_case(&normalized)
     }
 }
 
@@ -496,16 +585,205 @@ impl CleanupEngine for RuleBasedCleanupEngine {
         }
 
         let original = request.transcript.text.as_str();
-        let cleaned = original
-            .split_whitespace()
-            .filter(|token| !self.is_filler(token))
-            .collect::<Vec<_>>()
-            .join(" ");
+        if !request
+            .transcript
+            .detected_language
+            .as_deref()
+            .is_some_and(is_english_language)
+        {
+            return Ok(CleanupResult {
+                text: original.into(),
+                changed: false,
+            });
+        }
+
+        let tokens = original.split_whitespace().collect::<Vec<_>>();
+        let mut quotes = QuoteState::default();
+        let mut cleaned_tokens = Vec::with_capacity(tokens.len());
+        for (index, token) in tokens.iter().enumerate() {
+            let quoted = quotes.observe(token);
+            if self.is_filler(token) && !quoted && !self.is_explicit_reference(&tokens, index) {
+                if comma_repair_is_safe(&cleaned_tokens) {
+                    repair_punctuation_after_removed_filler(&mut cleaned_tokens, token);
+                } else {
+                    cleaned_tokens.push((*token).to_owned());
+                }
+            } else {
+                cleaned_tokens.push((*token).to_owned());
+            }
+        }
+        let cleaned = cleaned_tokens.join(" ");
 
         Ok(CleanupResult {
             changed: cleaned != original,
             text: cleaned,
         })
+    }
+}
+
+fn is_spoken_filler_punctuation(character: char) -> bool {
+    matches!(character, ',' | '.' | '!' | '?' | '…')
+}
+
+fn comma_repair_is_safe(cleaned_tokens: &[String]) -> bool {
+    let Some(previous) = cleaned_tokens.last() else {
+        return true;
+    };
+    if !previous.ends_with(',') {
+        return true;
+    }
+    if introductory_comma_belongs_to_previous(cleaned_tokens) {
+        return true;
+    }
+
+    matches!(
+        normalized_token(previous).as_str(),
+        "am" | "are"
+            | "is"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "i"
+            | "you"
+            | "he"
+            | "she"
+            | "we"
+            | "they"
+            | "it"
+            | "and"
+            | "but"
+            | "or"
+    )
+}
+
+fn repair_punctuation_after_removed_filler(cleaned_tokens: &mut Vec<String>, removed: &str) {
+    let preserve_introductory_comma = introductory_comma_belongs_to_previous(cleaned_tokens);
+
+    if !preserve_introductory_comma
+        && cleaned_tokens
+            .last()
+            .is_some_and(|previous| previous.ends_with(','))
+    {
+        let previous = cleaned_tokens
+            .last_mut()
+            .expect("a trailing comma requires a previous token");
+        previous.pop();
+        if previous.is_empty() {
+            cleaned_tokens.pop();
+        }
+    }
+
+    let terminal = removed
+        .chars()
+        .rev()
+        .find(|character| !matches!(character, ','))
+        .filter(|character| matches!(character, '.' | '!' | '?' | '…'));
+    if let (Some(terminal), Some(previous)) = (terminal, cleaned_tokens.last_mut()) {
+        // When the filler ended a sentence, its terminal mark supersedes even
+        // a comma that was otherwise valid before an introductory filler.
+        // Appending would produce malformed output such as `Well,.`.
+        if previous.ends_with(',') {
+            previous.pop();
+        }
+        if !previous.ends_with(['.', '!', '?', '…']) {
+            previous.push(terminal);
+        }
+    }
+}
+
+fn introductory_comma_belongs_to_previous(cleaned_tokens: &[String]) -> bool {
+    let starts_sentence = cleaned_tokens.len() == 1
+        || cleaned_tokens
+            .get(cleaned_tokens.len().saturating_sub(2))
+            .is_some_and(|before| before.ends_with(['.', '!', '?', '…']));
+    starts_sentence
+        && cleaned_tokens.last().is_some_and(|previous| {
+            matches!(
+                normalized_token(previous).as_str(),
+                "well"
+                    | "yes"
+                    | "no"
+                    | "okay"
+                    | "ok"
+                    | "so"
+                    | "now"
+                    | "then"
+                    | "however"
+                    | "meanwhile"
+                    | "moreover"
+                    | "nevertheless"
+                    | "finally"
+            )
+        })
+}
+
+fn normalized_token(token: &str) -> String {
+    token
+        .trim_matches(|character: char| character.is_ascii_punctuation())
+        .to_ascii_lowercase()
+}
+
+fn is_english_language(language: &str) -> bool {
+    language
+        .split('-')
+        .next()
+        .is_some_and(|language| language.eq_ignore_ascii_case("en"))
+}
+
+#[derive(Default)]
+struct QuoteState {
+    double: bool,
+    single: bool,
+    backtick: bool,
+}
+
+impl QuoteState {
+    fn observe(&mut self, token: &str) -> bool {
+        let started_quoted = self.any();
+        let mut contains_quote = false;
+        let characters = token.chars().collect::<Vec<_>>();
+
+        for (index, character) in characters.iter().enumerate() {
+            match character {
+                '"' => {
+                    self.double = !self.double;
+                    contains_quote = true;
+                }
+                '“' => {
+                    self.double = true;
+                    contains_quote = true;
+                }
+                '”' if self.double => {
+                    self.double = false;
+                    contains_quote = true;
+                }
+                '‘' => {
+                    self.single = true;
+                    contains_quote = true;
+                }
+                '’' if self.single => {
+                    self.single = false;
+                    contains_quote = true;
+                }
+                '\'' if index == 0 || (self.single && index + 1 == characters.len()) => {
+                    self.single = !self.single;
+                    contains_quote = true;
+                }
+                '`' => {
+                    self.backtick = !self.backtick;
+                    contains_quote = true;
+                }
+                _ => {}
+            }
+        }
+
+        started_quoted || contains_quote
+    }
+
+    fn any(&self) -> bool {
+        self.double || self.single || self.backtick
     }
 }
 
@@ -782,9 +1060,9 @@ mod tests {
     }
 
     #[test]
-    fn rule_cleanup_removes_only_exact_fillers_and_normalizes_whitespace() {
+    fn rule_cleanup_removes_pause_punctuated_fillers_and_normalizes_whitespace() {
         let engine = RuleBasedCleanupEngine::default();
-        let transcript = TranscriptResult::final_text("Um,  I need the umbrella, uh, today.");
+        let transcript = english_transcript("Um,  I need the umbrella uh, today.");
         let result = engine
             .cleanup(CleanupRequest {
                 transcript: &transcript,
@@ -792,8 +1070,126 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(result.text, "I need the umbrella, today.");
+        assert_eq!(result.text, "I need the umbrella today.");
         assert!(result.changed);
         assert_eq!(engine.descriptor().role(), EngineRole::Cleanup);
+    }
+
+    #[test]
+    fn rule_cleanup_preserves_quoted_and_explicitly_referenced_fillers() {
+        let engine = RuleBasedCleanupEngine::default();
+        let transcript =
+            english_transcript("Say um, then \"uh and erm\", but, uh, keep the term um and UM.");
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.text,
+            "Say um, then \"uh and erm\", but keep the term um and UM."
+        );
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_repairs_pause_punctuation() {
+        let engine = RuleBasedCleanupEngine::default();
+        let transcript = english_transcript(
+            "This is, uh, ready. However, um, we should go. I, erm, agree. I think uh.",
+        );
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.text,
+            "This is ready. However, we should go. I agree. I think."
+        );
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_replaces_an_introductory_comma_with_the_terminal_mark() {
+        let engine = RuleBasedCleanupEngine::default();
+
+        for (original, expected) in [("Well, um.", "Well."), ("Well, um…", "Well…")] {
+            let transcript = english_transcript(original);
+            let result = engine
+                .cleanup(CleanupRequest {
+                    transcript: &transcript,
+                    output_language: None,
+                })
+                .unwrap();
+
+            assert_eq!(result.text, expected);
+            assert!(result.changed);
+        }
+    }
+
+    #[test]
+    fn rule_cleanup_preserves_identifier_and_code_uses() {
+        let engine = RuleBasedCleanupEngine::default();
+        let original = "um = 2. Set um to three. Rename um next. Use uh here. Declare erm now. Keep the name um. Then let uh = 4 and call erm(). Keep --um and $uh. Leave um” alone.";
+        let transcript = english_transcript(original);
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.text, original);
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_preserves_ambiguous_bare_fillers() {
+        let engine = RuleBasedCleanupEngine::default();
+        let original = "I um think uh might mean erm plus one.";
+        let transcript = english_transcript(original);
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.text, original);
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_leaves_unknown_and_non_english_text_untouched() {
+        let engine = RuleBasedCleanupEngine::default();
+        let unknown = TranscriptResult::final_text("Um,  leave this exactly.");
+        let mut hindi = TranscriptResult::final_text("Um,  यह रहने दो.");
+        hindi.detected_language = Some("hi".into());
+
+        for transcript in [&unknown, &hindi] {
+            let result = engine
+                .cleanup(CleanupRequest {
+                    transcript,
+                    output_language: None,
+                })
+                .unwrap();
+            assert_eq!(result.text, transcript.text);
+            assert!(!result.changed);
+        }
+    }
+
+    fn english_transcript(text: &str) -> TranscriptResult {
+        let mut transcript = TranscriptResult::final_text(text);
+        transcript.detected_language = Some("en".into());
+        transcript
     }
 }

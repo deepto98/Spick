@@ -12,7 +12,7 @@ use tempfile::Builder as TempFileBuilder;
 
 use crate::{
     audio::AudioCaptureController,
-    domain::{AppSettings, SETTINGS_SCHEMA_VERSION},
+    domain::{AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION},
     engines::{DictationTranscript, WhisperCppRuntime},
     model_store::ModelStore,
     platform::{CapturedTextTarget, TextTargetController},
@@ -233,8 +233,13 @@ fn load_settings(path: &Path) -> Result<AppSettings, String> {
         }
     };
 
-    match parse_settings(&bytes) {
-        Ok(settings) => Ok(settings),
+    match parse_settings_document(&bytes) {
+        Ok(parsed) => {
+            if parsed.migrated_legacy_schema {
+                write_settings(path, &parsed.settings)?;
+            }
+            Ok(parsed.settings)
+        }
         Err(SettingsParseError::UnsupportedSchema(version)) => {
             Err(unsupported_schema_message(path, version))
         }
@@ -304,17 +309,33 @@ impl fmt::Display for SettingsParseError {
 }
 
 fn parse_settings(bytes: &[u8]) -> Result<AppSettings, SettingsParseError> {
-    let settings: AppSettings = serde_json::from_slice(bytes)
+    parse_settings_document(bytes).map(|parsed| parsed.settings)
+}
+
+struct ParsedSettings {
+    settings: AppSettings,
+    migrated_legacy_schema: bool,
+}
+
+fn parse_settings_document(bytes: &[u8]) -> Result<ParsedSettings, SettingsParseError> {
+    let mut settings: AppSettings = serde_json::from_slice(bytes)
         .map_err(|error| SettingsParseError::InvalidJson(error.to_string()))?;
-    if settings.schema_version != SETTINGS_SCHEMA_VERSION {
+    let migrated_legacy_schema = if settings.schema_version == LEGACY_SETTINGS_SCHEMA_VERSION {
+        settings.migrate_legacy_schema()
+    } else if settings.schema_version == SETTINGS_SCHEMA_VERSION {
+        false
+    } else {
         return Err(SettingsParseError::UnsupportedSchema(
             settings.schema_version,
         ));
-    }
+    };
     settings
         .validate()
         .map_err(SettingsParseError::InvalidSettings)?;
-    Ok(settings)
+    Ok(ParsedSettings {
+        settings,
+        migrated_legacy_schema,
+    })
 }
 
 fn unsupported_schema_message(path: &Path, version: u32) -> String {
@@ -442,8 +463,9 @@ mod tests {
     use super::*;
     use crate::{
         domain::{
-            DictationDelivery, DictationDeliveryStatus, EngineLocation, EngineProvider,
-            LanguagePolicy,
+            DictationDelivery, DictationDeliveryStatus, EngineConfig, EngineLocation,
+            EngineProvider, HudPosition, HudSettings, LanguagePolicy,
+            BUILTIN_READABLE_CLEANUP_MODEL,
         },
         engines::TranscriptResult,
     };
@@ -483,6 +505,108 @@ mod tests {
         let raw = fs::read_to_string(&path).unwrap();
         assert!(!raw.to_ascii_lowercase().contains("apikey"));
         assert!(!raw.to_ascii_lowercase().contains("secret"));
+    }
+
+    #[test]
+    fn legacy_unsupported_cleanup_is_deactivated_without_resetting_other_settings() {
+        let (_directory, path) = test_path();
+        let legacy = AppSettings {
+            schema_version: LEGACY_SETTINGS_SCHEMA_VERSION,
+            push_to_talk_shortcut: "Control+Option+D".into(),
+            language_policy: LanguagePolicy::Mixed {
+                languages: vec!["en-IN".into(), "hi-IN".into()],
+            },
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::OpenAi,
+                model: "gpt-4o-transcribe".into(),
+                location: EngineLocation::Cloud,
+            },
+            cleanup_engine: Some(EngineConfig::local(
+                EngineProvider::LlamaCpp,
+                "old-local-polisher",
+            )),
+            hud: HudSettings {
+                position: HudPosition::BottomRight,
+            },
+            allow_cloud_fallback: true,
+            save_transcript_history: true,
+        };
+        let original = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let state = AppState::load(path.clone()).unwrap();
+        let expected = AppSettings {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            cleanup_engine: None,
+            ..legacy
+        };
+
+        assert_eq!(state.settings_snapshot().unwrap(), expected);
+        assert_eq!(parse_settings(&fs::read(&path).unwrap()).unwrap(), expected);
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn legacy_builtin_cleanup_is_deactivated_without_implied_consent() {
+        let (_directory, path) = test_path();
+        let legacy = AppSettings {
+            schema_version: LEGACY_SETTINGS_SCHEMA_VERSION,
+            push_to_talk_shortcut: "Control+Option+D".into(),
+            cleanup_engine: Some(EngineConfig::local(
+                EngineProvider::BuiltIn,
+                BUILTIN_READABLE_CLEANUP_MODEL,
+            )),
+            ..AppSettings::default()
+        };
+        let original = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let state = AppState::load(path.clone()).unwrap();
+        let expected = AppSettings {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            cleanup_engine: None,
+            ..legacy
+        };
+
+        assert_eq!(state.settings_snapshot().unwrap(), expected);
+        assert_eq!(parse_settings(&fs::read(&path).unwrap()).unwrap(), expected);
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn explicit_schema_v2_builtin_cleanup_remains_selected() {
+        let (_directory, path) = test_path();
+        let expected = AppSettings {
+            cleanup_engine: Some(EngineConfig::local(
+                EngineProvider::BuiltIn,
+                BUILTIN_READABLE_CLEANUP_MODEL,
+            )),
+            ..AppSettings::default()
+        };
+        fs::write(&path, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+
+        let state = AppState::load(path.clone()).unwrap();
+
+        assert_eq!(state.settings_snapshot().unwrap(), expected);
+        assert!(!backup_path(&path).exists());
+    }
+
+    #[test]
+    fn new_unsupported_cleanup_selection_is_rejected_without_touching_settings() {
+        let (_directory, path) = test_path();
+        let state = AppState::load(path.clone()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut unsupported = state.settings_snapshot().unwrap();
+        unsupported.cleanup_engine = Some(EngineConfig::local(
+            EngineProvider::LlamaCpp,
+            "new-local-polisher",
+        ));
+
+        let error = state.persist_settings(&unsupported).unwrap_err();
+
+        assert!(error.contains("only the built-in readable-v1 cleanup engine"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!backup_path(&path).exists());
     }
 
     #[test]

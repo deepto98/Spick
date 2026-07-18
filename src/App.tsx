@@ -21,12 +21,15 @@ import {
   type ModelDownloadProgress,
 } from "./lib/nativeModels";
 import {
+  cleanupEngineForLevel,
+  cleanupLevelForEngine,
   getNativeSettings,
   languagePolicyBadge,
   languagePolicyForName,
   languagePolicyName,
   updateNativeSettings,
   type NativeAppSettings,
+  type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
 import type { AppSettings, Engine, ViewId, VocabularyEntry } from "./types";
 import { EnginesView } from "./views/EnginesView";
@@ -43,7 +46,7 @@ const defaultSettings: AppSettings = {
   showWidget: true,
   keepHistory: false,
   cloudFallback: false,
-  cleanupLevel: "Clean",
+  cleanupLevel: "Verbatim",
 };
 
 function App() {
@@ -63,11 +66,19 @@ function App() {
   const cancelledModelDownloads = useRef(new Set<string>());
   const [modelError, setModelError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [languageSaving, setLanguageSaving] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsLoadRevision, setSettingsLoadRevision] = useState(0);
   const [nativeSettings, setNativeSettings] =
     useState<NativeAppSettings | null>(null);
   const nativeSettingsRef = useRef<NativeAppSettings | null>(null);
-  const languageSaveRevision = useRef(0);
+  const settingsIntentRef = useRef<{
+    languagePolicy: NativeLanguagePolicy;
+    cleanupLevel: AppSettings["cleanupLevel"];
+  }>({
+    languagePolicy: { mode: "auto" },
+    cleanupLevel: defaultSettings.cleanupLevel,
+  });
+  const settingsSaveRevision = useRef(0);
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const [vocabulary, setVocabulary] =
     useState<VocabularyEntry[]>(initialVocabulary);
@@ -82,16 +93,29 @@ function App() {
     () => window.localStorage.getItem("spick-onboarding-complete") === "true",
   );
 
-  const acceptNativeSettings = useCallback((saved: NativeAppSettings) => {
-    nativeSettingsRef.current = saved;
-    setNativeSettings(saved);
-    setSettings((current) => ({
-      ...current,
-      cloudFallback: saved.allowCloudFallback,
-      keepHistory: saved.saveTranscriptHistory,
-      language: languagePolicyName(saved.languagePolicy),
-    }));
-  }, []);
+  const acceptNativeSettings = useCallback(
+    (saved: NativeAppSettings, syncIntent = true) => {
+      const language = languagePolicyName(saved.languagePolicy);
+      const cleanupLevel =
+        cleanupLevelForEngine(saved.cleanupEngine) ?? "Verbatim";
+      nativeSettingsRef.current = saved;
+      if (syncIntent) {
+        settingsIntentRef.current = {
+          languagePolicy: saved.languagePolicy,
+          cleanupLevel,
+        };
+      }
+      setNativeSettings(saved);
+      setSettings((current) => ({
+        ...current,
+        cloudFallback: saved.allowCloudFallback,
+        keepHistory: saved.saveTranscriptHistory,
+        language,
+        cleanupLevel,
+      }));
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!dictation.native || hudOnly) return;
@@ -102,13 +126,13 @@ function App() {
       })
       .catch((reason) => {
         if (!disposed) {
-          setSettingsError(`Couldn’t read saved language settings: ${reason}`);
+          setSettingsError(`Couldn’t read saved settings: ${reason}`);
         }
       });
     return () => {
       disposed = true;
     };
-  }, [acceptNativeSettings, dictation.native, hudOnly]);
+  }, [acceptNativeSettings, dictation.native, hudOnly, settingsLoadRevision]);
 
   const refreshLocalEngines = useCallback(async () => {
     if (!dictation.native) return;
@@ -215,18 +239,45 @@ function App() {
   };
 
   const changeSettings = (next: AppSettings) => {
-    const previousLanguage = settings.language;
-    setSettings(next);
-    if (!dictation.native || next.language === previousLanguage) return;
-
-    const languagePolicy = languagePolicyForName(next.language);
-    if (!languagePolicy || !nativeSettingsRef.current) {
-      setSettingsError("That language mode isn’t connected to dictation yet.");
+    if (!dictation.native) {
+      setSettings(next);
       return;
     }
 
-    const requestRevision = ++languageSaveRevision.current;
-    setLanguageSaving(true);
+    const languageChanged = next.language !== settings.language;
+    const cleanupChanged = next.cleanupLevel !== settings.cleanupLevel;
+    if (!languageChanged && !cleanupChanged) {
+      setSettings(next);
+      return;
+    }
+
+    const intent = settingsIntentRef.current;
+    const languagePolicy = languageChanged
+      ? languagePolicyForName(next.language)
+      : intent.languagePolicy;
+    const desiredCleanupLevel = cleanupChanged
+      ? next.cleanupLevel
+      : intent.cleanupLevel;
+    if (!languagePolicy || !nativeSettingsRef.current) {
+      setSettingsError("That setting isn’t connected to dictation yet.");
+      return;
+    }
+    const cleanupEngine = cleanupEngineForLevel(desiredCleanupLevel);
+
+    // Native-backed choices stay on their last acknowledged values while the
+    // write is in flight. Preview-only choices can still update immediately.
+    setSettings((current) => ({
+      ...next,
+      language: current.language,
+      cleanupLevel: current.cleanupLevel,
+    }));
+    settingsIntentRef.current = {
+      languagePolicy,
+      cleanupLevel: desiredCleanupLevel,
+    };
+
+    const requestRevision = ++settingsSaveRevision.current;
+    setSettingsSaving(true);
     setSettingsError(null);
     settingsSaveQueue.current = settingsSaveQueue.current
       .catch(() => undefined)
@@ -236,22 +287,23 @@ function App() {
         const saved = await updateNativeSettings({
           ...current,
           languagePolicy,
+          cleanupEngine,
         });
-        nativeSettingsRef.current = saved;
-        if (requestRevision === languageSaveRevision.current) {
-          acceptNativeSettings(saved);
-        }
+        acceptNativeSettings(
+          saved,
+          requestRevision === settingsSaveRevision.current,
+        );
       })
       .catch((reason) => {
-        if (requestRevision === languageSaveRevision.current) {
+        if (requestRevision === settingsSaveRevision.current) {
           const current = nativeSettingsRef.current;
           if (current) acceptNativeSettings(current);
-          setSettingsError(`Couldn’t save that language: ${reason}`);
+          setSettingsError(`Couldn’t save that setting: ${reason}`);
         }
       })
       .finally(() => {
-        if (requestRevision === languageSaveRevision.current) {
-          setLanguageSaving(false);
+        if (requestRevision === settingsSaveRevision.current) {
+          setSettingsSaving(false);
         }
       });
   };
@@ -365,14 +417,22 @@ function App() {
   }
 
   if (!onboardingComplete) {
+    const settingsReady = !dictation.native || nativeSettings !== null;
     return (
       <Onboarding
         accessibilityError={accessibility.error ?? undefined}
         accessibilityPending={accessibility.pending}
         accessibilityStatus={accessibility.status}
         settings={settings}
+        settingsError={settingsError ?? undefined}
+        settingsReady={settingsReady}
+        settingsSaving={settingsSaving}
         onRefreshAccessibility={() => void accessibility.refresh()}
         onRequestAccessibility={() => void accessibility.request()}
+        onRetrySettings={() => {
+          setSettingsError(null);
+          setSettingsLoadRevision((revision) => revision + 1);
+        }}
         onSettingsChange={changeSettings}
         onComplete={completeOnboarding}
       />
@@ -448,7 +508,7 @@ function App() {
               accessibilityError={accessibility.error ?? undefined}
               accessibilityPending={accessibility.pending}
               accessibilityStatus={accessibility.status}
-              languageSaving={languageSaving}
+              settingsSaving={settingsSaving}
               nativeError={settingsError ?? undefined}
               onChange={changeSettings}
               onRefreshAccessibility={() => void accessibility.refresh()}

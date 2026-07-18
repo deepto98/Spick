@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   AppWindow,
   BellRing,
-  BookOpenText,
   Check,
   ChevronRight,
   Cloud,
@@ -21,6 +20,7 @@ import {
 } from "lucide-react";
 import type { AppSettings } from "../types";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
+import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
 import {
   PageHeader,
   SelectField,
@@ -34,7 +34,7 @@ interface SettingsViewProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
-  languageSaving: boolean;
+  settingsSaving: boolean;
   nativeError?: string;
   onChange: (next: AppSettings) => void;
   onRequestAccessibility: () => void;
@@ -75,7 +75,7 @@ export function SettingsView({
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
-  languageSaving,
+  settingsSaving,
   nativeError,
   onChange,
   onRequestAccessibility,
@@ -100,18 +100,18 @@ export function SettingsView({
       <PageHeader
         eyebrow="PREFERENCES"
         title="Settings"
-        description="Language and Accessibility are live. Preview-only controls are marked."
+        description="Language, light cleanup, and Accessibility are live. Preview-only controls are marked."
         actions={
           <span className="settings-saved">
             <Check size={14} />
-            {languageSaving ? "Saving language…" : "Language saves here"}
+            {settingsSaving ? "Saving…" : "Saved on this Mac"}
           </span>
         }
       />
 
       {nativeError && (
         <div className="engine-inline-error" role="alert">
-          <strong>Language stayed where it was</strong>
+          <strong>Couldn’t save that change</strong>
           <span>{nativeError}</span>
         </div>
       )}
@@ -325,58 +325,49 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<Languages size={18} />}
                 title="Language & cleanup"
-                description="Choose a language and how much cleanup to apply."
+                description="Choose what you’re speaking. Spick can also trim a few obvious English fillers."
               />
               <section className="settings-card settings-card--form">
                 <SelectField
                   label="Speech language"
                   value={settings.language}
+                  disabled={settingsSaving}
                   onChange={(value) => update("language", value)}
-                  options={[
-                    "Auto-detect",
-                    "English",
-                    "Hindi",
-                    "Bengali",
-                    "Spanish",
-                    "French",
-                  ]}
+                  options={[...SPEECH_LANGUAGE_OPTIONS]}
                   hint="Auto picks one language per recording. English-only models pin this setting to English."
                 />
                 <div className="cleanup-setting">
                   <span className="field__label">Cleanup style</span>
                   <div className="cleanup-options">
-                    {(["Verbatim", "Clean", "Polished"] as const).map(
-                      (level) => (
-                        <button
-                          type="button"
-                          key={level}
-                          className={
-                            settings.cleanupLevel === level ? "active" : ""
-                          }
-                          onClick={() => update("cleanupLevel", level)}
-                        >
-                          <span>{level}</span>
-                          <small>
-                            {level === "Verbatim"
-                              ? "Only punctuation"
-                              : level === "Clean"
-                                ? "Remove fillers and repeats"
-                                : "Rewrite for clarity"}
-                          </small>
-                          {settings.cleanupLevel === level && (
-                            <Check size={14} />
-                          )}
-                        </button>
-                      ),
-                    )}
+                    {(["Verbatim", "Clean"] as const).map((level) => (
+                      <button
+                        type="button"
+                        key={level}
+                        className={
+                          settings.cleanupLevel === level ? "active" : ""
+                        }
+                        disabled={settingsSaving}
+                        onClick={() => update("cleanupLevel", level)}
+                      >
+                        <span>
+                          {level === "Verbatim"
+                            ? "As transcribed"
+                            : "Trim obvious fillers"}
+                        </span>
+                        <small>
+                          {level === "Verbatim"
+                            ? "Leave the transcript alone"
+                            : "Remove pause-marked “um”, “uh”, and “erm”"}
+                        </small>
+                        {settings.cleanupLevel === level && <Check size={14} />}
+                      </button>
+                    ))}
                   </div>
+                  <p className="cleanup-note">
+                    English only for now. Bare words and other languages stay as
+                    transcribed.
+                  </p>
                 </div>
-                <SettingRow
-                  icon={<BookOpenText size={17} />}
-                  title="Keep specialist terms"
-                  description="Vocabulary and code terms will be protected during cleanup."
-                  control={<span className="fixed-value">Planned</span>}
-                />
               </section>
             </>
           )}

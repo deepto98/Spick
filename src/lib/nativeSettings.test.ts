@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  cleanupEngineForLevel,
+  cleanupLevelForEngine,
   languagePolicyBadge,
   languagePolicyForName,
   languagePolicyName,
@@ -23,5 +25,34 @@ describe("native language settings", () => {
       "BN",
     );
     expect(languagePolicyBadge({ mode: "auto" })).toBe("AUTO");
+  });
+});
+
+describe("native cleanup settings", () => {
+  it("maps as-spoken and deterministic cleanup modes", () => {
+    expect(cleanupEngineForLevel("Verbatim")).toBeNull();
+    expect(cleanupEngineForLevel("Clean")).toEqual({
+      provider: "builtIn",
+      model: "readable-v1",
+      location: "local",
+    });
+  });
+
+  it("renders the active native cleanup engine honestly", () => {
+    expect(cleanupLevelForEngine(null)).toBe("Verbatim");
+    expect(
+      cleanupLevelForEngine({
+        provider: "builtIn",
+        model: "readable-v1",
+        location: "local",
+      }),
+    ).toBe("Clean");
+    expect(
+      cleanupLevelForEngine({
+        provider: "openAi",
+        model: "future-cleanup",
+        location: "cloud",
+      }),
+    ).toBeNull();
   });
 });

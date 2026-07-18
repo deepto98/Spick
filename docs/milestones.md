@@ -24,9 +24,10 @@ Current checkpoint:
 - The shortcut, non-activating HUD, bounded in-memory microphone capture, and cancellation path are working.
 - Curated models can be downloaded or cancelled, size-checked, SHA-256 verified, selected, removed, and loaded through a cached Metal-enabled `whisper.cpp` runtime.
 - Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
+- The cleanup choice is saved natively and captured per session. As-transcribed output is the safe default; the opt-in local cleaner removes pause-marked English “um”, “uh”, and “erm” when punctuation repair is unambiguous, while preserving bare identifiers, quoted uses, and other languages.
 - Focused-field capture, live Accessibility permission handling, exact-target revalidation, secure/protected-field preflight, and structured copy recovery are working.
 - Final transcripts are kept in memory and shown on Today for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
-- Cleanup and a safe automatic text-input primitive remain to complete this milestone. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
+- A safe automatic text-input primitive remains to complete this milestone. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
 
 Exit criteria:
 
@@ -64,7 +65,7 @@ Exit criteria:
 
 ## Milestone 4: cleanup and cloud providers
 
-Introduce separate transcription and cleanup selectors. Provide deterministic Verbatim and Clean modes before optional model-based Polished output. Add cloud adapters one provider at a time, beginning with a single speech service, and store its key in the macOS credential store.
+Build on the initial as-transcribed and deterministic English cleanup choices with separate engine selectors and, only when it has a clear job, optional model-based rewriting. Add cloud adapters one provider at a time, beginning with a single speech service, and store its key in the macOS credential store.
 
 Adapters declare streaming, language, translation, vocabulary, and cleanup capabilities. Local-only mode and per-role routing are enforced by the core.
 
@@ -74,7 +75,7 @@ Exit criteria:
 - Unsupported provider, language, and mode combinations cannot be selected.
 - API keys never enter application settings, SQLite, logs, or frontend state.
 - Local-only mode is covered by tests that reject cloud routing and fallback.
-- Filler-word removal does not alter quoted or intentionally verbatim speech in Verbatim mode.
+- As-transcribed mode is byte-for-byte unchanged, and filler removal preserves quoted or explicitly referenced uses.
 
 ## Milestone 5: dashboard and personalization
 

@@ -1,6 +1,6 @@
 # Spick
 
-Spick is a macOS-first desktop dictation app in active development. The goal is simple: hold a shortcut, speak, and put the result into the field you were already using. The current build records and transcribes locally, tracks the field where the shortcut began, and keeps the result ready for an explicit copy.
+Spick is a macOS-first desktop dictation app in active development. The goal is simple: hold a shortcut, speak, and put the result into the field you were already using. The current build records and transcribes locally, offers an opt-in trim for a few obvious English hesitation words, tracks the field where the shortcut began, and keeps the result ready for an explicit copy.
 
 The app combines a Tauri 2 shell, a Rust application core, and a React/TypeScript interface. The native core owns the global shortcut, ephemeral microphone capture, verified model downloads, in-process `whisper.cpp` transcription, and guarded macOS field tracking. Dashboard statistics still use clearly labelled development data.
 
@@ -53,7 +53,7 @@ The current Mac path enforces these rules for local transcription and target tra
 ## Current limitations
 
 - Usage statistics and saved transcript rows are development scaffolding. The latest real transcript is kept in memory only and can be copied from Today.
-- Microphone capture, a live level meter, verified local model downloads, cancellation, and local `whisper.cpp` batch transcription are implemented. Voice activity detection, filler-word cleanup, and translation are not connected to the session pipeline yet.
+- Microphone capture, a live level meter, verified local model downloads, cancellation, and local `whisper.cpp` batch transcription are implemented. Cleanup is off by default. Its local English option removes pause-marked “um”, “uh”, and “erm” only when punctuation can be repaired safely; bare words, identifiers, quoted uses, explicit references, unknown languages, and non-English transcripts are left alone. Voice activity detection and translation are not connected yet.
 - Cloud provider adapters and API-key storage are not implemented.
 - Shortcut dictation captures an accessible Mac text field or text area before recording and checks the exact application, element, selection, protection state, and change notifications again after transcription.
 - Password fields and controls marked as protected content are rejected before the microphone starts. Accessibility permission is required for shortcut-driven field tracking.
