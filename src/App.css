@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&display=swap");
-
 :root {
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter,
@@ -1213,6 +1211,11 @@ p {
   border-radius: 2px;
   animation: waveform 720ms ease-in-out var(--bar-delay) infinite alternate;
 }
+.hud-waveform--live i {
+  opacity: 0.9;
+  animation: none;
+  transition: height 70ms linear;
+}
 
 @keyframes waveform {
   from {
@@ -1260,6 +1263,21 @@ p {
 .dictation-hud--success .hud-orb {
   color: #7fd3af;
   background: rgba(38, 132, 97, 0.2);
+}
+
+.dictation-hud--error .hud-orb {
+  color: #ef9a9a;
+  background: rgba(201, 72, 72, 0.18);
+}
+
+.dictation-hud--error .hud-status-copy {
+  max-width: 220px;
+}
+
+.dictation-hud--error .hud-status-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hud-loading {

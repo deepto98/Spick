@@ -17,6 +17,7 @@ export interface NativeDictationSession {
 }
 
 export interface NativeDictationStateEvent {
+  revision: number;
   state: NativeSessionState;
   session: NativeDictationSession | null;
 }
@@ -33,9 +34,10 @@ export function toHudState(state: NativeSessionState): HudState {
       return "processing";
     case "completed":
       return "success";
+    case "failed":
+      return "error";
     case "idle":
     case "cancelled":
-    case "failed":
       return "idle";
   }
 }
@@ -52,10 +54,6 @@ export function startDictationSession() {
 
 export function stopDictationSession() {
   return invoke<NativeDictationStateEvent>("stop_dictation_session");
-}
-
-export function completeDictationSession() {
-  return invoke<NativeDictationStateEvent>("complete_dictation_session");
 }
 
 export function subscribeToDictationState(

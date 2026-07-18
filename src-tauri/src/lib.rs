@@ -1,3 +1,4 @@
+mod audio;
 mod commands;
 pub mod domain;
 mod hud;
@@ -47,11 +48,10 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::get_dictation_session,
+            commands::get_audio_capture_status,
             commands::start_dictation_session,
             commands::stop_dictation_session,
             commands::cancel_dictation_session,
-            commands::complete_dictation_session,
-            commands::fail_dictation_session,
             commands::get_platform_capabilities,
         ])
         .run(tauri::generate_context!())

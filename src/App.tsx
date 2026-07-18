@@ -6,6 +6,7 @@ import { Onboarding } from "./components/Onboarding";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { initialEngines, initialVocabulary } from "./data/mockData";
+import { useAudioLevel } from "./hooks/useAudioLevel";
 import { useDictationController } from "./hooks/useDictationController";
 import type { AppSettings, Engine, ViewId, VocabularyEntry } from "./types";
 import { EnginesView } from "./views/EnginesView";
@@ -33,9 +34,8 @@ function App() {
   const [vocabulary, setVocabulary] =
     useState<VocabularyEntry[]>(initialVocabulary);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const dictation = useDictationController({
-    autoComplete: !hudOnly,
-  });
+  const dictation = useDictationController();
+  const audioFrame = useAudioLevel(dictation.state === "listening");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(
     () => window.localStorage.getItem("spick-onboarding-complete") === "true",
@@ -87,6 +87,9 @@ function App() {
       <div className="hud-window-surface">
         <DictationHud
           autoAdvance={false}
+          audioLevel={audioFrame?.level}
+          disabled={dictation.pending}
+          errorMessage={dictation.error ?? undefined}
           floating
           state={dictation.state}
           onStateChange={dictation.transitionTo}
@@ -134,6 +137,10 @@ function App() {
             <TodayView
               onOpenEngines={() => navigate("engines")}
               hudState={dictation.state}
+              audioLevel={audioFrame?.level}
+              dictationPending={dictation.pending}
+              dictationError={dictation.error ?? undefined}
+              native={dictation.native}
               onHudStateChange={dictation.transitionTo}
             />
           )}
@@ -168,6 +175,9 @@ function App() {
       {settings.showWidget && activeView !== "today" && (
         <DictationHud
           autoAdvance={false}
+          audioLevel={audioFrame?.level}
+          disabled={dictation.pending}
+          errorMessage={dictation.error ?? undefined}
           floating
           state={dictation.state}
           onStateChange={dictation.transitionTo}

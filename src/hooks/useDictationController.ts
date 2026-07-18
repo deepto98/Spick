@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HudState } from "../types";
 import {
-  completeDictationSession,
   getDictationSession,
   hasNativeRuntime,
   startDictationSession,
@@ -11,18 +10,22 @@ import {
   type NativeDictationStateEvent,
 } from "../lib/nativeDictation";
 
-interface DictationControllerOptions {
-  autoComplete: boolean;
-}
-
-export function useDictationController({
-  autoComplete,
-}: DictationControllerOptions) {
+export function useDictationController() {
   const native = useMemo(() => hasNativeRuntime(), []);
   const [state, setState] = useState<HudState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const revisionRef = useRef(-1);
 
   const applyNativeState = useCallback((event: NativeDictationStateEvent) => {
+    if (
+      !Number.isSafeInteger(event.revision) ||
+      event.revision < revisionRef.current
+    ) {
+      return;
+    }
+    revisionRef.current = event.revision;
     setState(toHudState(event.state));
     setError(
       event.state === "failed"
@@ -71,6 +74,11 @@ export function useDictationController({
         setState(next);
         return;
       }
+      if (next === "idle") {
+        setState("idle");
+        return;
+      }
+      if (pendingRef.current) return;
 
       const transition = async () => {
         switch (next) {
@@ -79,45 +87,39 @@ export function useDictationController({
           case "processing":
             return stopDictationSession();
           case "success":
-            return completeDictationSession();
-          case "idle":
-            setState("idle");
+          case "error":
             return undefined;
         }
       };
 
+      pendingRef.current = true;
+      setPending(true);
       void transition()
         .then((event) => {
           if (event) applyNativeState(event);
         })
         .catch((reason) => {
-          setState("idle");
           setError(
             `Native dictation could not change state: ${String(reason)}`,
           );
+        })
+        .finally(() => {
+          pendingRef.current = false;
+          setPending(false);
         });
     },
     [applyNativeState, native],
   );
 
   useEffect(() => {
-    if (state !== "processing" || (!autoComplete && native)) return;
+    if (state !== "processing" || native) return;
 
     const timeout = window.setTimeout(() => {
-      if (native) {
-        void completeDictationSession()
-          .then(applyNativeState)
-          .catch((reason) => {
-            setState("idle");
-            setError(`Native preview could not complete: ${String(reason)}`);
-          });
-      } else {
-        setState("success");
-      }
+      setState("success");
     }, 1150);
 
     return () => window.clearTimeout(timeout);
-  }, [applyNativeState, autoComplete, native, state]);
+  }, [native, state]);
 
   useEffect(() => {
     if (state !== "success") return;
@@ -125,5 +127,5 @@ export function useDictationController({
     return () => window.clearTimeout(timeout);
   }, [state]);
 
-  return { error, native, state, transitionTo };
+  return { error, native, pending, state, transitionTo };
 }

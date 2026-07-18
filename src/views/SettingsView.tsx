@@ -222,7 +222,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<BellRing size={17} />}
                   title="Hold to speak"
-                  description="Shortcut state is wired; audio, cleanup, and insertion are next."
+                  description="Shortcut and microphone capture are wired; transcription, cleanup, and insertion are next."
                   control={
                     <span className="fixed-value">
                       <Check size={14} /> State wired
@@ -235,7 +235,7 @@ export function SettingsView({
                 <div>
                   <strong>Latency benchmark pending</strong>
                   <span>
-                    Stage timing begins with the native audio pipeline.
+                    Stage timing begins with the transcription pipeline.
                   </span>
                 </div>
               </div>

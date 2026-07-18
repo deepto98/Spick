@@ -39,16 +39,21 @@ impl fmt::Display for SessionError {
 pub struct SessionController {
     current: Option<DictationSession>,
     sequence: u64,
+    revision: u64,
 }
 
 impl SessionController {
     pub fn snapshot(&self) -> DictationStateEvent {
         match &self.current {
             Some(session) => DictationStateEvent {
+                revision: self.revision,
                 state: session.state,
                 session: Some(session.clone()),
             },
-            None => DictationStateEvent::idle(),
+            None => DictationStateEvent {
+                revision: self.revision,
+                ..DictationStateEvent::idle()
+            },
         }
     }
 
@@ -94,6 +99,7 @@ impl SessionController {
         }
 
         self.sequence = self.sequence.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
         self.current = Some(DictationSession {
             id: format!("dictation-{timestamp_ms}-{}", self.sequence),
             state: SessionState::Listening,
@@ -109,17 +115,20 @@ impl SessionController {
     }
 
     fn stop_at(&mut self, _timestamp_ms: u64) -> Result<DictationStateEvent, SessionError> {
-        let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
-        if session.state != SessionState::Listening {
-            return Err(SessionError::InvalidTransition {
-                from: session.state,
-                action: "stop",
-            });
-        }
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if session.state != SessionState::Listening {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "stop",
+                });
+            }
 
-        // Releasing push-to-talk ends capture, but the session remains active
-        // until the transcription/cleanup pipeline completes or fails.
-        session.state = SessionState::Processing;
+            // Releasing push-to-talk ends capture, but the session remains active
+            // until the transcription/cleanup pipeline completes or fails.
+            session.state = SessionState::Processing;
+        }
+        self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
     }
 
@@ -128,34 +137,40 @@ impl SessionController {
         reason: Option<String>,
         timestamp_ms: u64,
     ) -> Result<DictationStateEvent, SessionError> {
-        let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
-        if !matches!(
-            session.state,
-            SessionState::Listening | SessionState::Processing
-        ) {
-            return Err(SessionError::InvalidTransition {
-                from: session.state,
-                action: "cancel",
-            });
-        }
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if !matches!(
+                session.state,
+                SessionState::Listening | SessionState::Processing
+            ) {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "cancel",
+                });
+            }
 
-        session.state = SessionState::Cancelled;
-        session.ended_at_ms = Some(timestamp_ms);
-        session.cancel_reason = reason.filter(|value| !value.trim().is_empty());
+            session.state = SessionState::Cancelled;
+            session.ended_at_ms = Some(timestamp_ms);
+            session.cancel_reason = reason.filter(|value| !value.trim().is_empty());
+        }
+        self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
     }
 
     fn complete_at(&mut self, timestamp_ms: u64) -> Result<DictationStateEvent, SessionError> {
-        let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
-        if session.state != SessionState::Processing {
-            return Err(SessionError::InvalidTransition {
-                from: session.state,
-                action: "complete",
-            });
-        }
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if session.state != SessionState::Processing {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "complete",
+                });
+            }
 
-        session.state = SessionState::Completed;
-        session.ended_at_ms = Some(timestamp_ms);
+            session.state = SessionState::Completed;
+            session.ended_at_ms = Some(timestamp_ms);
+        }
+        self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
     }
 
@@ -164,20 +179,23 @@ impl SessionController {
         error: String,
         timestamp_ms: u64,
     ) -> Result<DictationStateEvent, SessionError> {
-        let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
-        if !matches!(
-            session.state,
-            SessionState::Listening | SessionState::Processing
-        ) {
-            return Err(SessionError::InvalidTransition {
-                from: session.state,
-                action: "fail",
-            });
-        }
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if !matches!(
+                session.state,
+                SessionState::Listening | SessionState::Processing
+            ) {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "fail",
+                });
+            }
 
-        session.state = SessionState::Failed;
-        session.ended_at_ms = Some(timestamp_ms);
-        session.error = Some(error);
+            session.state = SessionState::Failed;
+            session.ended_at_ms = Some(timestamp_ms);
+            session.error = Some(error);
+        }
+        self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
     }
 }
@@ -208,10 +226,12 @@ mod tests {
             .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 100)
             .unwrap();
         assert_eq!(listening.state, SessionState::Listening);
+        assert_eq!(listening.revision, 1);
         assert_eq!(session(&listening).started_at_ms, 100);
 
         let processing = controller.stop_at(200).unwrap();
         assert_eq!(processing.state, SessionState::Processing);
+        assert_eq!(processing.revision, 2);
         assert_eq!(session(&processing).ended_at_ms, None);
     }
 
@@ -238,12 +258,14 @@ mod tests {
 
         let completed = controller.complete_at(300).unwrap();
         assert_eq!(completed.state, SessionState::Completed);
+        assert_eq!(completed.revision, 3);
         assert_eq!(session(&completed).ended_at_ms, Some(300));
 
         let next = controller
             .start_at(SessionTrigger::Shortcut, LanguagePolicy::Auto, 400)
             .unwrap();
         assert_eq!(next.state, SessionState::Listening);
+        assert_eq!(next.revision, 4);
         assert_ne!(session(&completed).id, session(&next).id);
     }
 

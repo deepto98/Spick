@@ -1,6 +1,7 @@
 export type ViewId = "today" | "engines" | "vocabulary" | "settings";
 
-export type HudState = "idle" | "listening" | "processing" | "success";
+export type HudState =
+  "idle" | "listening" | "processing" | "success" | "error";
 
 export type EngineKind = "local" | "cloud";
 

@@ -19,12 +19,20 @@ import { PageHeader } from "../components/Ui";
 interface TodayViewProps {
   onOpenEngines: () => void;
   hudState: HudState;
+  audioLevel?: number;
+  dictationPending?: boolean;
+  dictationError?: string;
+  native: boolean;
   onHudStateChange: (state: HudState) => void;
 }
 
 export function TodayView({
   onOpenEngines,
   hudState,
+  audioLevel,
+  dictationPending,
+  dictationError,
+  native,
   onHudStateChange,
 }: TodayViewProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -45,7 +53,7 @@ export function TodayView({
       <PageHeader
         eyebrow="INTERACTIVE PRODUCT PREVIEW"
         title="Your dictation workspace"
-        description="Sample activity demonstrates the dashboard; live statistics begin when the audio pipeline is connected."
+        description="Sample activity demonstrates the dashboard; live statistics begin when transcription and local history are connected."
         actions={
           <button
             type="button"
@@ -256,15 +264,20 @@ export function TodayView({
         <section className="panel try-panel">
           <div className="try-panel__glow" />
           <span className="try-panel__eyebrow">
-            <i /> LIVE PREVIEW
+            <i /> {native ? "LIVE CAPTURE" : "INTERACTION PREVIEW"}
           </span>
           <h2>Speak. Watch it become clear.</h2>
           <p>
-            Try the animation. This preview does not capture microphone audio.
+            {native
+              ? "Microphone capture is live. Transcription and insertion are the next milestone."
+              : "This browser preview animates only. Run the desktop build for live capture."}
           </p>
           <div className="try-panel__hud">
             <DictationHud
               autoAdvance={false}
+              audioLevel={audioLevel}
+              disabled={dictationPending}
+              errorMessage={dictationError}
               state={hudState}
               onStateChange={onHudStateChange}
             />
@@ -273,7 +286,7 @@ export function TodayView({
             <span>
               <Clock3 size={14} /> Interaction
             </span>
-            <strong>Demo only</strong>
+            <strong>{native ? "Native foundation" : "Demo only"}</strong>
           </div>
         </section>
       </div>

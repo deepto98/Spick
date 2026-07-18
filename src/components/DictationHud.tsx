@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Mic, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Check, Mic, Sparkles, X } from "lucide-react";
 import type { HudState } from "../types";
 
 interface DictationHudProps {
@@ -8,6 +8,9 @@ interface DictationHudProps {
   floating?: boolean;
   language?: string;
   autoAdvance?: boolean;
+  audioLevel?: number;
+  disabled?: boolean;
+  errorMessage?: string;
 }
 
 const sampleBars = [
@@ -20,6 +23,9 @@ export function DictationHud({
   floating = false,
   language = "EN",
   autoAdvance = true,
+  audioLevel,
+  disabled = false,
+  errorMessage,
 }: DictationHudProps) {
   const [internalState, setInternalState] = useState<HudState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -69,6 +75,7 @@ export function DictationHud({
         className={`dictation-hud dictation-hud--idle ${floating ? "dictation-hud--floating" : ""}`}
         onClick={() => transitionTo("listening")}
         aria-label="Start dictation"
+        disabled={disabled}
       >
         <span className="hud-orb">
           <Mic size={17} />
@@ -86,22 +93,31 @@ export function DictationHud({
       className={`dictation-hud dictation-hud--${state} ${floating ? "dictation-hud--floating" : ""}`}
       role="status"
       aria-live="polite"
+      aria-busy={disabled}
     >
       <span className="hud-orb" aria-hidden="true">
         {state === "listening" && <Mic size={17} />}
         {state === "processing" && <Sparkles size={17} />}
         {state === "success" && <Check size={18} />}
+        {state === "error" && <AlertTriangle size={17} />}
       </span>
 
       {state === "listening" && (
         <>
-          <div className="hud-waveform" aria-label="Microphone audio level">
+          <div
+            className={`hud-waveform ${audioLevel === undefined ? "" : "hud-waveform--live"}`}
+            aria-label="Microphone audio level"
+          >
             {sampleBars.map((height, index) => (
               <i
                 key={index}
                 style={
                   {
-                    "--bar-height": `${height}px`,
+                    "--bar-height": `${
+                      audioLevel === undefined
+                        ? height
+                        : Math.max(3, height * (0.22 + audioLevel * 0.78))
+                    }px`,
                     "--bar-delay": `${index * -45}ms`,
                   } as React.CSSProperties
                 }
@@ -115,6 +131,7 @@ export function DictationHud({
             className="hud-stop"
             onClick={() => transitionTo("processing")}
             aria-label="Finish dictation"
+            disabled={disabled}
           >
             <X size={15} />
           </button>
@@ -134,9 +151,26 @@ export function DictationHud({
 
       {state === "success" && (
         <div className="hud-status-copy">
-          <strong>Preview complete</strong>
-          <span>Audio and insertion are not connected yet</span>
+          <strong>Capture complete</strong>
+          <span>Transcription and insertion are the next milestone</span>
         </div>
+      )}
+
+      {state === "error" && (
+        <>
+          <div className="hud-status-copy">
+            <strong>Microphone unavailable</strong>
+            <span>{errorMessage ?? "Check access and try again"}</span>
+          </div>
+          <button
+            type="button"
+            className="hud-stop"
+            onClick={() => transitionTo("idle")}
+            aria-label="Dismiss dictation error"
+          >
+            <X size={15} />
+          </button>
+        </>
       )}
     </div>
   );

@@ -80,7 +80,7 @@ describe("Spick product shell", () => {
     expect(screen.getByText("Polishing your words")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1150));
-    expect(screen.getByText("Preview complete")).toBeInTheDocument();
+    expect(screen.getByText("Capture complete")).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1250));
     expect(

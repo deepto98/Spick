@@ -257,6 +257,9 @@ pub struct DictationSession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationStateEvent {
+    /// Monotonic lifecycle revision used by webviews to ignore stale command
+    /// responses when an emitted transition has already superseded them.
+    pub revision: u64,
     pub state: SessionState,
     pub session: Option<DictationSession>,
 }
@@ -264,6 +267,7 @@ pub struct DictationStateEvent {
 impl DictationStateEvent {
     pub fn idle() -> Self {
         Self {
+            revision: 0,
             state: SessionState::Idle,
             session: None,
         }

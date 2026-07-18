@@ -69,7 +69,7 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
           <ShieldCheck size={16} />
           <div>
             <strong>Foundation preview</strong>
-            <span>Native audio is not connected</span>
+            <span>Native capture ready · Transcription next</span>
           </div>
           <span className="status-dot" aria-label="Preview" />
         </div>

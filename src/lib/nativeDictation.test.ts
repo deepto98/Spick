@@ -9,7 +9,7 @@ describe("native dictation state mapping", () => {
     ["processing", "processing"],
     ["completed", "success"],
     ["cancelled", "idle"],
-    ["failed", "idle"],
+    ["failed", "error"],
   ])("maps %s to the %s HUD state", (nativeState, hudState) => {
     expect(toHudState(nativeState)).toBe(hudState);
   });
