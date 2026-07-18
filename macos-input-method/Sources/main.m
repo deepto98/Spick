@@ -1,7 +1,26 @@
 #import <Cocoa/Cocoa.h>
 #import <InputMethodKit/InputMethodKit.h>
 
+#import "SpickInputController.h"
 #import "SpickWireProtocol.h"
+
+@interface SpickApplicationDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) IMKServer *inputMethodServer;
+@end
+
+@implementation SpickApplicationDelegate
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    @try {
+        return [self.inputMethodServer paletteWillTerminate] ? NSTerminateNow
+                                                             : NSTerminateCancel;
+    } @catch (__unused NSException *exception) {
+        return NSTerminateCancel;
+    }
+}
+
+@end
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -16,7 +35,10 @@ int main(int argc, const char *argv[]) {
         if (server == nil) {
             return EXIT_FAILURE;
         }
-        (void)server;
+        SpickApplicationDelegate *delegate = [[SpickApplicationDelegate alloc] init];
+        delegate.inputMethodServer = server;
+        application.delegate = delegate;
+        SpickStartInsertionBroker();
         [application run];
     }
     return EXIT_SUCCESS;

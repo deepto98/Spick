@@ -11,11 +11,34 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "macos-input-method-prototype")]
+use std::{
+    ffi::CString,
+    io::{Read, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::{
+            ffi::OsStrExt,
+            fs::{FileTypeExt, MetadataExt},
+            net::UnixStream,
+        },
+    },
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(feature = "macos-input-method-prototype")]
+use super::input_method_protocol::{
+    decode_response, encode_arm_request, encode_disarm_request, encode_insert_request,
+    InputMethodResponse, InputMethodResponseStatus, RESPONSE_LENGTH,
+};
 use super::{
     AccessibilityPermissionState, AccessibilityPermissionStatus, CapturedTextTarget,
     TextInsertionReceipt, TextTargetError, TextTargetErrorKind, TextTargetToken,
 };
 use libc::pid_t;
+#[cfg(feature = "macos-input-method-prototype")]
+use objc2_app_kit::NSRunningApplication;
 use objc2_application_services::{
     kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
     AXObserver, AXUIElement, AXValue, AXValueType,
@@ -50,6 +73,12 @@ const COMMIT_DEADLINE: Duration = Duration::from_millis(950);
 const APPLICATION_TIMEOUT_SECONDS: f32 = 0.25;
 const MAX_PARENT_DEPTH: usize = 5;
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
+#[cfg(feature = "macos-input-method-prototype")]
+const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
+#[cfg(feature = "macos-input-method-prototype")]
+const INPUT_METHOD_BUNDLE_IDENTIFIER: &str = "app.spick.desktop.input-method";
+#[cfg(feature = "macos-input-method-prototype")]
+const INPUT_METHOD_TIMEOUT: Duration = Duration::from_millis(800);
 
 #[derive(Default)]
 pub(super) struct MacTextTargetController {
@@ -289,6 +318,23 @@ impl Worker {
 
         self.next_token = self.next_token.wrapping_add(1).max(1);
         let token = self.next_token;
+        #[cfg(feature = "macos-input-method-prototype")]
+        let bundle_identifier = application_bundle_identifier(application_pid);
+        #[cfg(feature = "macos-input-method-prototype")]
+        let input_method_lease = match bundle_identifier.as_deref() {
+            Some(identifier) => {
+                try_arm_input_method(token, editable.selection, identifier, deadline)?
+            }
+            None => None,
+        };
+        pump_run_loop();
+        if observer.was_invalidated() {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::FocusChanged,
+                "The field changed before Spick could start listening",
+            ));
+        }
+        check_deadline(deadline)?;
         self.targets.insert(
             token,
             CapturedTarget {
@@ -296,6 +342,10 @@ impl Worker {
                 focus_anchor,
                 element: editable.element,
                 pid: application_pid,
+                #[cfg(feature = "macos-input-method-prototype")]
+                bundle_identifier,
+                #[cfg(feature = "macos-input-method-prototype")]
+                input_method_lease,
                 selection: editable.selection,
                 observer,
             },
@@ -313,82 +363,31 @@ impl Worker {
         transcript: &str,
         deadline: Instant,
     ) -> Result<TextInsertionReceipt, TextTargetError> {
-        let target = self.targets.remove(&token).ok_or_else(|| {
+        let mut target = self.targets.remove(&token).ok_or_else(|| {
             TextTargetError::new(
                 TextTargetErrorKind::TargetGone,
                 "the captured text field is no longer available",
             )
         })?;
-        pump_run_loop();
-        if target.observer.was_invalidated() {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::FocusChanged,
-                "The field changed while Spick was listening, so nothing was typed",
-            ));
-        }
-        check_deadline(deadline)?;
-        if !is_trusted() {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::AccessibilityMissing,
-                "Accessibility was turned off before Spick could type",
-            ));
-        }
+        revalidate_captured_target(&target, deadline)?;
 
-        let system = unsafe { AXUIElement::new_system_wide() };
-        let current_application =
-            read_element(&system, AX_FOCUSED_APPLICATION, "focused application")?;
-        if !elements_equal(&current_application, &target.application)
-            || read_pid(&current_application)? != target.pid
+        #[cfg(feature = "macos-input-method-prototype")]
         {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::FocusChanged,
-                "The active app changed, so Spick did not type the transcript",
-            ));
+            commit_through_input_method(&mut target, token, transcript, deadline)?;
+            Ok(TextInsertionReceipt {
+                target_app: None,
+                caret_repositioned: true,
+            })
         }
-        set_element_timeout(&current_application)?;
-        ensure_not_secure(&current_application)?;
 
-        let current_anchor = read_element(
-            &current_application,
-            AX_FOCUSED_UI_ELEMENT,
-            "focused text field",
-        )?;
-        if !elements_equal(&current_anchor, &target.focus_anchor)
-            || read_pid(&current_anchor)? != target.pid
+        #[cfg(not(feature = "macos-input-method-prototype"))]
         {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::FocusChanged,
-                "The cursor moved to another field, so Spick did not type the transcript",
-            ));
+            let _ = (transcript, &mut target);
+            Err(TextTargetError::new(
+                TextTargetErrorKind::Unsupported,
+                "Automatic typing is still in compatibility testing; the transcript is ready to copy",
+            ))
         }
-
-        let editable = resolve_editable_target(&current_anchor)?;
-        if !elements_equal(&editable.element, &target.element) {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::FocusChanged,
-                "The editable field changed, so Spick did not type the transcript",
-            ));
-        }
-        if !ranges_equal(editable.selection, target.selection) {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::SelectionChanged,
-                "The selection changed, so Spick did not type over it",
-            ));
-        }
-        pump_run_loop();
-        if target.observer.was_invalidated() {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::FocusChanged,
-                "The field changed while Spick was listening, so nothing was typed",
-            ));
-        }
-        check_deadline(deadline)?;
-
-        let _ = transcript;
-        Err(TextTargetError::new(
-            TextTargetErrorKind::Unsupported,
-            "Automatic paste is still being hardened; the transcript is ready to copy from Spick",
-        ))
     }
 }
 
@@ -397,8 +396,674 @@ struct CapturedTarget {
     focus_anchor: CFRetained<AXUIElement>,
     element: CFRetained<AXUIElement>,
     pid: pid_t,
+    #[cfg(feature = "macos-input-method-prototype")]
+    bundle_identifier: Option<String>,
+    #[cfg(feature = "macos-input-method-prototype")]
+    input_method_lease: Option<InputMethodLease>,
     selection: CFRange,
     observer: ObserverLease,
+}
+
+fn revalidate_captured_target(
+    target: &CapturedTarget,
+    deadline: Instant,
+) -> Result<(), TextTargetError> {
+    pump_run_loop();
+    if target.observer.was_invalidated() {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The field changed while Spick was listening, so nothing was typed",
+        ));
+    }
+    check_deadline(deadline)?;
+    if !is_trusted() {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::AccessibilityMissing,
+            "Accessibility was turned off before Spick could type",
+        ));
+    }
+
+    let system = unsafe { AXUIElement::new_system_wide() };
+    let current_application = read_element(&system, AX_FOCUSED_APPLICATION, "focused application")?;
+    if !elements_equal(&current_application, &target.application)
+        || read_pid(&current_application)? != target.pid
+    {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The active app changed, so Spick did not type the transcript",
+        ));
+    }
+    set_element_timeout(&current_application)?;
+    ensure_not_secure(&current_application)?;
+
+    let current_anchor = read_element(
+        &current_application,
+        AX_FOCUSED_UI_ELEMENT,
+        "focused text field",
+    )?;
+    if !elements_equal(&current_anchor, &target.focus_anchor)
+        || read_pid(&current_anchor)? != target.pid
+    {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The cursor moved to another field, so Spick did not type the transcript",
+        ));
+    }
+
+    let editable = resolve_editable_target(&current_anchor)?;
+    if !elements_equal(&editable.element, &target.element) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The editable field changed, so Spick did not type the transcript",
+        ));
+    }
+    if !ranges_equal(editable.selection, target.selection) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::SelectionChanged,
+            "The selection changed, so Spick did not type over it",
+        ));
+    }
+    pump_run_loop();
+    if target.observer.was_invalidated() {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The field changed while Spick was listening, so nothing was typed",
+        ));
+    }
+    check_deadline(deadline)?;
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    if let Some(expected) = target.bundle_identifier.as_deref() {
+        if application_bundle_identifier(target.pid).as_deref() != Some(expected) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::FocusChanged,
+                "The target app identity changed, so Spick did not type the transcript",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+struct InputMethodLease {
+    request_id: u64,
+    lease_id: u64,
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+impl InputMethodLease {
+    fn mark_consumed(&mut self) {
+        self.lease_id = 0;
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+impl Drop for InputMethodLease {
+    fn drop(&mut self) {
+        if self.lease_id != 0 {
+            disarm_input_method_best_effort(self.request_id, self.lease_id);
+        }
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn try_arm_input_method(
+    request_id: u64,
+    selection: CFRange,
+    bundle_identifier: &str,
+    deadline: Instant,
+) -> Result<Option<InputMethodLease>, TextTargetError> {
+    let (selection_location, selection_length) = selection_parts(selection)?;
+    let request = encode_arm_request(
+        request_id,
+        deadline_epoch_milliseconds(deadline)?,
+        selection_location,
+        selection_length,
+        bundle_identifier,
+    )
+    .map_err(|message| TextTargetError::new(TextTargetErrorKind::Unsupported, message))?;
+    let mut connection = match InputMethodConnection::connect(deadline) {
+        Ok(connection) => connection,
+        Err(error) if error.kind == TextTargetErrorKind::Unsupported => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let response = connection.exchange(&request, request_id, false, deadline)?;
+    match response.status {
+        InputMethodResponseStatus::Armed => Ok(Some(InputMethodLease {
+            request_id,
+            lease_id: response.lease_id,
+        })),
+        InputMethodResponseStatus::SecureInput => Err(TextTargetError::new(
+            TextTargetErrorKind::SecureField,
+            "Spick Input refused to arm while secure input was active",
+        )),
+        InputMethodResponseStatus::TargetMismatch => Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The input-method client changed before recording began",
+        )),
+        InputMethodResponseStatus::SelectionChanged => Err(TextTargetError::new(
+            TextTargetErrorKind::SelectionChanged,
+            "The selection changed before recording began",
+        )),
+        InputMethodResponseStatus::NoActiveClient | InputMethodResponseStatus::Unsupported => {
+            Ok(None)
+        }
+        InputMethodResponseStatus::RequestExpired => Err(TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "Spick Input could not arm the field before its deadline",
+        )),
+        InputMethodResponseStatus::Confirmed
+        | InputMethodResponseStatus::Dispatched
+        | InputMethodResponseStatus::InvalidRequest
+        | InputMethodResponseStatus::InternalError
+        | InputMethodResponseStatus::Disarmed
+        | InputMethodResponseStatus::LeaseExpired
+        | InputMethodResponseStatus::LeaseMissingOrConsumed => Err(input_method_platform_error()),
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn commit_through_input_method(
+    target: &mut CapturedTarget,
+    request_id: u64,
+    transcript: &str,
+    deadline: Instant,
+) -> Result<(), TextTargetError> {
+    let bundle_identifier = target.bundle_identifier.as_deref().ok_or_else(|| {
+        TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "The focused app does not expose an identity Spick can verify",
+        )
+    })?;
+    let lease_id = target
+        .input_method_lease
+        .as_ref()
+        .map(|lease| lease.lease_id)
+        .ok_or_else(|| {
+            TextTargetError::new(
+                TextTargetErrorKind::Unsupported,
+                "Spick Input was not active when recording began",
+            )
+        })?;
+    let (selection_location, selection_length) = selection_parts(target.selection)?;
+    let request = encode_insert_request(
+        request_id,
+        lease_id,
+        deadline_epoch_milliseconds(deadline)?,
+        selection_location,
+        selection_length,
+        bundle_identifier,
+        transcript,
+    )
+    .map_err(|message| TextTargetError::new(TextTargetErrorKind::Unsupported, message))?;
+
+    // Establish and authenticate the connection before the final AX snapshot.
+    // No transcript bytes have crossed the process boundary at this point.
+    let mut connection = InputMethodConnection::connect(deadline)?;
+    revalidate_captured_target(target, deadline)?;
+    let response = connection.exchange(&request, request_id, true, deadline)?;
+    if response.status != InputMethodResponseStatus::RequestExpired {
+        if let Some(lease) = target.input_method_lease.as_mut() {
+            // The helper consumes an Insert lease before every terminal response.
+            lease.mark_consumed();
+        }
+    }
+
+    map_insert_response_status(response.status)
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn map_insert_response_status(status: InputMethodResponseStatus) -> Result<(), TextTargetError> {
+    match status {
+        InputMethodResponseStatus::Confirmed => Ok(()),
+        InputMethodResponseStatus::Dispatched => Err(indeterminate_input_method_error()),
+        InputMethodResponseStatus::NoActiveClient | InputMethodResponseStatus::Unsupported => {
+            Err(TextTargetError::new(
+                TextTargetErrorKind::Unsupported,
+                "This field does not support verified input-method insertion yet",
+            ))
+        }
+        InputMethodResponseStatus::TargetMismatch => Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The input-method client changed, so Spick did not type the transcript",
+        )),
+        InputMethodResponseStatus::SelectionChanged => Err(TextTargetError::new(
+            TextTargetErrorKind::SelectionChanged,
+            "The selection changed before the input method could type",
+        )),
+        InputMethodResponseStatus::SecureInput => Err(TextTargetError::new(
+            TextTargetErrorKind::SecureField,
+            "Spick Input refused to type while secure input was active",
+        )),
+        InputMethodResponseStatus::LeaseExpired => Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The original input-method session expired, so nothing was typed",
+        )),
+        InputMethodResponseStatus::RequestExpired => Err(TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "Spick Input could not claim the request before its deadline",
+        )),
+        InputMethodResponseStatus::LeaseMissingOrConsumed => {
+            Err(indeterminate_input_method_error())
+        }
+        InputMethodResponseStatus::InvalidRequest | InputMethodResponseStatus::InternalError => {
+            Err(TextTargetError::new(
+                TextTargetErrorKind::Platform,
+                "Spick Input could not process the insertion request",
+            ))
+        }
+        InputMethodResponseStatus::Armed | InputMethodResponseStatus::Disarmed => {
+            Err(indeterminate_input_method_error())
+        }
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+struct InputMethodConnection {
+    stream: UnixStream,
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+impl InputMethodConnection {
+    fn connect(deadline: Instant) -> Result<Self, TextTargetError> {
+        let socket_path = input_method_socket_path();
+        validate_input_method_socket(&socket_path)?;
+        let stream = connect_unix_with_deadline(&socket_path, deadline)
+            .map_err(map_input_method_connect_error)?;
+        authenticate_input_method_peer(&stream)?;
+        Ok(Self { stream })
+    }
+
+    fn exchange(
+        &mut self,
+        request: &[u8],
+        request_id: u64,
+        mutation_may_follow: bool,
+        deadline: Instant,
+    ) -> Result<InputMethodResponse, TextTargetError> {
+        let mut written = 0;
+        while written < request.len() {
+            wait_for_socket_io(self.stream.as_raw_fd(), libc::POLLOUT, deadline)
+                .map_err(|error| map_input_method_io_error(error, mutation_may_follow, written))?;
+            match self.stream.write(&request[written..]) {
+                Ok(0) => {
+                    return Err(map_input_method_io_error(
+                        std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "the input-method connection stopped accepting data",
+                        ),
+                        mutation_may_follow,
+                        written,
+                    ));
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    return Err(map_input_method_io_error(
+                        error,
+                        mutation_may_follow,
+                        written,
+                    ));
+                }
+            }
+        }
+
+        let mut response = [0_u8; RESPONSE_LENGTH];
+        let mut read = 0;
+        while read < response.len() {
+            wait_for_socket_io(self.stream.as_raw_fd(), libc::POLLIN, deadline)
+                .map_err(|error| map_input_method_io_error(error, mutation_may_follow, written))?;
+            match self.stream.read(&mut response[read..]) {
+                Ok(0) => {
+                    return Err(map_input_method_io_error(
+                        std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "the input-method helper closed its response early",
+                        ),
+                        mutation_may_follow,
+                        written,
+                    ));
+                }
+                Ok(count) => read += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    return Err(map_input_method_io_error(
+                        error,
+                        mutation_may_follow,
+                        written,
+                    ));
+                }
+            }
+        }
+        decode_response(&response, request_id).map_err(|_| {
+            if mutation_may_follow {
+                indeterminate_input_method_error()
+            } else {
+                input_method_platform_error()
+            }
+        })
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn map_input_method_io_error(
+    error: std::io::Error,
+    mutation_may_follow: bool,
+    bytes_written: usize,
+) -> TextTargetError {
+    if mutation_may_follow && bytes_written > 0 {
+        indeterminate_input_method_error()
+    } else if error.kind() == std::io::ErrorKind::TimedOut {
+        TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "Spick Input took too long to answer, so nothing was sent",
+        )
+    } else {
+        input_method_platform_error()
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn map_input_method_connect_error(error: std::io::Error) -> TextTargetError {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {
+            TextTargetError::new(
+                TextTargetErrorKind::Unsupported,
+                "Spick Input is not active; the transcript is ready to copy",
+            )
+        }
+        std::io::ErrorKind::TimedOut => TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "Spick Input took too long to accept a private connection",
+        ),
+        _ => input_method_platform_error(),
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn input_method_platform_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Platform,
+        "macOS could not use the private Spick Input connection",
+    )
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn selection_parts(selection: CFRange) -> Result<(usize, usize), TextTargetError> {
+    let location = usize::try_from(selection.location).map_err(|_| invalid_range_error())?;
+    let length = usize::try_from(selection.length).map_err(|_| invalid_range_error())?;
+    location
+        .checked_add(length)
+        .ok_or_else(invalid_range_error)?;
+    Ok((location, length))
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn validate_input_method_socket(path: &Path) -> Result<(), TextTargetError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "Spick Input is not installed and active yet; the transcript is ready to copy",
+        )
+    })?;
+    if metadata.file_type().is_socket()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o077 == 0
+    {
+        Ok(())
+    } else {
+        Err(TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "Spick Input did not expose a private local connection",
+        ))
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn connect_unix_with_deadline(path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local socket path",
+        )
+    })?;
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+    let descriptor_flags = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GETFD) };
+    if descriptor_flags < 0
+        || unsafe {
+            libc::fcntl(
+                descriptor.as_raw_fd(),
+                libc::F_SETFD,
+                descriptor_flags | libc::FD_CLOEXEC,
+            )
+        } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let flags = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe {
+            libc::fcntl(
+                descriptor.as_raw_fd(),
+                libc::F_SETFL,
+                flags | libc::O_NONBLOCK,
+            )
+        } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    address.sun_len = std::mem::size_of::<libc::sockaddr_un>() as u8;
+    let path_bytes = path.as_bytes_with_nul();
+    if path_bytes.len() > address.sun_path.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "local socket path is too long",
+        ));
+    }
+    for (target, source) in address.sun_path.iter_mut().zip(path_bytes.iter().copied()) {
+        *target = source as libc::c_char;
+    }
+    let result = unsafe {
+        libc::connect(
+            descriptor.as_raw_fd(),
+            std::ptr::addr_of!(address).cast::<libc::sockaddr>(),
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(error);
+        }
+        wait_for_socket_connection(descriptor.as_raw_fd(), deadline)?;
+    }
+    let mut socket_error = 0;
+    let mut socket_error_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            descriptor.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            std::ptr::addr_of_mut!(socket_error).cast(),
+            &mut socket_error_length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    if socket_error != 0 {
+        return Err(std::io::Error::from_raw_os_error(socket_error));
+    }
+    Ok(UnixStream::from(descriptor))
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn wait_for_socket_connection(descriptor: libc::c_int, deadline: Instant) -> std::io::Result<()> {
+    wait_for_socket_io(descriptor, libc::POLLOUT, deadline)
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn wait_for_socket_io(
+    descriptor: libc::c_int,
+    events: libc::c_short,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "local socket connection timed out",
+            ));
+        }
+        let milliseconds = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut poll = libc::pollfd {
+            fd: descriptor,
+            events,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll, 1, milliseconds) };
+        if result > 0 {
+            if poll.revents & events != 0 {
+                return Ok(());
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the local input-method connection closed",
+            ));
+        }
+        if result == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "local socket connection timed out",
+            ));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn authenticate_input_method_peer(stream: &UnixStream) -> Result<(), TextTargetError> {
+    let descriptor = stream.as_raw_fd();
+    let mut peer_user = 0;
+    let mut peer_group = 0;
+    if unsafe { libc::getpeereid(descriptor, &mut peer_user, &mut peer_group) } != 0
+        || peer_user != unsafe { libc::geteuid() }
+    {
+        return Err(untrusted_input_method_error());
+    }
+    let _ = peer_group;
+    let mut peer_pid: pid_t = 0;
+    let mut peer_pid_length = std::mem::size_of::<pid_t>() as libc::socklen_t;
+    const SOL_LOCAL: libc::c_int = 0;
+    const LOCAL_PEERPID: libc::c_int = 0x002;
+    if unsafe {
+        libc::getsockopt(
+            descriptor,
+            SOL_LOCAL,
+            LOCAL_PEERPID,
+            std::ptr::addr_of_mut!(peer_pid).cast(),
+            &mut peer_pid_length,
+        )
+    } != 0
+        || peer_pid <= 0
+        || application_bundle_identifier(peer_pid).as_deref()
+            != Some(INPUT_METHOD_BUNDLE_IDENTIFIER)
+    {
+        return Err(untrusted_input_method_error());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn untrusted_input_method_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Platform,
+        "Spick refused an unverified input-method connection",
+    )
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn remaining_input_method_time(deadline: Instant) -> Result<Duration, TextTargetError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "The focused app took too long to answer, so Spick did not type",
+        ))
+    } else {
+        Ok(remaining.min(INPUT_METHOD_TIMEOUT))
+    }
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn deadline_epoch_milliseconds(deadline: Instant) -> Result<u64, TextTargetError> {
+    let remaining = remaining_input_method_time(deadline)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "the system clock is unavailable",
+        )
+    })?;
+    u64::try_from((now + remaining).as_millis()).map_err(|_| {
+        TextTargetError::new(TextTargetErrorKind::Platform, "the system clock is invalid")
+    })
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn indeterminate_input_method_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Indeterminate,
+        "Spick Input did not confirm the write; check the field before copying",
+    )
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn input_method_socket_path() -> PathBuf {
+    std::env::temp_dir().join(INPUT_METHOD_SOCKET_NAME)
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn application_bundle_identifier(pid: pid_t) -> Option<String> {
+    objc2::rc::autoreleasepool(|_| {
+        let application = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+        let identifier = application.bundleIdentifier()?.to_string();
+        if identifier.is_empty()
+            || identifier.len() > 512
+            || identifier.chars().any(char::is_control)
+        {
+            None
+        } else {
+            Some(identifier)
+        }
+    })
+}
+
+#[cfg(feature = "macos-input-method-prototype")]
+fn disarm_input_method_best_effort(request_id: u64, lease_id: u64) {
+    let deadline = Instant::now() + Duration::from_millis(150);
+    let Ok(expiry) = deadline_epoch_milliseconds(deadline) else {
+        return;
+    };
+    let Ok(request) = encode_disarm_request(request_id, lease_id, expiry) else {
+        return;
+    };
+    let Ok(mut connection) = InputMethodConnection::connect(deadline) else {
+        return;
+    };
+    let _ = connection.exchange(&request, request_id, false, deadline);
 }
 
 struct InvalidationContext {
@@ -917,6 +1582,17 @@ fn sanitize_application_name(name: String) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "macos-input-method-prototype")]
+    fn input_method_response(status: u8, request_id: u64, lease_id: u64) -> [u8; RESPONSE_LENGTH] {
+        let mut response = [0_u8; RESPONSE_LENGTH];
+        response[..4].copy_from_slice(b"SPR2");
+        response[4] = 2;
+        response[5] = status;
+        response[8..16].copy_from_slice(&request_id.to_be_bytes());
+        response[16..24].copy_from_slice(&lease_id.to_be_bytes());
+        response
+    }
+
     fn range(location: isize, length: isize) -> CFRange {
         CFRange { location, length }
     }
@@ -952,5 +1628,117 @@ mod tests {
         assert!(has_secure_marker(None, Some(true)));
         assert!(!has_secure_marker(None, Some(false)));
         assert!(!has_secure_marker(None, None));
+    }
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    #[test]
+    fn fragmented_input_method_response_respects_one_absolute_deadline() {
+        let (client, mut helper) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        let request = vec![0x5a; 64];
+        let expected_request = request.clone();
+        let helper_thread = std::thread::spawn(move || {
+            let mut received = vec![0_u8; expected_request.len()];
+            helper.read_exact(&mut received).unwrap();
+            assert_eq!(received, expected_request);
+            for chunk in input_method_response(1, 42, 0).chunks(3) {
+                helper.write_all(chunk).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let mut connection = InputMethodConnection { stream: client };
+        let response = connection
+            .exchange(
+                &request,
+                42,
+                true,
+                Instant::now() + Duration::from_millis(250),
+            )
+            .unwrap();
+        assert_eq!(response.status, InputMethodResponseStatus::Confirmed);
+        helper_thread.join().unwrap();
+    }
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    #[test]
+    fn slow_partial_response_is_indeterminate_after_insert_bytes_cross() {
+        let (client, mut helper) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        let request = vec![0x5a; 64];
+        let request_length = request.len();
+        let helper_thread = std::thread::spawn(move || {
+            let mut received = vec![0_u8; request_length];
+            helper.read_exact(&mut received).unwrap();
+            for byte in input_method_response(1, 42, 0) {
+                if helper.write_all(&[byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+
+        let started = Instant::now();
+        let mut connection = InputMethodConnection { stream: client };
+        let error = connection
+            .exchange(&request, 42, true, started + Duration::from_millis(45))
+            .unwrap_err();
+        assert_eq!(error.kind, TextTargetErrorKind::Indeterminate);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        drop(connection);
+        helper_thread.join().unwrap();
+    }
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    #[test]
+    fn insert_transport_is_definite_only_before_its_first_byte() {
+        let before = map_input_method_io_error(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "late"),
+            true,
+            0,
+        );
+        assert_eq!(before.kind, TextTargetErrorKind::TimedOut);
+
+        let after = map_input_method_io_error(
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed"),
+            true,
+            1,
+        );
+        assert_eq!(after.kind, TextTargetErrorKind::Indeterminate);
+    }
+
+    #[cfg(feature = "macos-input-method-prototype")]
+    #[test]
+    fn every_insert_status_has_an_explicit_delivery_outcome() {
+        use InputMethodResponseStatus as Status;
+
+        assert!(map_insert_response_status(Status::Confirmed).is_ok());
+        let cases = [
+            (Status::Dispatched, TextTargetErrorKind::Indeterminate),
+            (Status::NoActiveClient, TextTargetErrorKind::Unsupported),
+            (Status::TargetMismatch, TextTargetErrorKind::FocusChanged),
+            (
+                Status::SelectionChanged,
+                TextTargetErrorKind::SelectionChanged,
+            ),
+            (Status::Unsupported, TextTargetErrorKind::Unsupported),
+            (Status::SecureInput, TextTargetErrorKind::SecureField),
+            (Status::InvalidRequest, TextTargetErrorKind::Platform),
+            (Status::InternalError, TextTargetErrorKind::Platform),
+            (Status::Armed, TextTargetErrorKind::Indeterminate),
+            (Status::Disarmed, TextTargetErrorKind::Indeterminate),
+            (Status::LeaseExpired, TextTargetErrorKind::FocusChanged),
+            (Status::RequestExpired, TextTargetErrorKind::TimedOut),
+            (
+                Status::LeaseMissingOrConsumed,
+                TextTargetErrorKind::Indeterminate,
+            ),
+        ];
+        for (status, expected_kind) in cases {
+            assert_eq!(
+                map_insert_response_status(status).unwrap_err().kind,
+                expected_kind
+            );
+        }
     }
 }

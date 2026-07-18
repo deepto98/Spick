@@ -5,6 +5,12 @@ description = "A macOS-first foundation for fast, multilingual desktop dictation
 authors = ["Spick contributors"]
 edition = "2021"
 
+[features]
+default = []
+# The helper is buildable and testable, but release enablement still requires
+# signed mutual peer authentication and a measured application matrix.
+macos-input-method-prototype = ["dep:objc2", "dep:objc2-app-kit"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -29,6 +35,8 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+objc2 = { version = "0.6.4", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "AXError", "AXUIElement", "AXValue", "HIServices"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString"] }
 whisper-rs = { version = "0.16.0", features = ["metal"] }

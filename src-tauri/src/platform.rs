@@ -9,6 +9,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "macos-input-method-prototype")
+))]
+mod input_method_protocol;
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -24,6 +29,7 @@ pub enum DesktopPlatform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TextInsertionStrategy {
+    InputMethodKit,
     Accessibility,
     UiAutomation,
     AtSpi,
@@ -219,7 +225,7 @@ pub fn current_platform_capabilities() -> PlatformCapabilities {
     {
         PlatformCapabilities {
             platform: DesktopPlatform::MacOs,
-            preferred_text_insertion: TextInsertionStrategy::Accessibility,
+            preferred_text_insertion: TextInsertionStrategy::InputMethodKit,
             fallback_text_insertion: None,
             text_insertion_available: false,
             supports_global_shortcut: true,
