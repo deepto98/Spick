@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Spick">
+  <rect width="512" height="512" rx="128" fill="#5b5ce2"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-width="28">
+    <path d="M112 225v62"/>
+    <path d="M160 178v156"/>
+    <path d="M208 125v262"/>
+    <path d="M256 169v174"/>
+    <path d="M304 114v284"/>
+    <path d="M352 178v156"/>
+    <path d="M400 225v62"/>
+  </g>
+</svg>

@@ -1,50 +1,181 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 import "./App.css";
+import { DictationHud } from "./components/DictationHud";
+import { Onboarding } from "./components/Onboarding";
+import { Sidebar } from "./components/Sidebar";
+import { TopBar } from "./components/TopBar";
+import { initialEngines, initialVocabulary } from "./data/mockData";
+import type {
+  AppSettings,
+  Engine,
+  HudState,
+  ViewId,
+  VocabularyEntry,
+} from "./types";
+import { EnginesView } from "./views/EnginesView";
+import { SettingsView } from "./views/SettingsView";
+import { TodayView } from "./views/TodayView";
+import { VocabularyView } from "./views/VocabularyView";
+
+const defaultSettings: AppSettings = {
+  hotkey: "⌘+⇧+Space",
+  language: "Auto-detect",
+  microphone: "System default microphone",
+  launchAtLogin: false,
+  playSounds: true,
+  showWidget: true,
+  keepHistory: false,
+  cloudFallback: false,
+  cleanupLevel: "Clean",
+};
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const hudOnly =
+    new URLSearchParams(window.location.search).get("window") === "hud";
+  const [activeView, setActiveView] = useState<ViewId>("today");
+  const [engines, setEngines] = useState<Engine[]>(initialEngines);
+  const [vocabulary, setVocabulary] =
+    useState<VocabularyEntry[]>(initialVocabulary);
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [hudState, setHudState] = useState<HudState>("idle");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState(
+    () => window.localStorage.getItem("spick-onboarding-complete") === "true",
+  );
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  const navigate = (view: ViewId) => {
+    setActiveView(view);
+    setMobileNavOpen(false);
+  };
+
+  const activateEngine = (id: string) => {
+    setEngines((current) =>
+      current.map((engine) => {
+        if (engine.id === id) return { ...engine, status: "active" };
+        if (engine.status === "active") return { ...engine, status: "ready" };
+        return engine;
+      }),
+    );
+  };
+
+  const installEngine = (id: string) => {
+    setEngines((current) =>
+      current.map((engine) =>
+        engine.id === id ? { ...engine, status: "ready" } : engine,
+      ),
+    );
+  };
+
+  const removeEngine = (id: string) => {
+    setEngines((current) =>
+      current.map((engine) =>
+        engine.id === id ? { ...engine, status: "available" } : engine,
+      ),
+    );
+  };
+
+  const completeOnboarding = () => {
+    window.localStorage.setItem("spick-onboarding-complete", "true");
+    setOnboardingComplete(true);
+  };
+
+  const restartOnboarding = () => {
+    window.localStorage.removeItem("spick-onboarding-complete");
+    setOnboardingComplete(false);
+  };
+
+  if (hudOnly) {
+    return (
+      <div className="hud-window-surface">
+        <DictationHud
+          floating
+          state={hudState}
+          onStateChange={setHudState}
+          language="AUTO"
+        />
+      </div>
+    );
+  }
+
+  if (!onboardingComplete) {
+    return (
+      <Onboarding
+        settings={settings}
+        onSettingsChange={setSettings}
+        onComplete={completeOnboarding}
+      />
+    );
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className={`app-shell ${mobileNavOpen ? "app-shell--nav-open" : ""}`}>
+      <div
+        className="mobile-nav-backdrop"
+        onClick={() => setMobileNavOpen(false)}
+        aria-hidden={!mobileNavOpen}
+      />
+      <div className="sidebar-wrap">
+        <button
+          type="button"
+          className="mobile-nav-close icon-button"
+          onClick={() => setMobileNavOpen(false)}
+          aria-label="Close navigation"
+        >
+          <X size={18} />
+        </button>
+        <Sidebar activeView={activeView} onNavigate={navigate} />
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+      <div className="app-main">
+        <TopBar
+          activeView={activeView}
+          onOpenNav={() => setMobileNavOpen(true)}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+        <main className="content" id="main-content">
+          {activeView === "today" && (
+            <TodayView
+              onOpenEngines={() => navigate("engines")}
+              hudState={hudState}
+              onHudStateChange={setHudState}
+            />
+          )}
+          {activeView === "engines" && (
+            <EnginesView
+              engines={engines}
+              onActivate={activateEngine}
+              onInstall={installEngine}
+              onRemove={removeEngine}
+            />
+          )}
+          {activeView === "vocabulary" && (
+            <VocabularyView
+              vocabulary={vocabulary}
+              onAdd={(entry) => setVocabulary((current) => [entry, ...current])}
+              onRemove={(id) =>
+                setVocabulary((current) =>
+                  current.filter((entry) => entry.id !== id),
+                )
+              }
+            />
+          )}
+          {activeView === "settings" && (
+            <SettingsView
+              settings={settings}
+              onChange={setSettings}
+              onRestartOnboarding={restartOnboarding}
+            />
+          )}
+        </main>
+      </div>
+      {settings.showWidget && activeView !== "today" && (
+        <DictationHud
+          floating
+          state={hudState}
+          onStateChange={setHudState}
+          language="AUTO"
+        />
+      )}
+    </div>
   );
 }
 
