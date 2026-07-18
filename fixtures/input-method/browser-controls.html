@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'"
+    />
+    <title>Spick browser field bench</title>
+    <style>
+      :root {
+        color: #292620;
+        background: #f2ede3;
+        font-family:
+          "Avenir Next", Avenir, "Segoe UI Variable", "Segoe UI", system-ui,
+          sans-serif;
+        font-synthesis: none;
+        --ink: #292620;
+        --muted: #6e665b;
+        --line: #ded5c8;
+        --paper: #fffdf8;
+        --paper-soft: #f8f3ea;
+        --accent: #a94f31;
+        --accent-soft: #f5e5db;
+        --green: #55725b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(
+            circle at 12% 8%,
+            rgba(169, 79, 49, 0.08),
+            transparent 25rem
+          ),
+          var(--paper-soft);
+      }
+
+      main {
+        width: min(980px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 64px 0 80px;
+      }
+
+      header {
+        max-width: 690px;
+        margin-bottom: 34px;
+      }
+
+      .eyebrow,
+      .expectation,
+      .field-state {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: var(--accent);
+      }
+
+      h1 {
+        margin: 0;
+        font-family: Charter, "Iowan Old Style", Palatino, Georgia, serif;
+        font-size: clamp(36px, 6vw, 62px);
+        font-weight: 500;
+        letter-spacing: -0.045em;
+        line-height: 0.98;
+      }
+
+      .intro {
+        margin: 20px 0 0;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.6;
+      }
+
+      .live-status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 36px;
+        padding: 8px 13px;
+        margin-top: 20px;
+        color: #493f34;
+        background: rgba(255, 253, 248, 0.75);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        font-size: 13px;
+      }
+
+      .live-status::before {
+        width: 8px;
+        height: 8px;
+        margin-right: 9px;
+        background: var(--green);
+        border-radius: 999px;
+        content: "";
+      }
+
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .field-card {
+        padding: 22px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 10px 28px rgba(61, 48, 33, 0.055);
+        transition:
+          border-color 140ms ease,
+          box-shadow 140ms ease,
+          transform 140ms ease;
+      }
+
+      .field-card:focus-within {
+        border-color: #ce8b6f;
+        box-shadow: 0 14px 34px rgba(61, 48, 33, 0.1);
+        transform: translateY(-1px);
+      }
+
+      .field-card h2 {
+        margin: 0;
+        font-family: Charter, "Iowan Old Style", Palatino, Georgia, serif;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+
+      .field-card p {
+        min-height: 42px;
+        margin: 7px 0 16px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      code {
+        padding: 2px 5px;
+        color: #4d453c;
+        background: #eee6da;
+        border-radius: 5px;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 0.9em;
+      }
+
+      label {
+        display: block;
+      }
+
+      input,
+      textarea,
+      [contenteditable="true"] {
+        width: 100%;
+        padding: 13px 14px;
+        color: var(--ink);
+        background: #fffefa;
+        border: 1px solid #cdbfaf;
+        border-radius: 10px;
+        font: inherit;
+        font-size: 15px;
+        line-height: 1.45;
+        caret-color: var(--accent);
+      }
+
+      textarea,
+      [contenteditable="true"] {
+        min-height: 126px;
+        resize: vertical;
+      }
+
+      [contenteditable="true"]:empty::before {
+        color: #9a9184;
+        pointer-events: none;
+        content: attr(data-placeholder);
+      }
+
+      input:focus-visible,
+      textarea:focus-visible,
+      [contenteditable="true"]:focus-visible {
+        outline: 3px solid rgba(169, 79, 49, 0.2);
+        outline-offset: 2px;
+      }
+
+      .card-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      .expectation {
+        color: var(--green);
+        letter-spacing: 0.045em;
+      }
+
+      .field-state {
+        color: #9a9184;
+        letter-spacing: 0.045em;
+      }
+
+      .field-card.is-focused .field-state {
+        color: var(--accent);
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .protected {
+        background: #fbf5ef;
+        border-style: dashed;
+      }
+
+      .protected .expectation {
+        color: var(--accent);
+      }
+
+      aside {
+        padding: 20px 22px;
+        margin-top: 16px;
+        color: #51483e;
+        background: var(--accent-soft);
+        border: 1px solid #e4c4b5;
+        border-radius: 14px;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      aside strong {
+        font-family: Charter, "Iowan Old Style", Palatino, Georgia, serif;
+        font-size: 17px;
+      }
+
+      @media (max-width: 720px) {
+        main {
+          padding-top: 38px;
+        }
+
+        .field-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .field-card {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Spick field bench</p>
+        <h1>Four fields. One honest test.</h1>
+        <p class="intro">
+          The compatibility runner uses one public, compiled test phrase—never
+          your microphone or clipboard. Focus the named field, use the fixed
+          shortcut once, then check that the phrase lands exactly where it
+          should.
+        </p>
+        <div class="live-status" id="live-status" aria-live="polite">
+          Pick a field to begin.
+        </div>
+      </header>
+
+      <section class="field-grid" aria-label="Browser text-control fixtures">
+        <article class="field-card" data-card>
+          <h2>Single line</h2>
+          <p>A plain browser <code>input[type=text]</code>.</p>
+          <label>
+            <span class="visually-hidden">Single-line text input</span>
+            <input
+              id="plain-input"
+              data-test-control
+              data-label="single-line input"
+              data-expectation="insert"
+              type="text"
+              autocomplete="off"
+              placeholder="Try: Meet me by the old clock at six."
+            />
+          </label>
+          <div class="card-footer">
+            <span class="expectation">Should insert</span>
+            <span class="field-state" aria-hidden="true">Waiting</span>
+          </div>
+        </article>
+
+        <article class="field-card" data-card>
+          <h2>Long note</h2>
+          <p>A multiline <code>textarea</code> with room to move the caret.</p>
+          <label>
+            <span class="visually-hidden">Multiline text area</span>
+            <textarea
+              id="multiline-textarea"
+              data-test-control
+              data-label="multiline textarea"
+              data-expectation="insert"
+              autocomplete="off"
+              placeholder="Add a first sentence, move the caret, then dictate the second."
+            ></textarea>
+          </label>
+          <div class="card-footer">
+            <span class="expectation">Should insert</span>
+            <span class="field-state" aria-hidden="true">Waiting</span>
+          </div>
+        </article>
+
+        <article class="field-card" data-card>
+          <h2>Rich editor</h2>
+          <p>
+            A bare <code>contenteditable</code> surface, like a simple composer.
+          </p>
+          <div
+            id="contenteditable-editor"
+            data-test-control
+            data-label="contenteditable editor"
+            data-expectation="insert"
+            data-placeholder="Dictate here, then try inserting in the middle of the result."
+            contenteditable="true"
+            role="textbox"
+            aria-label="Contenteditable rich text editor"
+            aria-multiline="true"
+            spellcheck="true"
+          ></div>
+          <div class="card-footer">
+            <span class="expectation">Should insert</span>
+            <span class="field-state" aria-hidden="true">Waiting</span>
+          </div>
+        </article>
+
+        <article class="field-card protected" data-card>
+          <h2>Protected field</h2>
+          <p>
+            A password control. Use a made-up phrase only—never a real secret.
+          </p>
+          <label>
+            <span class="visually-hidden">Test password input</span>
+            <input
+              id="password-input"
+              data-test-control
+              data-label="password input"
+              data-expectation="block"
+              type="password"
+              autocomplete="off"
+              placeholder="Spick should refuse this field"
+            />
+          </label>
+          <div class="card-footer">
+            <span class="expectation">Should stay untouched</span>
+            <span class="field-state" aria-hidden="true">Waiting</span>
+          </div>
+        </article>
+      </section>
+
+      <aside>
+        <strong>What counts as a pass?</strong>
+        The three ordinary fields receive the catalog fixture once at the
+        original caret. The password field receives nothing. This page makes no
+        network requests, sends nothing, and does not retain results.
+      </aside>
+    </main>
+
+    <script>
+      const cards = [...document.querySelectorAll("[data-card]")];
+      const controls = [...document.querySelectorAll("[data-test-control]")];
+      const liveStatus = document.querySelector("#live-status");
+
+      for (const control of controls) {
+        control.addEventListener("focus", () => {
+          for (const card of cards) {
+            card.classList.toggle("is-focused", card.contains(control));
+            const state = card.querySelector(".field-state");
+            state.textContent = card.contains(control) ? "Focused" : "Waiting";
+          }
+
+          const expectation =
+            control.dataset.expectation === "block"
+              ? "Spick should refuse to insert here."
+              : "Spick should insert once at this caret.";
+          liveStatus.textContent = `Focused: ${control.dataset.label}. ${expectation}`;
+        });
+      }
+    </script>
+  </body>
+</html>

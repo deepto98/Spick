@@ -20,6 +20,51 @@ Every broker connection is mutually authenticated before a request header or tra
 
 The release bundle still needs notarization, a prebuilt helper payload nested into the desktop bundle, and compatibility runs against real controls in TextEdit, browsers, VS Code, terminals, and Electron apps. InputMethodKit support is a control-level result; one working field does not prove an entire app works.
 
+## Real-control compatibility harness
+
+The compatibility harness is a separate debug-only app mode. It is not a dictation build: its Tauri context is stripped of configured windows before build, model preloading is skipped, every shortcut event is consumed by the one-shot probe, and the microphone, Whisper, clipboard, settings, transcript store, and HUD are never initialized. The case catalog fixes the target bundle identifier, required caret/selection shape, fixture text, and expected result. There is no argument for arbitrary text or an arbitrary target.
+
+Build a signed development harness with the same Apple Development identity and Team ID as the helper:
+
+```sh
+npm run build:desktop:input-method:compatibility:development
+```
+
+On a machine without a development identity, the explicitly unsafe local pair remains available for disposable testing only:
+
+```sh
+npm run build:desktop:input-method:compatibility:unsafe-adhoc
+```
+
+Before preflighting or running that ad-hoc pair, acknowledge that its signatures provide integrity but not trusted provenance:
+
+```sh
+export SPICK_INPUT_ALLOW_UNSAFE_ADHOC_COMPATIBILITY=YES
+```
+
+The preflight verifies all static signatures, identifiers, runtime flags, Team requirements, and signed capability markers before executing any inspection command. It never executes ad-hoc artifacts without that explicit acknowledgement.
+
+Building the app does not install or select the input source. Once the matching helper has been installed and selected through the separately guarded installer, inspect readiness without changing any input-source state:
+
+```sh
+npm run preflight:input-method:compatibility
+```
+
+List the compiled cases, then run exactly one in an interactive terminal:
+
+```sh
+src-tauri/target/debug/bundle/macos/Spick.app/Contents/MacOS/spick-desktop \
+  --list-input-method-compatibility-cases
+npm run run:input-method:compatibility -- \
+  --case macos.chrome.input.caretAscii --profile cold
+```
+
+The runner never opens or focuses a target app and never installs, registers, enables, disables, selects, or deselects an input source. It creates a private `target/input-method-compat` directory, launches one fixed-fixture probe, then records a separate closed-enum process-lifecycle result and visual review. Attempt, lifecycle, and review files are create-new and bind the exact attempt bytes by SHA-256. A small append-only journal is synced before capture so an evidence-storage failure aborts before any input-method lease or insertion. A probe that does not exit cleanly cannot qualify later, even if it sealed an attempt first.
+
+Evidence deliberately excludes fixture text, audio, clipboard data, field contents, selections, PIDs, audit tokens, window/document titles, URLs, usernames, hostnames, file paths, screenshots, and free-form notes. Positive insertion cases require a `Confirmed` helper result, while protected-field cases require the catalog's exact pre-insertion refusal. An indeterminate delivery is never retried or promoted by visual appearance. A confirmed record binds the live audit-token-authenticated helper CDHash to the separately inspected installed helper, and target versions come from the exact process captured by Accessibility.
+
+A case needs three reviewed passes—cold, warm, warm—under the same clean revision, macOS build, architecture, target version, signing policy, and secure peer authentication before it can be labelled compatible. “Cold” means the target app was fully quit and reopened and this is the first compatibility attempt in that launch. “Warm” means the same target-app launch remains open after a completed matching attempt, with the disposable field or document reset. The runner requires a typed profile attestation and stores that closed profile in the attempt. Unsafe ad-hoc results remain development-only. Compatibility is claimed per control, never for an entire application or a newer version by inference.
+
 Until those checks are complete:
 
 - the Cargo feature is off by default;

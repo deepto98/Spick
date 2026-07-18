@@ -40,6 +40,15 @@ The macOS input-method prototype has its own opt-in check because it builds a un
 npm run check:input-method
 ```
 
+Real-control testing uses a separate fixed-fixture diagnostic build. It does not listen to the microphone or accept arbitrary text/targets, and its preflight never changes the selected input source:
+
+```sh
+npm run build:desktop:input-method:compatibility:development
+npm run preflight:input-method:compatibility
+npm run run:input-method:compatibility -- \
+  --case macos.chrome.input.caretAscii --profile cold
+```
+
 ## Architecture
 
 Spick keeps audio capture, transcription, cleanup, language policy, and text insertion as separate responsibilities. That boundary is intended to support local `whisper.cpp` models, capability-aware cloud providers, and platform-specific insertion without coupling the product interface to one engine.
