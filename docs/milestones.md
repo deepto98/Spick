@@ -1,0 +1,122 @@
+# Spick Delivery Milestones
+
+The plan delivers one useful macOS dictation path first, then expands language, provider, and dashboard capabilities before porting the native seams to Windows and Linux. Each milestone ends with a runnable build, focused verification, and a short record of completed work and known limitations.
+
+## Milestone 0: Project foundation
+
+Establish the Tauri, React/TypeScript, and Rust workspace with formatting, linting, tests, application configuration, and a shared visual foundation. Define the dictation session states and the boundaries between the interface, core, providers, storage, and platform integrations.
+
+Exit criteria:
+
+- The desktop shell opens a dashboard and a non-activating widget in development.
+- React receives a simulated dictation state sequence from Rust.
+- The project has repeatable local checks and documented development commands.
+- No secrets or generated model files are tracked by Git.
+
+## Milestone 1: macOS offline vertical slice
+
+Deliver the smallest complete path: hold a configurable global shortcut, capture microphone audio, show listening feedback, transcribe through one supported local `whisper.cpp` model, and insert final text into the control that was focused when dictation began.
+
+Begin compatibility testing with TextEdit, a Chromium browser, and VS Code. Permission onboarding covers microphone and Accessibility access.
+
+Exit criteria:
+
+- Shortcut press starts capture and shortcut release finalizes the session.
+- The widget never takes focus from the target application.
+- Final local transcription can be inserted in every supported test target.
+- Cancellation changes no target text and raw audio is not retained.
+- Unsupported and secure controls fail safely with a copyable transcript when appropriate.
+
+## Milestone 2: macOS insertion and session hardening
+
+Make the vertical slice dependable across common control types. Add focus revalidation, selection replacement, clipboard preservation and restoration, insertion fallback, cancellation, retry, and one-step recovery from an insertion error. Instrument the stages needed to diagnose perceived latency without logging dictated content.
+
+Expand the compatibility matrix to include a native editor, browser text fields and editors, VS Code, a terminal, and one Electron communication app.
+
+Exit criteria:
+
+- Direct Accessibility insertion and fallback behavior are independently tested.
+- Focus changes, clipboard races, permission denial, microphone loss, and empty speech have defined outcomes.
+- Stage timings are visible in diagnostics without exposing transcript or audio content.
+- Compatibility results identify supported controls and known limitations rather than claiming application-wide support.
+
+## Milestone 3: multilingual local models
+
+Add a curated local model manager for compatible Whisper models. Support download progress, verification, activation, removal, disk requirements, and clear distinction between multilingual and English-only models.
+
+Expose Auto and Fixed language policies first. Add Preferred and Mixed policies only after phrase-level behavior is measurable in representative language pairs. Keep translation and transliteration explicit.
+
+Exit criteria:
+
+- Users can install, select, verify, and remove a supported local model.
+- Invalid, incomplete, or incompatible downloads cannot become active.
+- Language settings prevent incompatible model selections.
+- Test fixtures cover multiple scripts, punctuation, and at least one code-switching scenario.
+
+## Milestone 4: cleanup and cloud providers
+
+Introduce separate transcription and cleanup selectors. Provide deterministic Verbatim and Clean modes before optional model-based Polished output. Add cloud adapters one provider at a time, beginning with a single speech service, and store its key in the macOS credential store.
+
+Adapters declare streaming, language, translation, vocabulary, and cleanup capabilities. Local-only mode and per-role routing are enforced by the core.
+
+Exit criteria:
+
+- A user can understand which engine handles transcription and which handles cleanup.
+- Unsupported provider, language, and mode combinations cannot be selected.
+- API keys never enter application settings, SQLite, logs, or frontend state.
+- Local-only mode is covered by tests that reject cloud routing and fallback.
+- Filler-word removal does not alter quoted or intentionally verbatim speech in Verbatim mode.
+
+## Milestone 5: dashboard and personalization
+
+Complete onboarding and the four primary product areas: Today, Engines, Vocabulary, and Settings. Add local statistics for words dictated, voiced minutes, speaking speed, time saved, languages, engine usage, and processing latency. Add custom vocabulary and per-application formatting profiles without coupling them to a single provider.
+
+Exit criteria:
+
+- Statistics are derived from documented local measurements and can be cleared.
+- Transcript history remains optional and separate from aggregate statistics.
+- Users can change shortcut, microphone, widget position, language policy, engines, privacy mode, and credentials.
+- Empty, loading, downloading, offline, permission, and error states use the same visual language as the widget.
+
+## Milestone 6: macOS beta readiness
+
+Harden startup, updates, model migration, crash recovery, power behavior, and long-running tray operation. Complete accessibility review, privacy disclosures, signed distribution, and notarization. Validate supported macOS versions and hardware/model combinations rather than inferring compatibility.
+
+Exit criteria:
+
+- A clean machine can install, onboard, dictate, update, and uninstall without development tools.
+- Failure recovery does not lose user settings, credentials, or verified models.
+- Privacy behavior matches product copy and provider routing choices.
+- The supported application and hardware matrix is published with known limitations.
+
+## Milestone 7: Windows port
+
+Reuse the shared interface, core pipeline, provider adapters, model manager, and storage schema. Implement Windows global shortcuts, microphone permissions, non-activating widget behavior, credential storage, UI Automation insertion, and the required fallback path.
+
+Exit criteria:
+
+- The offline vertical slice passes on supported Windows versions in native, Chromium, Electron, and code-editor controls.
+- Secure fields, focus movement, selection replacement, and clipboard restoration pass Windows-specific tests.
+- Packaging, signing, updates, and model paths follow Windows conventions.
+- Platform differences are reflected in onboarding and the compatibility matrix.
+
+## Milestone 8: Linux port
+
+Implement Linux audio, shortcuts, credential storage, widget behavior, and AT-SPI insertion. Treat X11 and Wayland as separate compatibility targets and select supported desktop environments from measured results.
+
+Exit criteria:
+
+- The offline vertical slice works on the explicitly supported display server and desktop combinations.
+- Installation, permissions, shortcuts, model storage, and credential behavior are documented for each supported package format.
+- Unsupported Wayland or compositor behavior is detected and explained without unsafe input workarounds.
+- The Linux compatibility matrix distinguishes native, browser, Electron, and code-editor controls.
+
+## Milestone discipline
+
+For every milestone:
+
+- keep the main branch runnable;
+- commit cohesive changes with tests or verification notes;
+- avoid introducing a provider or platform abstraction before one real implementation exercises it;
+- update the compatibility matrix when a target is added or behavior changes; and
+- report what was completed, what was verified, and what remains intentionally out of scope.
