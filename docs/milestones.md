@@ -26,9 +26,9 @@ Current checkpoint:
 - Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
 - The cleanup choice is saved natively and captured per session. As-transcribed output is the safe default; the opt-in local cleaner removes pause-marked English “um”, “uh”, and “erm” when punctuation repair is unambiguous, while preserving bare identifiers, quoted uses, and other languages.
 - Focused-field capture, live Accessibility permission handling, exact-target revalidation, secure/protected-field preflight, and structured copy recovery are working.
-- A universal InputMethodKit palette helper and versioned local protocol now exercise arm, one-use insert, disarm, expiry, exact readback, and ambiguous-delivery outcomes. The Rust client is feature-gated and normal builds still use explicit copy recovery while release identity checks and application compatibility work remain.
+- A universal InputMethodKit palette helper and versioned local protocol now exercise arm, one-use insert, disarm, expiry, exact readback, and ambiguous-delivery outcomes. The desktop and helper mutually authenticate live audit-token-bound code identities, with fail-closed signed and explicitly unsafe development build modes. The Rust client is feature-gated and normal builds still use explicit copy recovery while application compatibility and final release packaging work remain.
 - Final transcripts are kept in memory and shown on Today for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
-- The prototype still needs mutual code-signature authentication and hands-on compatibility results before it can become the default text-input primitive. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
+- The prototype still needs repeatable hands-on compatibility results and a nested/notarized distribution path before it can become the default text-input primitive. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
 
 Exit criteria:
 

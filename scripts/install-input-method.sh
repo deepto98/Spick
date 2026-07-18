@@ -8,6 +8,57 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
+source "${script_dir}/lib/input-method-signing.sh"
+
+if [[ -n "${SPICK_INPUT_SIGNING_MODE:-}" ]]; then
+  echo "Choose the installer mode with --development or --unsafe-adhoc, not SPICK_INPUT_SIGNING_MODE." >&2
+  exit 1
+fi
+signing_mode="development"
+if [[ "$#" -gt 1 ]]; then
+  echo "Usage: $0 [--development|--unsafe-adhoc]" >&2
+  exit 1
+fi
+if [[ "$#" -eq 1 ]]; then
+  case "$1" in
+    --development) signing_mode="development" ;;
+    --unsafe-adhoc) signing_mode="unsafe-adhoc" ;;
+    *)
+      echo "Usage: $0 [--development|--unsafe-adhoc]" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+unsafe_build_confirmation=""
+case "${signing_mode}" in
+  development) ;;
+  unsafe-adhoc)
+    if [[ "${SPICK_INPUT_ALLOW_UNSAFE_ADHOC_INSTALL:-}" != "YES" ]]; then
+      echo "Unsafe installation requires both --unsafe-adhoc and SPICK_INPUT_ALLOW_UNSAFE_ADHOC_INSTALL=YES." >&2
+      exit 1
+    fi
+    unsafe_build_confirmation="YES"
+    echo "WARNING: this ad-hoc helper can be impersonated by another process in your macOS account." >&2
+    echo "Use it only for a local compatibility session; never for normal or release use." >&2
+    ;;
+  check)
+    echo "The check artifact is intentionally non-installable." >&2
+    exit 1
+    ;;
+  release)
+    echo "Release installation must use a prebuilt, notarized payload; this development installer will not rebuild it." >&2
+    exit 1
+    ;;
+  *)
+    echo "Unknown input-method signing mode '${signing_mode}'." >&2
+    exit 1
+    ;;
+esac
+
+SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD="${unsafe_build_confirmation}" \
+  spick_validate_input_signing_configuration "${signing_mode}"
+
 build_dir="${project_dir}/target/input-method"
 built_bundle="${build_dir}/Spick Input.app"
 source_tool="${build_dir}/spick-input-source-tool"
@@ -98,7 +149,12 @@ build_dir="${staging_dir}/build"
 built_bundle="${build_dir}/Spick Input.app"
 source_tool="${build_dir}/spick-input-source-tool"
 mkdir -p "${build_dir}"
-SPICK_INPUT_OUTPUT_DIR="${build_dir}" "${script_dir}/build-input-method.sh"
+SPICK_INPUT_SIGNING_MODE="${signing_mode}" \
+SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD="${unsafe_build_confirmation}" \
+SPICK_INPUT_OUTPUT_DIR="${build_dir}" \
+  "${script_dir}/build-input-method.sh"
+SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD="${unsafe_build_confirmation}" \
+  spick_verify_input_artifacts "${signing_mode}" "${built_bundle}" "${source_tool}"
 
 shopt -s nullglob
 legacy_backups=("${input_methods_dir}"/Spick\ Input.backup-*.app)
@@ -123,7 +179,8 @@ prepared=1
 "${source_tool}" prepare-install "${installed_bundle}"
 
 ditto "${built_bundle}" "${staged_bundle}"
-codesign --verify --deep --strict "${staged_bundle}"
+SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD="${unsafe_build_confirmation}" \
+  spick_verify_input_artifacts "${signing_mode}" "${staged_bundle}" "${source_tool}"
 "${source_tool}" assert-safe-to-replace "${installed_bundle}"
 
 if [[ -e "${installed_bundle}" ]]; then
@@ -134,6 +191,8 @@ fi
 
 mv "${staged_bundle}" "${installed_bundle}"
 installed_new_bundle=1
+SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD="${unsafe_build_confirmation}" \
+  spick_verify_input_artifacts "${signing_mode}" "${installed_bundle}" "${source_tool}"
 registration_started=1
 "${source_tool}" register-and-select "${installed_bundle}"
 
