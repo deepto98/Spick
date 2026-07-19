@@ -60,8 +60,18 @@ const AX_ROLE: &str = "AXRole";
 const AX_SUBROLE: &str = "AXSubrole";
 const AX_CONTAINS_PROTECTED_CONTENT: &str = "AXContainsProtectedContent";
 const AX_ENABLED: &str = "AXEnabled";
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const AX_SELECTED_TEXT: &str = "AXSelectedText";
 const AX_SELECTED_TEXT_RANGE: &str = "AXSelectedTextRange";
 const AX_SELECTED_TEXT_RANGES: &str = "AXSelectedTextRanges";
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const AX_STRING_FOR_RANGE: &str = "AXStringForRange";
 const AX_SECURE_TEXT_FIELD: &str = "AXSecureTextField";
 const AX_TEXT_FIELD_ROLE: &str = "AXTextField";
 const AX_TEXT_AREA_ROLE: &str = "AXTextArea";
@@ -75,7 +85,9 @@ const OWNER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_800);
 const CAPTURE_DEADLINE: Duration = Duration::from_millis(700);
 const COMMIT_DEADLINE: Duration = Duration::from_millis(950);
 const APPLICATION_TIMEOUT_SECONDS: f32 = 0.25;
-const MAX_PARENT_DEPTH: usize = 5;
+const MAX_PARENT_DEPTH: usize = 12;
+const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(90);
+const FOCUSED_CONTEXT_RETRY_DELAY: Duration = Duration::from_millis(12);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
 #[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
@@ -349,10 +361,10 @@ impl Worker {
             ));
         }
 
-        let system = unsafe { AXUIElement::new_system_wide() };
-        let application = read_element(&system, AX_FOCUSED_APPLICATION, "focused application")?;
-        set_element_timeout(&application)?;
-        let application_pid = read_pid(&application)?;
+        let focused = read_focused_context(deadline)?;
+        let application = focused.application;
+        let focus_anchor = focused.focus_anchor;
+        let application_pid = focused.pid;
         if application_pid == std::process::id() as pid_t {
             return Err(TextTargetError::new(
                 TextTargetErrorKind::OwnApplication,
@@ -379,15 +391,6 @@ impl Worker {
             .map_err(|error| error.with_compatibility_target_pid(application_pid))?;
         #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         ensure_not_secure(&application)?;
-
-        let focus_anchor = read_element(&application, AX_FOCUSED_UI_ELEMENT, "focused text field")?;
-        let anchor_pid = read_pid(&focus_anchor)?;
-        if anchor_pid != application_pid {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::NoFocusedTarget,
-                "macOS reported an inconsistent focused field",
-            ));
-        }
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
         let editable = resolve_editable_target(&focus_anchor)
@@ -451,6 +454,11 @@ impl Worker {
                 #[cfg(feature = "macos-input-method-prototype")]
                 input_method_lease,
                 selection: editable.selection,
+                #[cfg(all(
+                    debug_assertions,
+                    not(feature = "macos-input-method-compatibility-harness")
+                ))]
+                selected_text_settable: editable.selected_text_settable,
                 observer,
             },
         );
@@ -469,6 +477,7 @@ impl Worker {
         transcript: &str,
         deadline: Instant,
     ) -> Result<TextInsertionReceipt, TextTargetError> {
+        #[allow(unused_mut)]
         let mut target = self.targets.remove(&token).ok_or_else(|| {
             TextTargetError::new(
                 TextTargetErrorKind::TargetGone,
@@ -477,7 +486,7 @@ impl Worker {
         })?;
         revalidate_captured_target(&target, deadline)?;
 
-        #[cfg(feature = "macos-input-method-prototype")]
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
         {
             commit_through_input_method(&mut target, token, transcript, deadline)?;
             Ok(TextInsertionReceipt {
@@ -491,12 +500,42 @@ impl Worker {
             })
         }
 
-        #[cfg(not(feature = "macos-input-method-prototype"))]
+        #[cfg(all(
+            debug_assertions,
+            not(feature = "macos-input-method-compatibility-harness")
+        ))]
+        {
+            #[cfg(feature = "macos-input-method-prototype")]
+            if target.input_method_lease.is_some() {
+                commit_through_input_method(&mut target, token, transcript, deadline)?;
+                return Ok(TextInsertionReceipt {
+                    target_app: None,
+                    caret_repositioned: true,
+                });
+            }
+
+            commit_through_accessibility(&target, transcript, deadline)
+        }
+
+        #[cfg(all(
+            not(debug_assertions),
+            feature = "macos-input-method-prototype",
+            not(feature = "macos-input-method-compatibility-harness")
+        ))]
+        {
+            commit_through_input_method(&mut target, token, transcript, deadline)?;
+            Ok(TextInsertionReceipt {
+                target_app: None,
+                caret_repositioned: true,
+            })
+        }
+
+        #[cfg(all(not(debug_assertions), not(feature = "macos-input-method-prototype")))]
         {
             let _ = (transcript, &mut target);
             Err(TextTargetError::new(
                 TextTargetErrorKind::Unsupported,
-                "Automatic typing is still in compatibility testing; the transcript is ready to copy",
+                "Automatic typing is not enabled in this build; the transcript is ready to copy",
             ))
         }
     }
@@ -512,6 +551,11 @@ struct CapturedTarget {
     #[cfg(feature = "macos-input-method-prototype")]
     input_method_lease: Option<InputMethodLease>,
     selection: CFRange,
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    selected_text_settable: bool,
     observer: ObserverLease,
 }
 
@@ -534,11 +578,9 @@ fn revalidate_captured_target(
         ));
     }
 
-    let system = unsafe { AXUIElement::new_system_wide() };
-    let current_application = read_element(&system, AX_FOCUSED_APPLICATION, "focused application")?;
-    if !elements_equal(&current_application, &target.application)
-        || read_pid(&current_application)? != target.pid
-    {
+    let focused = read_focused_context(deadline)?;
+    let current_application = focused.application;
+    if !elements_equal(&current_application, &target.application) || focused.pid != target.pid {
         return Err(TextTargetError::new(
             TextTargetErrorKind::FocusChanged,
             "The active app changed, so Spick did not type the transcript",
@@ -547,11 +589,7 @@ fn revalidate_captured_target(
     set_element_timeout(&current_application)?;
     ensure_not_secure(&current_application)?;
 
-    let current_anchor = read_element(
-        &current_application,
-        AX_FOCUSED_UI_ELEMENT,
-        "focused text field",
-    )?;
+    let current_anchor = focused.focus_anchor;
     if !elements_equal(&current_anchor, &target.focus_anchor)
         || read_pid(&current_anchor)? != target.pid
     {
@@ -593,6 +631,141 @@ fn revalidate_captured_target(
         }
     }
     Ok(())
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn commit_through_accessibility(
+    target: &CapturedTarget,
+    transcript: &str,
+    deadline: Instant,
+) -> Result<TextInsertionReceipt, TextTargetError> {
+    if !target.selected_text_settable {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "This field does not accept direct text insertion; the transcript is ready to copy",
+        ));
+    }
+    check_deadline(deadline)?;
+    let (inserted_range, expected_caret) = insertion_ranges(target.selection, transcript)?;
+    let attribute = CFString::from_static_str(AX_SELECTED_TEXT);
+    let value = CFString::from_str(transcript);
+    let value: &CFType = &value;
+    let result = unsafe { target.element.set_attribute_value(&attribute, value) };
+    if result != AXError::Success {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Indeterminate,
+            "The field did not confirm whether it accepted the transcript; check it before copying",
+        ));
+    }
+
+    // AX setters are synchronous from the caller's perspective, but give the
+    // target's Accessibility bridge one run-loop turn before asking it to read
+    // the exact UTF-16 range back.
+    pump_run_loop();
+    let readback = read_string_for_range(&target.element, inserted_range).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Indeterminate,
+            "The field accepted a write but could not confirm its contents; check it before copying",
+        )
+    })?;
+    if readback.as_deref() != Some(transcript) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Indeterminate,
+            "The field accepted a write but its contents did not match; check it before copying",
+        ));
+    }
+    let caret_repositioned = read_optional_range(&target.element, AX_SELECTED_TEXT_RANGE)
+        .map(|selection| selection.is_some_and(|selection| ranges_equal(selection, expected_caret)))
+        .unwrap_or(false);
+
+    Ok(TextInsertionReceipt {
+        target_app: None,
+        caret_repositioned,
+    })
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn insertion_ranges(
+    selection: CFRange,
+    transcript: &str,
+) -> Result<(CFRange, CFRange), TextTargetError> {
+    validate_range_shape(selection)?;
+    let inserted_length =
+        isize::try_from(transcript.encode_utf16().count()).map_err(|_| invalid_range_error())?;
+    let caret_location = selection
+        .location
+        .checked_add(inserted_length)
+        .ok_or_else(invalid_range_error)?;
+    Ok((
+        CFRange {
+            location: selection.location,
+            length: inserted_length,
+        },
+        CFRange {
+            location: caret_location,
+            length: 0,
+        },
+    ))
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn read_string_for_range(
+    element: &AXUIElement,
+    range: CFRange,
+) -> Result<Option<String>, TextTargetError> {
+    let mut range = range;
+    let parameter = unsafe {
+        AXValue::new(
+            AXValueType::CFRange,
+            NonNull::from(&mut range).cast::<c_void>(),
+        )
+    }
+    .ok_or_else(|| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "macOS could not encode the inserted text range",
+        )
+    })?;
+    let parameter: &CFType = &parameter;
+    let attribute = CFString::from_static_str(AX_STRING_FOR_RANGE);
+    let mut raw: *const CFType = ptr::null();
+    let result = unsafe {
+        element.copy_parameterized_attribute_value(&attribute, parameter, NonNull::from(&mut raw))
+    };
+    if matches!(result, AXError::AttributeUnsupported | AXError::NoValue) {
+        return Ok(None);
+    }
+    if result != AXError::Success {
+        return Err(map_ax_error(result, "read back the inserted text"));
+    }
+    let raw = NonNull::new(raw.cast_mut()).ok_or_else(|| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "macOS returned an empty inserted-text value",
+        )
+    })?;
+    let value = unsafe { CFRetained::<CFType>::from_raw(raw) };
+    value
+        .downcast::<CFString>()
+        .map(|value| Some(value.to_string()))
+        .map_err(|_| {
+            TextTargetError::new(
+                TextTargetErrorKind::Unsupported,
+                "macOS returned an unexpected inserted-text value",
+            )
+        })
 }
 
 #[cfg(feature = "macos-input-method-prototype")]
@@ -1363,6 +1536,17 @@ fn register_notification(
 struct EditableTarget {
     element: CFRetained<AXUIElement>,
     selection: CFRange,
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    selected_text_settable: bool,
+}
+
+struct FocusedContext {
+    application: CFRetained<AXUIElement>,
+    focus_anchor: CFRetained<AXUIElement>,
+    pid: pid_t,
 }
 
 fn permission_status() -> AccessibilityPermissionStatus {
@@ -1399,6 +1583,79 @@ fn request_permission() -> Result<AccessibilityPermissionStatus, TextTargetError
         },
         can_request: true,
     })
+}
+
+/// Read one coherent app/field snapshot. Some Chromium and Electron apps
+/// transiently omit AXFocusedApplication while still exposing the system-wide
+/// AXFocusedUIElement. Deriving the application from that element's PID avoids
+/// treating the gap as an unsupported editor, while the PID equality check
+/// prevents a mixed snapshot during an app switch.
+fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetError> {
+    let retry_deadline = deadline.min(Instant::now() + FOCUSED_CONTEXT_RETRY_BUDGET);
+
+    loop {
+        check_deadline(deadline)?;
+        match read_focused_context_once() {
+            Ok(context) => return Ok(context),
+            Err(error) if focused_context_error_is_transient(error.kind) => {
+                if Instant::now() >= retry_deadline {
+                    return Err(error);
+                }
+                thread::sleep(FOCUSED_CONTEXT_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
+    let system = unsafe { AXUIElement::new_system_wide() };
+    let system_anchor = read_optional_element(&system, AX_FOCUSED_UI_ELEMENT)?;
+    let application = match read_optional_element(&system, AX_FOCUSED_APPLICATION)? {
+        Some(application) => application,
+        None => {
+            let anchor = system_anchor.as_ref().ok_or_else(|| {
+                TextTargetError::new(
+                    TextTargetErrorKind::NoFocusedTarget,
+                    "macOS did not report a focused application or text field",
+                )
+            })?;
+            let pid = read_pid(anchor)?;
+            unsafe { AXUIElement::new_application(pid) }
+        }
+    };
+    set_element_timeout(&application)?;
+    let pid = read_pid(&application)?;
+    let focus_anchor = match read_optional_element(&application, AX_FOCUSED_UI_ELEMENT)? {
+        Some(anchor) => anchor,
+        None => system_anchor.ok_or_else(|| {
+            TextTargetError::new(
+                TextTargetErrorKind::NoFocusedTarget,
+                "macOS did not report a focused text field",
+            )
+        })?,
+    };
+    if read_pid(&focus_anchor)? != pid {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::NoFocusedTarget,
+            "macOS reported an inconsistent focused field",
+        ));
+    }
+
+    Ok(FocusedContext {
+        application,
+        focus_anchor,
+        pid,
+    })
+}
+
+fn focused_context_error_is_transient(kind: TextTargetErrorKind) -> bool {
+    matches!(
+        kind,
+        TextTargetErrorKind::NoFocusedTarget
+            | TextTargetErrorKind::TargetGone
+            | TextTargetErrorKind::TimedOut
+    )
 }
 
 fn resolve_editable_target(focus_anchor: &AXUIElement) -> Result<EditableTarget, TextTargetError> {
@@ -1456,6 +1713,11 @@ fn editable_snapshot(element: &AXUIElement) -> Result<Option<EditableTarget>, Te
     Ok(Some(EditableTarget {
         element: retain_element(element),
         selection,
+        #[cfg(all(
+            debug_assertions,
+            not(feature = "macos-input-method-compatibility-harness")
+        ))]
+        selected_text_settable: is_settable(element, AX_SELECTED_TEXT)?,
     }))
 }
 
@@ -1501,19 +1763,6 @@ fn read_pid(element: &AXUIElement) -> Result<pid_t, TextTargetError> {
     } else {
         Err(map_ax_error(result, "identify the focused application"))
     }
-}
-
-fn read_element(
-    element: &AXUIElement,
-    attribute: &'static str,
-    label: &'static str,
-) -> Result<CFRetained<AXUIElement>, TextTargetError> {
-    read_optional_element(element, attribute)?.ok_or_else(|| {
-        TextTargetError::new(
-            TextTargetErrorKind::NoFocusedTarget,
-            format!("macOS did not report a {label}"),
-        )
-    })
 }
 
 fn read_optional_element(
@@ -1758,6 +2007,41 @@ mod tests {
         let error = validate_range_shape(range(-1, 0)).unwrap_err();
         assert_eq!(error.kind, TextTargetErrorKind::Unsupported);
         assert!(validate_range_shape(range(3, 0)).is_ok());
+    }
+
+    #[test]
+    fn insertion_ranges_use_utf16_offsets_and_replace_the_original_selection() {
+        assert_eq!(
+            insertion_ranges(range(4, 3), "hello").unwrap(),
+            (range(4, 5), range(9, 0))
+        );
+        assert_eq!(
+            insertion_ranges(range(2, 0), "🙂").unwrap(),
+            (range(2, 2), range(4, 0))
+        );
+        assert_eq!(
+            insertion_ranges(range(7, 1), "e\u{301}").unwrap(),
+            (range(7, 2), range(9, 0))
+        );
+    }
+
+    #[test]
+    fn focused_context_retries_only_transient_snapshot_failures() {
+        assert!(focused_context_error_is_transient(
+            TextTargetErrorKind::NoFocusedTarget
+        ));
+        assert!(focused_context_error_is_transient(
+            TextTargetErrorKind::TimedOut
+        ));
+        assert!(focused_context_error_is_transient(
+            TextTargetErrorKind::TargetGone
+        ));
+        assert!(!focused_context_error_is_transient(
+            TextTargetErrorKind::AccessibilityMissing
+        ));
+        assert!(!focused_context_error_is_transient(
+            TextTargetErrorKind::SecureField
+        ));
     }
 
     #[test]

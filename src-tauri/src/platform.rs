@@ -287,11 +287,16 @@ pub(crate) enum CompatibilitySelection {
 pub fn current_platform_capabilities() -> PlatformCapabilities {
     #[cfg(target_os = "macos")]
     {
+        let development_accessibility_insertion = cfg!(debug_assertions);
         PlatformCapabilities {
             platform: DesktopPlatform::MacOs,
-            preferred_text_insertion: TextInsertionStrategy::InputMethodKit,
+            preferred_text_insertion: if development_accessibility_insertion {
+                TextInsertionStrategy::Accessibility
+            } else {
+                TextInsertionStrategy::InputMethodKit
+            },
             fallback_text_insertion: None,
-            text_insertion_available: false,
+            text_insertion_available: development_accessibility_insertion,
             supports_global_shortcut: true,
         }
     }
@@ -372,8 +377,11 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_insertion_is_not_advertised_as_a_fallback() {
+    fn capabilities_do_not_advertise_an_unwired_fallback() {
         let capabilities = current_platform_capabilities();
+        #[cfg(target_os = "macos")]
+        assert!(capabilities.text_insertion_available);
+        #[cfg(not(target_os = "macos"))]
         assert!(!capabilities.text_insertion_available);
         assert_eq!(capabilities.fallback_text_insertion, None);
     }
