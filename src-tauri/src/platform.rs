@@ -297,7 +297,7 @@ pub fn current_platform_capabilities() -> PlatformCapabilities {
                 TextInsertionStrategy::InputMethodKit
             },
             fallback_text_insertion: development_accessibility_insertion
-                .then_some(TextInsertionStrategy::KeyboardEvents),
+                .then_some(TextInsertionStrategy::ClipboardPaste),
             text_insertion_available: development_accessibility_insertion,
             supports_global_shortcut: true,
         }
@@ -388,7 +388,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             capabilities.fallback_text_insertion,
-            Some(super::TextInsertionStrategy::KeyboardEvents)
+            Some(super::TextInsertionStrategy::ClipboardPaste)
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(capabilities.fallback_text_insertion, None);

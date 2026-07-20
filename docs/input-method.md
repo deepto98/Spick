@@ -18,7 +18,7 @@ Every broker connection is mutually authenticated before a request header or tra
 
 ## Why it is still gated
 
-The release bundle still needs notarization, a prebuilt helper payload nested into the desktop bundle, and compatibility runs against real controls in Notes, TextEdit, browsers, ChatGPT, VS Code, terminals, and other Electron apps. InputMethodKit support is a control-level result; one working field does not prove an entire app works.
+The release bundle still needs notarization, a prebuilt helper payload nested into the desktop bundle, and compatibility runs against real controls in Notes, TextEdit, browsers, ChatGPT, VS Code, and other Electron apps. InputMethodKit support is a control-level result; one working field does not prove an entire app works.
 
 ## Real-control compatibility harness
 
@@ -70,13 +70,31 @@ Until those checks are complete:
 - the Cargo feature is off by default;
 - release builds report InputMethodKit insertion as unavailable;
 - ordinary debug builds first use verified `AXSelectedText` replacement and
-  can fall back to a target-PID Unicode keyboard event when a control exposes
-  a readable selection but no direct setter; PID delivery cannot be bound
-  atomically to one Accessibility element, so the fallback revalidates again
-  immediately before its single post and must observe the original field's
-  expected caret and, where available, contents before it reports success;
-- transcripts remain available through the explicit copy recovery path when a control rejects insertion; and
-- no clipboard fallback runs silently.
+  use a guarded paste fallback for web, Electron, and other custom controls;
+- the fallback refuses a transcript containing a carriage return or line feed
+  before any clipboard access, so it is not a terminal or multiline insertion
+  path; direct Accessibility and InputMethodKit insertion are unaffected;
+- the fallback retains no more than 64 MiB of snapshot data, but AppKit
+  materializes lazy pasteboard representations before that cap can be checked;
+  the cap is not a streaming or pre-allocation bound;
+- after taking the in-memory snapshot, the fallback
+  revalidates the exact original target immediately before one PID-scoped
+  `Cmd-V`, and attempts to restore the snapshot only while its change-count
+  and ownership marker still match; if ownership is already lost, Spick leaves
+  the current clipboard alone;
+- the ownership check and restore are best-effort and non-atomic because the
+  public pasteboard API has no compare-and-swap operation; a microscopic race
+  with a concurrent clipboard change remains;
+- a selectionless custom field cannot prove its original caret or selection,
+  so its dispatch is indeterminate and is never retried;
+- any other unconfirmed paste dispatch is also indeterminate and is never retried;
+- macOS can deny or prompt for clipboard access under its privacy policy;
+- secure and protected controls are refused before recording; and
+- transcripts remain available through the explicit copy recovery path when a control rejects insertion.
+
+This best-effort fallback belongs only to the ordinary debug development path.
+It does not replace or relax the separately authenticated InputMethodKit
+release design.
 
 ## Development checks
 

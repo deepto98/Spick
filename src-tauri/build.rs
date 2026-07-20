@@ -4,6 +4,9 @@ fn main() {
         // IOHIDCheckAccess/IOHIDRequestAccess provide the authoritative,
         // tri-state Input Monitoring enrollment API on macOS 10.15+.
         println!("cargo:rustc-link-lib=framework=IOKit");
+        // IsSecureEventInputEnabled is an independent, fail-closed signal for
+        // password entry even when a control's Accessibility metadata is thin.
+        println!("cargo:rustc-link-lib=framework=Carbon");
     }
     if target_is_macos && std::env::var_os("CARGO_FEATURE_MACOS_INPUT_METHOD_PROTOTYPE").is_some() {
         let mut peer_identity = cc::Build::new();
@@ -21,7 +24,6 @@ fn main() {
         );
         peer_identity.compile("spick_peer_identity");
         println!("cargo:rustc-link-lib=framework=Foundation");
-        println!("cargo:rustc-link-lib=framework=Carbon");
         println!("cargo:rustc-link-lib=framework=Security");
         println!(
             "cargo:rerun-if-changed=../macos-input-method/Sources/SpickInputSourceInspection.h"

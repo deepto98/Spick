@@ -45,13 +45,25 @@ use super::{
     not(feature = "macos-input-method-compatibility-harness")
 ))]
 use core_graphics::{
-    event::CGEvent,
+    event::{CGEvent, CGEventFlags},
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use libc::pid_t;
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+use objc2::{rc::Retained, runtime::ProtocolObject};
 #[cfg(feature = "macos-input-method-prototype")]
 use objc2_app_kit::NSRunningApplication;
 use objc2_app_kit::NSWorkspace;
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+use objc2_app_kit::{
+    NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
+};
 use objc2_application_services::{
     kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
     AXObserver, AXUIElement, AXValue, AXValueType,
@@ -60,6 +72,11 @@ use objc2_core_foundation::{
     kCFBooleanTrue, kCFRunLoopDefaultMode, CFArray, CFBoolean, CFDictionary, CFRange, CFRetained,
     CFRunLoop, CFRunLoopSource, CFString, CFType,
 };
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+use objc2_foundation::{NSArray, NSData, NSString};
 
 const AX_FOCUSED_APPLICATION: &str = "AXFocusedApplication";
 const AX_FOCUSED_UI_ELEMENT: &str = "AXFocusedUIElement";
@@ -69,6 +86,7 @@ const AX_ROLE: &str = "AXRole";
 const AX_SUBROLE: &str = "AXSubrole";
 const AX_CONTAINS_PROTECTED_CONTENT: &str = "AXContainsProtectedContent";
 const AX_ENABLED: &str = "AXEnabled";
+const AX_VALUE: &str = "AXValue";
 const AX_SELECTED_TEXT: &str = "AXSelectedText";
 const AX_SELECTED_TEXT_RANGE: &str = "AXSelectedTextRange";
 const AX_SELECTED_TEXT_RANGES: &str = "AXSelectedTextRanges";
@@ -80,6 +98,7 @@ const AX_STRING_FOR_RANGE: &str = "AXStringForRange";
 const AX_SECURE_TEXT_FIELD: &str = "AXSecureTextField";
 const AX_TEXT_FIELD_ROLE: &str = "AXTextField";
 const AX_TEXT_AREA_ROLE: &str = "AXTextArea";
+const AX_WEB_AREA_ROLE: &str = "AXWebArea";
 const AX_APPLICATION_DEACTIVATED: &str = "AXApplicationDeactivated";
 const AX_FOCUSED_UI_ELEMENT_CHANGED: &str = "AXFocusedUIElementChanged";
 const AX_SELECTED_TEXT_CHANGED: &str = "AXSelectedTextChanged";
@@ -87,11 +106,11 @@ const AX_VALUE_CHANGED: &str = "AXValueChanged";
 const AX_UI_ELEMENT_DESTROYED: &str = "AXUIElementDestroyed";
 const AX_MANUAL_ACCESSIBILITY: &str = "AXManualAccessibility";
 
-const OWNER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_800);
+const OWNER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2_600);
 const CAPTURE_DEADLINE: Duration = Duration::from_millis(700);
-const COMMIT_DEADLINE: Duration = Duration::from_millis(950);
+const COMMIT_DEADLINE: Duration = Duration::from_millis(1_600);
 const APPLICATION_TIMEOUT_SECONDS: f32 = 0.25;
-const MAX_PARENT_DEPTH: usize = 12;
+const MAX_PARENT_DEPTH: usize = 64;
 const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(600);
 const FOCUSED_CONTEXT_RETRY_DELAY: Duration = Duration::from_millis(12);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
@@ -99,12 +118,32 @@ const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
 ))]
-const INSERTION_CONFIRMATION_BUDGET: Duration = Duration::from_millis(160);
+const INSERTION_CONFIRMATION_BUDGET: Duration = Duration::from_millis(850);
 #[cfg(all(
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
 ))]
-const UNMAPPED_VIRTUAL_KEY: u16 = u16::MAX;
+const PASTEBOARD_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const PASTEBOARD_SNAPSHOT_MAX_ITEMS: usize = 128;
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const PASTEBOARD_SNAPSHOT_MAX_TYPES: usize = 512;
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const PASTEBOARD_OWNER_TYPE: &str = "app.spick.desktop.transient-paste-owner";
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const ANSI_VIRTUAL_KEY_V: u16 = 9;
 #[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
 #[cfg(feature = "macos-input-method-prototype")]
@@ -135,6 +174,10 @@ extern "C" {
         peer_cd_hash_hex_capacity: usize,
     ) -> u32;
     fn SpickPeerAuthenticationAllowsUnsafeDevelopment() -> bool;
+}
+
+extern "C" {
+    fn IsSecureEventInputEnabled() -> libc::c_uchar;
 }
 
 #[derive(Default)]
@@ -315,7 +358,7 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            match command {
+            objc2::rc::autoreleasepool(|_| match command {
                 Command::PermissionStatus { reply } => {
                     let _ = reply.send(permission_status());
                 }
@@ -355,7 +398,7 @@ impl Worker {
                 Command::Discard { token } => {
                     self.targets.remove(&token);
                 }
-            }
+            });
         }
     }
 
@@ -376,6 +419,7 @@ impl Worker {
                 "Turn on Accessibility for Spick before using the shortcut",
             ));
         }
+        ensure_secure_event_input_disabled()?;
 
         let focused = read_focused_context(deadline)?;
         let application = focused.application;
@@ -415,7 +459,13 @@ impl Worker {
         let editable = resolve_editable_target(&focus_anchor, deadline)?;
         #[cfg(feature = "macos-input-method-compatibility-harness")]
         if let Some(expected) = expected_selection {
-            let has_selection = editable.selection.length > 0;
+            let selection = editable.selection.ok_or_else(|| {
+                TextTargetError::new(
+                    TextTargetErrorKind::ExpectedSelectionMismatch,
+                    "This field does not expose the selection required by the compatibility case",
+                )
+            })?;
+            let has_selection = selection.length > 0;
             let matches = match expected {
                 CompatibilitySelection::Any => true,
                 CompatibilitySelection::Caret => !has_selection,
@@ -436,19 +486,14 @@ impl Worker {
             &focus_anchor,
             &editable.element,
         )?;
-        let target_app = read_optional_string(&application, AX_TITLE)
-            .ok()
-            .flatten()
-            .and_then(sanitize_application_name);
-
         self.next_token = self.next_token.wrapping_add(1).max(1);
         let token = self.next_token;
         #[cfg(feature = "macos-input-method-prototype")]
-        let input_method_lease = match bundle_identifier.as_deref() {
-            Some(identifier) => {
-                try_arm_input_method(token, editable.selection, identifier, deadline)?
+        let input_method_lease = match (bundle_identifier.as_deref(), editable.selection) {
+            (Some(identifier), Some(selection)) => {
+                try_arm_input_method(token, selection, identifier, deadline)?
             }
-            None => None,
+            _ => None,
         };
         pump_run_loop();
         if observer.was_invalidated() {
@@ -457,19 +502,51 @@ impl Worker {
                 "The field changed before Spick could start listening",
             ));
         }
+        let confirmed_editable = revalidate_capture_snapshot(
+            &application,
+            &focus_anchor,
+            application_pid,
+            &editable,
+            deadline,
+        )?;
+        pump_run_loop();
+        if observer.was_invalidated() {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::FocusChanged,
+                "The field changed before Spick could start listening",
+            ));
+        }
         check_deadline(deadline)?;
+        let target_app = read_optional_string(&application, AX_TITLE)
+            .ok()
+            .flatten()
+            .and_then(sanitize_application_name);
+        #[cfg(all(
+            debug_assertions,
+            not(feature = "macos-input-method-compatibility-harness")
+        ))]
+        let development_insertion_path = development_insertion_path(
+            confirmed_editable.selected_text_settable,
+            confirmed_editable.selection.is_some(),
+            confirmed_editable.prefers_paste,
+        );
         self.targets.insert(
             token,
             CapturedTarget {
                 application,
                 focus_anchor,
-                element: editable.element,
+                element: confirmed_editable.element,
                 pid: application_pid,
                 #[cfg(feature = "macos-input-method-prototype")]
                 bundle_identifier,
                 #[cfg(feature = "macos-input-method-prototype")]
                 input_method_lease,
-                selection: editable.selection,
+                selection: confirmed_editable.selection,
+                #[cfg(all(
+                    debug_assertions,
+                    not(feature = "macos-input-method-compatibility-harness")
+                ))]
+                development_insertion_path,
                 observer,
             },
         );
@@ -495,12 +572,13 @@ impl Worker {
                 "the captured text field is no longer available",
             )
         })?;
-        let selected_text_settable = revalidate_captured_target(&target, deadline)?;
+        ensure_secure_event_input_disabled()?;
+        let revalidated = revalidate_captured_target(&target, deadline)?;
         #[cfg(any(
             not(debug_assertions),
             feature = "macos-input-method-compatibility-harness"
         ))]
-        let _ = selected_text_settable;
+        let _ = revalidated;
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
         {
@@ -530,12 +608,18 @@ impl Worker {
                 });
             }
 
-            match development_insertion_path(selected_text_settable) {
+            match target.development_insertion_path {
                 DevelopmentInsertionPath::ElementAddressed => {
+                    if !revalidated.selected_text_settable {
+                        return Err(TextTargetError::new(
+                            TextTargetErrorKind::FocusChanged,
+                            "The field stopped accepting direct text before Spick could type",
+                        ));
+                    }
                     commit_through_accessibility(&target, transcript, deadline)
                 }
-                DevelopmentInsertionPath::PidKeyboardEvent => {
-                    commit_through_unicode_keyboard_event(&target, transcript, deadline)
+                DevelopmentInsertionPath::ClipboardPaste => {
+                    commit_through_clipboard_paste(&target, transcript, deadline)
                 }
             }
         }
@@ -555,7 +639,7 @@ impl Worker {
 
         #[cfg(all(not(debug_assertions), not(feature = "macos-input-method-prototype")))]
         {
-            let _ = (transcript, &mut target, selected_text_settable);
+            let _ = (transcript, &mut target, revalidated);
             Err(TextTargetError::new(
                 TextTargetErrorKind::Unsupported,
                 "Automatic typing is not enabled in this build; the transcript is ready to copy",
@@ -573,14 +657,19 @@ struct CapturedTarget {
     bundle_identifier: Option<String>,
     #[cfg(feature = "macos-input-method-prototype")]
     input_method_lease: Option<InputMethodLease>,
-    selection: CFRange,
+    selection: Option<CFRange>,
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    development_insertion_path: DevelopmentInsertionPath,
     observer: ObserverLease,
 }
 
 fn revalidate_captured_target(
     target: &CapturedTarget,
     deadline: Instant,
-) -> Result<bool, TextTargetError> {
+) -> Result<EditableTarget, TextTargetError> {
     pump_run_loop();
     if target.observer.was_invalidated() {
         return Err(TextTargetError::new(
@@ -597,11 +686,16 @@ fn revalidate_captured_target(
     }
 
     let editable = read_current_editable_target(target, deadline)?;
-    if !ranges_equal(editable.selection, target.selection) {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::SelectionChanged,
-            "The selection changed, so Spick did not type over it",
-        ));
+    if let Some(original_selection) = target.selection {
+        if !editable
+            .selection
+            .is_some_and(|selection| ranges_equal(selection, original_selection))
+        {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::SelectionChanged,
+                "The selection changed, so Spick did not type over it",
+            ));
+        }
     }
     pump_run_loop();
     if target.observer.was_invalidated() {
@@ -621,7 +715,42 @@ fn revalidate_captured_target(
             ));
         }
     }
-    Ok(editable.selected_text_settable)
+    Ok(editable)
+}
+
+fn revalidate_capture_snapshot(
+    application: &AXUIElement,
+    focus_anchor: &AXUIElement,
+    pid: pid_t,
+    original: &EditableTarget,
+    deadline: Instant,
+) -> Result<EditableTarget, TextTargetError> {
+    ensure_secure_event_input_disabled()?;
+    let focused = read_focused_context(deadline)?;
+    if focused.pid != pid || !elements_equal(&focused.application, application) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The active app changed before Spick could start listening",
+        ));
+    }
+    if !elements_equal(&focused.focus_anchor, focus_anchor) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The focused field changed before Spick could start listening",
+        ));
+    }
+    ensure_not_secure(&focused.application, deadline)?;
+    let current = resolve_editable_target(&focused.focus_anchor, deadline)?;
+    if !elements_equal(&current.element, &original.element)
+        || !optional_ranges_equal(current.selection, original.selection)
+    {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The text target changed before Spick could start listening",
+        ));
+    }
+    ensure_secure_event_input_disabled()?;
+    Ok(current)
 }
 
 fn read_current_editable_target(
@@ -671,7 +800,14 @@ fn commit_through_accessibility(
     deadline: Instant,
 ) -> Result<TextInsertionReceipt, TextTargetError> {
     check_deadline(deadline)?;
-    let (inserted_range, expected_caret) = insertion_ranges(target.selection, transcript)?;
+    ensure_secure_event_input_disabled()?;
+    let selection = target.selection.ok_or_else(|| {
+        TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "The field does not expose a selection for direct insertion",
+        )
+    })?;
+    let (inserted_range, expected_caret) = insertion_ranges(selection, transcript)?;
     set_element_timeout(&target.element, deadline)?;
     let attribute = CFString::from_static_str(AX_SELECTED_TEXT);
     let value = CFString::from_str(transcript);
@@ -703,7 +839,7 @@ fn commit_through_accessibility(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DevelopmentInsertionPath {
     ElementAddressed,
-    PidKeyboardEvent,
+    ClipboardPaste,
 }
 
 #[cfg(any(
@@ -713,65 +849,573 @@ enum DevelopmentInsertionPath {
         not(feature = "macos-input-method-compatibility-harness")
     )
 ))]
-fn development_insertion_path(selected_text_settable: bool) -> DevelopmentInsertionPath {
-    if selected_text_settable {
+fn development_insertion_path(
+    selected_text_settable: bool,
+    has_selection: bool,
+    prefers_paste: bool,
+) -> DevelopmentInsertionPath {
+    if selected_text_settable && has_selection && !prefers_paste {
         DevelopmentInsertionPath::ElementAddressed
     } else {
-        DevelopmentInsertionPath::PidKeyboardEvent
+        DevelopmentInsertionPath::ClipboardPaste
     }
 }
 
-/// Development fallback for controls (including Notes versions) that expose a
-/// readable selection but no `AXSelectedText` setter. PID delivery cannot bind
-/// a keyboard event atomically to one Accessibility element, so this remains a
-/// debug-only compatibility path. It narrows the unavoidable dispatch micro-race
-/// with a second exact revalidation immediately before posting, never retries a
-/// posted event, and treats any post-dispatch target shift as indeterminate.
 #[cfg(all(
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
 ))]
-fn commit_through_unicode_keyboard_event(
+struct PasteboardEntrySnapshot {
+    data_type: Retained<NSPasteboardType>,
+    data: Retained<NSData>,
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+struct PasteboardItemSnapshot {
+    entries: Vec<PasteboardEntrySnapshot>,
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+struct PasteboardSnapshot {
+    items: Vec<PasteboardItemSnapshot>,
+    source_change_count: isize,
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+impl PasteboardSnapshot {
+    fn capture(pasteboard: &NSPasteboard, deadline: Instant) -> Result<Self, TextTargetError> {
+        check_deadline(deadline)?;
+        let source_change_count = pasteboard.changeCount();
+        let items = pasteboard.pasteboardItems();
+        check_deadline(deadline)?;
+        let Some(items) = items else {
+            // A zero change count is the only nil case that proves the general
+            // pasteboard has never held contents in this server session. At a
+            // nonzero count nil can also mean access was denied, so fail closed
+            // instead of clearing contents Spick could not preserve.
+            if source_change_count == 0 && pasteboard.changeCount() == 0 {
+                return Ok(Self {
+                    items: Vec::new(),
+                    source_change_count,
+                });
+            }
+            return Err(clipboard_snapshot_unavailable_error());
+        };
+        if items.len() > PASTEBOARD_SNAPSHOT_MAX_ITEMS {
+            return Err(clipboard_snapshot_too_large_error());
+        }
+
+        let mut total_bytes = 0_usize;
+        let mut total_types = 0_usize;
+        let mut snapshots = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            let types = item.types();
+            check_deadline(deadline)?;
+            total_types = total_types
+                .checked_add(types.len())
+                .ok_or_else(clipboard_snapshot_too_large_error)?;
+            if total_types > PASTEBOARD_SNAPSHOT_MAX_TYPES {
+                return Err(clipboard_snapshot_too_large_error());
+            }
+
+            let mut entries = Vec::with_capacity(types.len());
+            for data_type in types.iter() {
+                let data = item.dataForType(&data_type);
+                check_deadline(deadline)?;
+                let data = data.ok_or_else(|| {
+                    TextTargetError::new(
+                        TextTargetErrorKind::Unsupported,
+                        "Spick could not preserve every clipboard item before pasting",
+                    )
+                })?;
+                total_bytes = checked_pasteboard_snapshot_size(total_bytes, data.length())
+                    .ok_or_else(clipboard_snapshot_too_large_error)?;
+                entries.push(PasteboardEntrySnapshot { data_type, data });
+            }
+            snapshots.push(PasteboardItemSnapshot { entries });
+        }
+        if !pasteboard_source_count_is_stable(source_change_count, pasteboard.changeCount()) {
+            return Err(clipboard_changed_during_snapshot_error());
+        }
+        Ok(Self {
+            items: snapshots,
+            source_change_count,
+        })
+    }
+
+    fn rebuild_items(
+        &self,
+        deadline: Instant,
+    ) -> Result<Vec<Retained<NSPasteboardItem>>, TextTargetError> {
+        self.items
+            .iter()
+            .map(|snapshot| {
+                check_deadline(deadline)?;
+                let item = NSPasteboardItem::new();
+                for entry in &snapshot.entries {
+                    if !item.setData_forType(&entry.data, &entry.data_type) {
+                        return Err(TextTargetError::new(
+                            TextTargetErrorKind::Indeterminate,
+                            "Spick could not rebuild the previous clipboard contents",
+                        ));
+                    }
+                    check_deadline(deadline)?;
+                }
+                Ok(item)
+            })
+            .collect()
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+struct PasteboardTransaction {
+    pasteboard: Retained<NSPasteboard>,
+    restore_items: Option<Vec<Retained<NSPasteboardItem>>>,
+    owned_change_count: isize,
+    owner_type: Retained<NSPasteboardType>,
+    owner_marker: Retained<NSString>,
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+impl PasteboardTransaction {
+    fn begin(transcript: &str, deadline: Instant) -> Result<Self, TextTargetError> {
+        check_deadline(deadline)?;
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let snapshot = PasteboardSnapshot::capture(&pasteboard, deadline)?;
+        let restore_items = snapshot.rebuild_items(deadline)?;
+        let item = NSPasteboardItem::new();
+        let transcript = NSString::from_str(transcript);
+        if !item.setString_forType(&transcript, unsafe { NSPasteboardTypeString }) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Platform,
+                "macOS could not prepare the transcript for cross-app insertion",
+            ));
+        }
+        let owner_type = NSString::from_str(PASTEBOARD_OWNER_TYPE);
+        let owner_marker = NSString::from_str(&uuid::Uuid::new_v4().simple().to_string());
+        if !item.setString_forType(&owner_marker, &owner_type) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Platform,
+                "macOS could not mark the temporary clipboard handoff",
+            ));
+        }
+        check_deadline(deadline)?;
+        if !pasteboard_source_count_is_stable(
+            snapshot.source_change_count,
+            pasteboard.changeCount(),
+        ) {
+            return Err(clipboard_changed_during_snapshot_error());
+        }
+        check_deadline(deadline)?;
+
+        let cleared_change_count = pasteboard.clearContents();
+        if !pasteboard_change_count_advanced_once(
+            snapshot.source_change_count,
+            cleared_change_count,
+        ) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Indeterminate,
+                "Clipboard ownership changed during the non-atomic paste handoff; check the clipboard before continuing",
+            ));
+        }
+        if !write_pasteboard_items(&pasteboard, &[item]) {
+            let current_change_count = pasteboard.changeCount();
+            let restore_change_count =
+                if pasteboard_change_count_is_owned(cleared_change_count, current_change_count)
+                    || pasteboard_contains_owned_marker(
+                        &pasteboard,
+                        current_change_count,
+                        &owner_type,
+                        &owner_marker,
+                    )
+                {
+                    Some(current_change_count)
+                } else {
+                    None
+                };
+            if let Some(restore_change_count) = restore_change_count {
+                restore_items_after_failed_stage(
+                    &pasteboard,
+                    restore_change_count,
+                    &restore_items,
+                )?;
+            }
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Indeterminate,
+                "macOS could not complete the non-atomic clipboard handoff; check the clipboard before continuing",
+            ));
+        }
+        let owned_change_count = pasteboard.changeCount();
+        Ok(Self {
+            pasteboard,
+            restore_items: Some(restore_items),
+            owned_change_count,
+            owner_type,
+            owner_marker,
+        })
+    }
+
+    fn owns_current_contents(&self) -> bool {
+        pasteboard_contains_owned_marker(
+            &self.pasteboard,
+            self.owned_change_count,
+            &self.owner_type,
+            &self.owner_marker,
+        )
+    }
+
+    fn validate_marker(&self, deadline: Instant) -> Result<(), TextTargetError> {
+        check_deadline(deadline)?;
+        let owns_contents = self.owns_current_contents();
+        check_deadline(deadline)?;
+        if owns_contents {
+            Ok(())
+        } else {
+            Err(TextTargetError::new(
+                TextTargetErrorKind::FocusChanged,
+                "The clipboard changed before Spick could paste, so no command was sent",
+            ))
+        }
+    }
+
+    fn ensure_change_count_owned(&self) -> Result<(), TextTargetError> {
+        if pasteboard_change_count_is_owned(self.owned_change_count, self.pasteboard.changeCount())
+        {
+            Ok(())
+        } else {
+            Err(TextTargetError::new(
+                TextTargetErrorKind::FocusChanged,
+                "The clipboard changed before Spick could paste, so no command was sent",
+            ))
+        }
+    }
+
+    fn restore_if_owned(&mut self) -> Result<bool, TextTargetError> {
+        if !self.owns_current_contents() {
+            self.restore_items.take();
+            return Ok(false);
+        }
+        let Some(items) = self.restore_items.take() else {
+            return Ok(true);
+        };
+        let cleared_change_count = self.pasteboard.clearContents();
+        if !pasteboard_change_count_advanced_once(self.owned_change_count, cleared_change_count) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Indeterminate,
+                "Clipboard ownership changed during non-atomic restoration; check the clipboard before continuing",
+            ));
+        }
+        if !items.is_empty() && !write_pasteboard_items(&self.pasteboard, &items) {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Indeterminate,
+                "Spick could not restore the previous clipboard contents",
+            ));
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+impl Drop for PasteboardTransaction {
+    fn drop(&mut self) {
+        let _ = self.restore_if_owned();
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn write_pasteboard_items(pasteboard: &NSPasteboard, items: &[Retained<NSPasteboardItem>]) -> bool {
+    let writers = items
+        .iter()
+        .map(|item| ProtocolObject::from_ref(&**item))
+        .collect::<Vec<&ProtocolObject<dyn NSPasteboardWriting>>>();
+    let writers = NSArray::from_slice(&writers);
+    pasteboard.writeObjects(&writers)
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn clipboard_snapshot_too_large_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Unsupported,
+        "The current clipboard is too large or complex to preserve safely",
+    )
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn clipboard_snapshot_unavailable_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Unsupported,
+        "macOS did not allow Spick to preserve the current clipboard before pasting",
+    )
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn clipboard_changed_during_snapshot_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::FocusChanged,
+        "The clipboard changed while Spick prepared to paste, so no command was sent",
+    )
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn checked_pasteboard_snapshot_size(current: usize, addition: usize) -> Option<usize> {
+    current
+        .checked_add(addition)
+        .filter(|total| *total <= PASTEBOARD_SNAPSHOT_MAX_BYTES)
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn pasteboard_change_count_is_owned(expected: isize, current: isize) -> bool {
+    expected == current
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn pasteboard_contains_owned_marker(
+    pasteboard: &NSPasteboard,
+    expected_change_count: isize,
+    owner_type: &NSPasteboardType,
+    owner_marker: &NSString,
+) -> bool {
+    if !pasteboard_change_count_is_owned(expected_change_count, pasteboard.changeCount()) {
+        return false;
+    }
+    let marker_matches = pasteboard
+        .pasteboardItems()
+        .filter(|items| items.len() == 1)
+        .and_then(|items| items.iter().next())
+        .and_then(|item| item.stringForType(owner_type))
+        .is_some_and(|marker| marker.to_string() == owner_marker.to_string());
+    marker_matches
+        && pasteboard_change_count_is_owned(expected_change_count, pasteboard.changeCount())
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn pasteboard_source_count_is_stable(expected: isize, current: isize) -> bool {
+    expected == current
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn pasteboard_change_count_advanced_once(previous: isize, current: isize) -> bool {
+    previous.checked_add(1) == Some(current)
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn restore_items_after_failed_stage(
+    pasteboard: &NSPasteboard,
+    expected_change_count: isize,
+    items: &[Retained<NSPasteboardItem>],
+) -> Result<(), TextTargetError> {
+    if !pasteboard_change_count_is_owned(expected_change_count, pasteboard.changeCount()) {
+        return Ok(());
+    }
+    let cleared_change_count = pasteboard.clearContents();
+    if !pasteboard_change_count_advanced_once(expected_change_count, cleared_change_count) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Indeterminate,
+            "Clipboard ownership changed while Spick recovered from a failed paste handoff; check the clipboard before continuing",
+        ));
+    }
+    if items.is_empty() || write_pasteboard_items(pasteboard, items) {
+        Ok(())
+    } else {
+        Err(TextTargetError::new(
+            TextTargetErrorKind::Indeterminate,
+            "Spick could not restore the previous clipboard after the paste handoff failed",
+        ))
+    }
+}
+
+/// Development fallback for web, Electron, and custom controls that
+/// need an ordinary paste command rather than an Accessibility value mutation.
+/// The route is selected before any write and the exact target is revalidated
+/// again immediately before one Cmd-V. NSPasteboard replacement and restore
+/// are inherently non-atomic, so ownership checks only narrow the remaining
+/// race and this path remains debug-only.
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn commit_through_clipboard_paste(
     target: &CapturedTarget,
     transcript: &str,
     deadline: Instant,
 ) -> Result<TextInsertionReceipt, TextTargetError> {
     check_deadline(deadline)?;
-    let (inserted_range, expected_caret) = insertion_ranges(target.selection, transcript)?;
+    ensure_secure_event_input_disabled()?;
+    if !clipboard_paste_transcript_is_safe(transcript) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "Automatic compatibility paste is limited to one line so terminal controls cannot execute dictated commands",
+        ));
+    }
+    let expected_ranges = target
+        .selection
+        .map(|selection| insertion_ranges(selection, transcript))
+        .transpose()?;
     let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
         TextTargetError::new(
             TextTargetErrorKind::Platform,
             "macOS could not create a private keyboard-event source",
         )
     })?;
-    let key_down = CGEvent::new_keyboard_event(source.clone(), UNMAPPED_VIRTUAL_KEY, true)
-        .map_err(|_| {
+    let key_down =
+        CGEvent::new_keyboard_event(source.clone(), ANSI_VIRTUAL_KEY_V, true).map_err(|_| {
             TextTargetError::new(
                 TextTargetErrorKind::Platform,
-                "macOS could not create the text insertion event",
+                "macOS could not create the paste command",
             )
         })?;
-    let key_up =
-        CGEvent::new_keyboard_event(source, UNMAPPED_VIRTUAL_KEY, false).map_err(|_| {
-            TextTargetError::new(
-                TextTargetErrorKind::Platform,
-                "macOS could not create the text insertion completion event",
-            )
-        })?;
-    key_down.set_string(transcript);
+    let key_up = CGEvent::new_keyboard_event(source, ANSI_VIRTUAL_KEY_V, false).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "macOS could not complete the paste command",
+        )
+    })?;
+    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
 
-    // Build everything first, then minimize the gap between the last exact
-    // target snapshot and the asynchronous PID-scoped post.
-    if revalidate_captured_target(target, deadline)? {
-        return commit_through_accessibility(target, transcript, deadline);
+    let mut pasteboard = PasteboardTransaction::begin(transcript, deadline)?;
+    // Marker validation can invoke a lazy provider or a system privacy check.
+    // Do it before the final exact target and secure-input revalidation.
+    if let Err(error) = pasteboard.validate_marker(deadline) {
+        return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
+    }
+    if let Err(target_error) = revalidate_captured_target(target, deadline) {
+        return Err(restore_after_pre_dispatch_error(
+            &mut pasteboard,
+            target_error,
+        ));
+    }
+    if let Err(error) = ensure_secure_event_input_disabled() {
+        return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
+    }
+    if let Err(error) = check_deadline(deadline) {
+        return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
+    }
+    if let Err(error) = pasteboard.ensure_change_count_owned() {
+        return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
+    }
+    if let Err(error) = ensure_post_dispatch_budget(deadline) {
+        return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
     }
     key_down.post_to_pid(target.pid);
     key_up.post_to_pid(target.pid);
 
-    // CGEventPostToPid is asynchronous and has no delivery result. Never post
-    // another event after this point. Re-read the exact app, focus anchor,
-    // editable element, selection, and (where available) inserted contents.
+    let delivery = confirm_clipboard_paste(target, transcript, expected_ranges, deadline);
+    pasteboard.restore_if_owned()?;
+    delivery
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn restore_after_pre_dispatch_error(
+    pasteboard: &mut PasteboardTransaction,
+    original: TextTargetError,
+) -> TextTargetError {
+    match pasteboard.restore_if_owned() {
+        Ok(_) => original,
+        Err(restore_error) => restore_error,
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn clipboard_paste_transcript_is_safe(transcript: &str) -> bool {
+    !transcript.contains(['\r', '\n'])
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn ensure_post_dispatch_budget(deadline: Instant) -> Result<(), TextTargetError> {
+    if has_post_dispatch_budget(deadline.saturating_duration_since(Instant::now())) {
+        Ok(())
+    } else {
+        Err(TextTargetError::new(
+            TextTargetErrorKind::TimedOut,
+            "The target took too long to prepare, so Spick did not send a paste command",
+        ))
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn has_post_dispatch_budget(remaining: Duration) -> bool {
+    remaining >= INSERTION_CONFIRMATION_BUDGET
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn confirm_clipboard_paste(
+    target: &CapturedTarget,
+    transcript: &str,
+    expected_ranges: Option<(CFRange, CFRange)>,
+    deadline: Instant,
+) -> Result<TextInsertionReceipt, TextTargetError> {
     let confirmation_deadline = deadline.min(Instant::now() + INSERTION_CONFIRMATION_BUDGET);
+    if expected_ranges.is_none() {
+        wait_for_paste_consumer(confirmation_deadline);
+        return Err(indeterminate_paste_delivery_error());
+    }
     loop {
         pump_run_loop();
         let editable = match read_current_editable_target(target, confirmation_deadline) {
@@ -783,12 +1427,26 @@ fn commit_through_unicode_keyboard_event(
                 sleep_for_retry(confirmation_deadline);
                 continue;
             }
-            Err(_) => return Err(indeterminate_keyboard_delivery_error()),
+            Err(_) => {
+                wait_for_paste_consumer(confirmation_deadline);
+                return Err(indeterminate_paste_delivery_error());
+            }
         };
-        match keyboard_selection_state(editable.selection, target.selection, expected_caret) {
+        let (inserted_range, expected_caret) =
+            expected_ranges.expect("selectionless paste returned before confirmation");
+        let Some(current_selection) = editable.selection else {
+            wait_for_paste_consumer(confirmation_deadline);
+            return Err(indeterminate_paste_delivery_error());
+        };
+        let original_selection = target
+            .selection
+            .expect("confirmed paste ranges require an original selection");
+        match keyboard_selection_state(current_selection, original_selection, expected_caret) {
             KeyboardSelectionState::Confirmed => {
-                set_element_timeout(&target.element, confirmation_deadline)
-                    .map_err(|_| indeterminate_keyboard_delivery_error())?;
+                if set_element_timeout(&target.element, confirmation_deadline).is_err() {
+                    wait_for_paste_consumer(confirmation_deadline);
+                    return Err(indeterminate_paste_delivery_error());
+                }
                 match read_string_for_range(&target.element, inserted_range) {
                     Ok(readback)
                         if matches!(
@@ -803,18 +1461,33 @@ fn commit_through_unicode_keyboard_event(
                     }
                     Ok(_) => {}
                     Err(error) if insertion_confirmation_error_is_retryable(error.kind) => {}
-                    Err(_) => return Err(indeterminate_keyboard_delivery_error()),
+                    Err(_) => {
+                        wait_for_paste_consumer(confirmation_deadline);
+                        return Err(indeterminate_paste_delivery_error());
+                    }
                 }
             }
             KeyboardSelectionState::Pending => {}
             KeyboardSelectionState::Shifted => {
-                return Err(indeterminate_keyboard_delivery_error());
+                wait_for_paste_consumer(confirmation_deadline);
+                return Err(indeterminate_paste_delivery_error());
             }
         }
         if Instant::now() >= confirmation_deadline {
-            return Err(indeterminate_keyboard_delivery_error());
+            return Err(indeterminate_paste_delivery_error());
         }
         sleep_for_retry(confirmation_deadline);
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn wait_for_paste_consumer(deadline: Instant) {
+    while Instant::now() < deadline {
+        pump_run_loop();
+        sleep_for_retry(deadline);
     }
 }
 
@@ -961,10 +1634,10 @@ fn indeterminate_element_write_error() -> TextTargetError {
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
 ))]
-fn indeterminate_keyboard_delivery_error() -> TextTargetError {
+fn indeterminate_paste_delivery_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::Indeterminate,
-        "macOS sent the text event but could not confirm the exact field and contents; check it before copying",
+        "macOS sent the paste command but could not confirm the exact field and contents; check it before copying",
     )
 }
 
@@ -1154,7 +1827,13 @@ fn commit_through_input_method(
                 "Spick Input was not active when recording began",
             )
         })?;
-    let (selection_location, selection_length) = selection_parts(target.selection)?;
+    let selection = target.selection.ok_or_else(|| {
+        TextTargetError::new(
+            TextTargetErrorKind::Unsupported,
+            "Spick Input requires a field that exposes its selection",
+        )
+    })?;
+    let (selection_location, selection_length) = selection_parts(selection)?;
     let request = encode_insert_request(
         request_id,
         lease_id,
@@ -1828,8 +2507,13 @@ fn notification_registration_is_best_effort_success(result: AXError) -> bool {
 
 struct EditableTarget {
     element: CFRetained<AXUIElement>,
-    selection: CFRange,
+    selection: Option<CFRange>,
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
     selected_text_settable: bool,
+    prefers_paste: bool,
 }
 
 struct FocusedContext {
@@ -1879,6 +2563,21 @@ fn permission_status() -> AccessibilityPermissionStatus {
 
 fn is_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
+}
+
+fn secure_event_input_enabled() -> bool {
+    unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
+fn ensure_secure_event_input_disabled() -> Result<(), TextTargetError> {
+    if secure_event_input_enabled() {
+        Err(TextTargetError::new(
+            TextTargetErrorKind::SecureField,
+            "Spick does not record or type while macOS Secure Event Input is active",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn request_permission() -> Result<AccessibilityPermissionStatus, TextTargetError> {
@@ -1980,17 +2679,12 @@ fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTa
         application_anchor =
             read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     }
+    // The application-level proxy may remain a web-area container while the
+    // system-wide element points at the actual editor. PID coherence above is
+    // the cross-source safety boundary; element equality would reject the
+    // exact Chromium/Electron controls this fallback exists to reach.
     let focus_anchor = match (system_anchor, application_anchor) {
-        (Some(system_anchor), Some(application_anchor)) => {
-            if !elements_equal(&system_anchor, &application_anchor) {
-                return Err(TextTargetError::new(
-                    TextTargetErrorKind::NoFocusedTarget,
-                    "macOS reported inconsistent focused text fields",
-                ));
-            }
-            system_anchor
-        }
-        (Some(system_anchor), None) => system_anchor,
+        (Some(system_anchor), _) => system_anchor,
         (None, Some(application_anchor)) => application_anchor,
         (None, None) => {
             return Err(TextTargetError::new(
@@ -2059,6 +2753,8 @@ fn resolve_editable_target(
     deadline: Instant,
 ) -> Result<EditableTarget, TextTargetError> {
     let mut current = retain_element(focus_anchor);
+    let mut candidate = None;
+    let mut saw_web_area = false;
     for depth in 0..MAX_PARENT_DEPTH {
         check_deadline(deadline)?;
         ensure_not_secure(&current, deadline)?;
@@ -2071,30 +2767,46 @@ fn resolve_editable_target(
             ));
         }
 
-        if let Some(candidate) = editable_snapshot(&current, deadline)? {
-            check_deadline(deadline)?;
-            return Ok(candidate);
+        set_element_timeout(&current, deadline)?;
+        saw_web_area |=
+            read_optional_string(&current, AX_ROLE)?.as_deref() == Some(AX_WEB_AREA_ROLE);
+        if candidate.is_none() {
+            candidate = editable_snapshot(&current, depth == 0, deadline)?;
         }
         check_deadline(deadline)?;
+        set_element_timeout(&current, deadline)?;
+        let parent = read_optional_element(&current, AX_PARENT)?;
         if depth + 1 == MAX_PARENT_DEPTH {
+            if parent.is_some() {
+                return Err(TextTargetError::new(
+                    TextTargetErrorKind::Unsupported,
+                    "The text field hierarchy is too deep for Spick to verify safely",
+                ));
+            }
             break;
         }
-        set_element_timeout(&current, deadline)?;
-        let Some(parent) = read_optional_element(&current, AX_PARENT)? else {
+        let Some(parent) = parent else {
             break;
         };
         check_deadline(deadline)?;
         current = parent;
     }
 
-    Err(TextTargetError::new(
-        TextTargetErrorKind::NotEditable,
-        "Click an editable text field before holding the shortcut",
-    ))
+    match candidate {
+        Some(mut candidate) => {
+            candidate.prefers_paste |= saw_web_area;
+            Ok(candidate)
+        }
+        None => Err(TextTargetError::new(
+            TextTargetErrorKind::NotEditable,
+            "Click an editable text field before holding the shortcut",
+        )),
+    }
 }
 
 fn editable_snapshot(
     element: &AXUIElement,
+    is_focus_anchor: bool,
     deadline: Instant,
 ) -> Result<Option<EditableTarget>, TextTargetError> {
     set_element_timeout(element, deadline)?;
@@ -2107,19 +2819,28 @@ fn editable_snapshot(
         return Ok(None);
     }
     set_element_timeout(element, deadline)?;
-    let Some(selection) = read_optional_range(element, AX_SELECTED_TEXT_RANGE)? else {
-        return Ok(None);
-    };
+    let selection = read_optional_range(element, AX_SELECTED_TEXT_RANGE)?;
     check_deadline(deadline)?;
-    validate_range_shape(selection)?;
+    if let Some(selection) = selection {
+        validate_range_shape(selection)?;
+    } else {
+        set_element_timeout(element, deadline)?;
+        let value_settable = is_settable(element, AX_VALUE)?;
+        check_deadline(deadline)?;
+        if !can_capture_without_selection(role.as_deref(), value_settable, is_focus_anchor) {
+            return Ok(None);
+        }
+    }
 
-    set_element_timeout(element, deadline)?;
-    if let Some(ranges) = read_optional_array(element, AX_SELECTED_TEXT_RANGES)? {
-        if ranges.len() > 1 {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::Unsupported,
-                "Spick does not type over multiple selections yet",
-            ));
+    if selection.is_some() {
+        set_element_timeout(element, deadline)?;
+        if let Some(ranges) = read_optional_array(element, AX_SELECTED_TEXT_RANGES)? {
+            if ranges.len() > 1 {
+                return Err(TextTargetError::new(
+                    TextTargetErrorKind::Unsupported,
+                    "Spick does not type over multiple selections yet",
+                ));
+            }
         }
     }
     check_deadline(deadline)?;
@@ -2127,7 +2848,12 @@ fn editable_snapshot(
     Ok(Some(EditableTarget {
         element: retain_element(element),
         selection,
+        #[cfg(all(
+            debug_assertions,
+            not(feature = "macos-input-method-compatibility-harness")
+        ))]
         selected_text_settable,
+        prefers_paste: selection.is_none() || !selected_text_settable,
     }))
 }
 
@@ -2137,6 +2863,14 @@ fn is_editable_text_role(role: Option<&str>) -> bool {
 
 fn has_editable_text_capability(role: Option<&str>, selected_text_settable: bool) -> bool {
     is_editable_text_role(role) || selected_text_settable
+}
+
+fn can_capture_without_selection(
+    role: Option<&str>,
+    value_settable: bool,
+    is_focus_anchor: bool,
+) -> bool {
+    is_focus_anchor && value_settable && is_editable_text_role(role)
 }
 
 fn ensure_not_secure(element: &AXUIElement, deadline: Instant) -> Result<(), TextTargetError> {
@@ -2352,6 +3086,14 @@ fn ranges_equal(left: CFRange, right: CFRange) -> bool {
     left.location == right.location && left.length == right.length
 }
 
+fn optional_ranges_equal(left: Option<CFRange>, right: Option<CFRange>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => ranges_equal(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn validate_range_shape(range: CFRange) -> Result<(), TextTargetError> {
     let start = usize::try_from(range.location).map_err(|_| invalid_range_error())?;
     let length = usize::try_from(range.length).map_err(|_| invalid_range_error())?;
@@ -2538,15 +3280,104 @@ mod tests {
     }
 
     #[test]
-    fn development_insertion_uses_the_current_setter_capability() {
+    fn only_proven_native_selection_setters_use_direct_accessibility() {
         assert_eq!(
-            development_insertion_path(true),
+            development_insertion_path(true, true, false),
             DevelopmentInsertionPath::ElementAddressed
         );
         assert_eq!(
-            development_insertion_path(false),
-            DevelopmentInsertionPath::PidKeyboardEvent
+            development_insertion_path(false, true, true),
+            DevelopmentInsertionPath::ClipboardPaste
         );
+        assert_eq!(
+            development_insertion_path(true, false, true),
+            DevelopmentInsertionPath::ClipboardPaste
+        );
+        assert_eq!(
+            development_insertion_path(true, true, true),
+            DevelopmentInsertionPath::ClipboardPaste
+        );
+    }
+
+    #[test]
+    fn selectionless_capture_requires_the_exact_focused_editable_role() {
+        assert!(can_capture_without_selection(
+            Some(AX_TEXT_AREA_ROLE),
+            true,
+            true
+        ));
+        assert!(!can_capture_without_selection(
+            Some(AX_TEXT_AREA_ROLE),
+            false,
+            true
+        ));
+        assert!(!can_capture_without_selection(
+            Some(AX_TEXT_AREA_ROLE),
+            true,
+            false
+        ));
+        assert!(!can_capture_without_selection(
+            Some(AX_WEB_AREA_ROLE),
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    fn clipboard_restoration_requires_unchanged_transaction_ownership() {
+        assert!(pasteboard_change_count_is_owned(41, 41));
+        assert!(!pasteboard_change_count_is_owned(41, 42));
+        assert!(!pasteboard_change_count_is_owned(-1, 0));
+        assert!(pasteboard_source_count_is_stable(41, 41));
+        assert!(!pasteboard_source_count_is_stable(41, 42));
+        assert!(pasteboard_change_count_advanced_once(41, 42));
+        assert!(!pasteboard_change_count_advanced_once(41, 43));
+        assert!(!pasteboard_change_count_advanced_once(
+            isize::MAX,
+            isize::MIN
+        ));
+    }
+
+    #[test]
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    fn clipboard_snapshot_size_is_bounded_before_mutation() {
+        assert_eq!(checked_pasteboard_snapshot_size(10, 20), Some(30));
+        assert_eq!(
+            checked_pasteboard_snapshot_size(PASTEBOARD_SNAPSHOT_MAX_BYTES, 0),
+            Some(PASTEBOARD_SNAPSHOT_MAX_BYTES)
+        );
+        assert_eq!(
+            checked_pasteboard_snapshot_size(PASTEBOARD_SNAPSHOT_MAX_BYTES, 1),
+            None
+        );
+        assert_eq!(checked_pasteboard_snapshot_size(usize::MAX, 1), None);
+    }
+
+    #[test]
+    #[cfg(all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    ))]
+    fn web_confirmation_budget_allows_async_accessibility_updates() {
+        assert!(INSERTION_CONFIRMATION_BUDGET >= Duration::from_millis(750));
+        assert!(has_post_dispatch_budget(INSERTION_CONFIRMATION_BUDGET));
+        assert!(!has_post_dispatch_budget(
+            INSERTION_CONFIRMATION_BUDGET - Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn compatibility_paste_refuses_terminal_command_separators() {
+        assert!(clipboard_paste_transcript_is_safe("write this sentence"));
+        assert!(!clipboard_paste_transcript_is_safe("first\nsecond"));
+        assert!(!clipboard_paste_transcript_is_safe("first\rsecond"));
     }
 
     #[test]
