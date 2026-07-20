@@ -1839,28 +1839,30 @@ struct FocusedContext {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusedApplicationFallback {
-    FocusedElement(pid_t),
-    FrontmostApplication(pid_t),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusedApplicationFallbackError {
     Missing,
     PidMismatch,
 }
 
-fn select_focused_application_fallback(
-    focused_element_pid: Option<pid_t>,
+fn select_coherent_focused_pid(
+    system_focused_element_pid: Option<pid_t>,
+    accessibility_application_pid: Option<pid_t>,
     frontmost_application_pid: Option<pid_t>,
-) -> Result<FocusedApplicationFallback, FocusedApplicationFallbackError> {
-    match (focused_element_pid, frontmost_application_pid) {
-        (Some(focused_pid), Some(frontmost_pid)) if focused_pid != frontmost_pid => {
-            Err(FocusedApplicationFallbackError::PidMismatch)
-        }
-        (Some(pid), _) => Ok(FocusedApplicationFallback::FocusedElement(pid)),
-        (None, Some(pid)) => Ok(FocusedApplicationFallback::FrontmostApplication(pid)),
-        (None, None) => Err(FocusedApplicationFallbackError::Missing),
+) -> Result<pid_t, FocusedApplicationFallbackError> {
+    let mut reported = [
+        system_focused_element_pid,
+        accessibility_application_pid,
+        frontmost_application_pid,
+    ]
+    .into_iter()
+    .flatten();
+    let Some(pid) = reported.next() else {
+        return Err(FocusedApplicationFallbackError::Missing);
+    };
+    if reported.all(|reported_pid| reported_pid == pid) {
+        Ok(pid)
+    } else {
+        Err(FocusedApplicationFallbackError::PidMismatch)
     }
 }
 
@@ -1900,11 +1902,11 @@ fn request_permission() -> Result<AccessibilityPermissionStatus, TextTargetError
     })
 }
 
-/// Read one coherent app/field snapshot. Some Chromium and Electron apps
-/// transiently omit AXFocusedApplication while still exposing the system-wide
-/// AXFocusedUIElement. Deriving the application from that element's PID avoids
-/// treating the gap as an unsupported editor, while the PID equality check
-/// prevents a mixed snapshot during an app switch.
+/// Read one coherent app/field snapshot. The system-wide focused element is
+/// authoritative because Chromium and Electron can keep AXFocusedApplication
+/// populated while the application's own focus proxy is stale or overly broad.
+/// Every other source is used only as a coherence check or a last-resort
+/// fallback, and conflicting PIDs are retried as an in-flight app switch.
 fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetError> {
     let retry_deadline = deadline.min(Instant::now() + FOCUSED_CONTEXT_RETRY_BUDGET);
 
@@ -1929,48 +1931,45 @@ fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetE
 fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTargetError> {
     check_deadline(deadline)?;
     let system = unsafe { AXUIElement::new_system_wide() };
-    let mut system_anchor = None;
-    let mut prefer_system_anchor = false;
-    let application = match read_optional_focus_element(&system, AX_FOCUSED_APPLICATION, deadline)?
-    {
-        Some(application) => application,
-        None => {
-            // The system-wide focused element is the authoritative fallback.
-            // Read it before NSWorkspace so a stale frontmost application can
-            // never redirect capture to a different app during a focus switch.
-            check_deadline(deadline)?;
-            system_anchor = read_optional_element(&system, AX_FOCUSED_UI_ELEMENT)?;
-            check_deadline(deadline)?;
-            let focused_element_pid = system_anchor
-                .as_ref()
-                .map(|anchor| read_pid(anchor))
-                .transpose()?;
-            let frontmost_pid = frontmost_application_pid();
-            check_deadline(deadline)?;
-            let fallback = select_focused_application_fallback(focused_element_pid, frontmost_pid)
-                .map_err(|error| match error {
-                    FocusedApplicationFallbackError::Missing => TextTargetError::new(
-                        TextTargetErrorKind::NoFocusedTarget,
-                        "macOS did not report a focused application or text field",
-                    ),
-                    FocusedApplicationFallbackError::PidMismatch => TextTargetError::new(
-                        TextTargetErrorKind::NoFocusedTarget,
-                        "macOS reported inconsistent focused application and text field",
-                    ),
-                })?;
-            let pid = match fallback {
-                FocusedApplicationFallback::FocusedElement(pid) => {
-                    prefer_system_anchor = true;
-                    pid
-                }
-                FocusedApplicationFallback::FrontmostApplication(pid) => pid,
-            };
-            unsafe { AXUIElement::new_application(pid) }
-        }
+    let system_anchor = read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?;
+    check_deadline(deadline)?;
+    let system_anchor_pid = system_anchor
+        .as_ref()
+        .map(|anchor| read_pid(anchor))
+        .transpose()?;
+    let reported_application =
+        read_optional_focus_element(&system, AX_FOCUSED_APPLICATION, deadline)?;
+    check_deadline(deadline)?;
+    let reported_application_pid = reported_application
+        .as_ref()
+        .map(|application| read_pid(application))
+        .transpose()?;
+    let frontmost_pid = frontmost_application_pid();
+    check_deadline(deadline)?;
+    let pid =
+        select_coherent_focused_pid(system_anchor_pid, reported_application_pid, frontmost_pid)
+            .map_err(|error| match error {
+                FocusedApplicationFallbackError::Missing => TextTargetError::new(
+                    TextTargetErrorKind::NoFocusedTarget,
+                    "macOS did not report a focused application or text field",
+                ),
+                FocusedApplicationFallbackError::PidMismatch => TextTargetError::new(
+                    TextTargetErrorKind::NoFocusedTarget,
+                    "macOS reported inconsistent focused application and text field",
+                ),
+            })?;
+    let application = match reported_application {
+        Some(application) if reported_application_pid == Some(pid) => application,
+        _ => unsafe { AXUIElement::new_application(pid) },
     };
     check_deadline(deadline)?;
     set_element_timeout(&application, deadline)?;
-    let pid = read_pid(&application)?;
+    if read_pid(&application)? != pid {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::NoFocusedTarget,
+            "macOS reported an inconsistent focused application",
+        ));
+    }
     check_deadline(deadline)?;
     let mut application_anchor =
         read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
@@ -1981,28 +1980,23 @@ fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTa
         application_anchor =
             read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     }
-    let focus_anchor = if prefer_system_anchor {
-        system_anchor.take().ok_or_else(|| {
-            TextTargetError::new(
+    let focus_anchor = match (system_anchor, application_anchor) {
+        (Some(system_anchor), Some(application_anchor)) => {
+            if !elements_equal(&system_anchor, &application_anchor) {
+                return Err(TextTargetError::new(
+                    TextTargetErrorKind::NoFocusedTarget,
+                    "macOS reported inconsistent focused text fields",
+                ));
+            }
+            system_anchor
+        }
+        (Some(system_anchor), None) => system_anchor,
+        (None, Some(application_anchor)) => application_anchor,
+        (None, None) => {
+            return Err(TextTargetError::new(
                 TextTargetErrorKind::NoFocusedTarget,
                 "macOS did not report a focused text field",
-            )
-        })?
-    } else {
-        match application_anchor {
-            Some(anchor) => anchor,
-            None => {
-                let fallback = match system_anchor {
-                    Some(anchor) => Some(anchor),
-                    None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?,
-                };
-                fallback.ok_or_else(|| {
-                    TextTargetError::new(
-                        TextTargetErrorKind::NoFocusedTarget,
-                        "macOS did not report a focused text field",
-                    )
-                })?
-            }
+            ));
         }
     };
     set_element_timeout(&focus_anchor, deadline)?;
@@ -2487,25 +2481,23 @@ mod tests {
     }
 
     #[test]
-    fn focused_element_pid_is_the_authoritative_application_fallback() {
+    fn focused_sources_must_describe_one_coherent_application() {
         assert_eq!(
-            select_focused_application_fallback(Some(41), Some(41)),
-            Ok(FocusedApplicationFallback::FocusedElement(41))
+            select_coherent_focused_pid(Some(41), Some(41), Some(41)),
+            Ok(41)
         );
         assert_eq!(
-            select_focused_application_fallback(Some(41), None),
-            Ok(FocusedApplicationFallback::FocusedElement(41))
+            select_coherent_focused_pid(Some(41), None, Some(41)),
+            Ok(41)
         );
+        assert_eq!(select_coherent_focused_pid(None, Some(41), None), Ok(41));
     }
 
     #[test]
-    fn frontmost_application_is_used_only_without_a_focused_element() {
+    fn frontmost_application_is_the_last_resort() {
+        assert_eq!(select_coherent_focused_pid(None, None, Some(52)), Ok(52));
         assert_eq!(
-            select_focused_application_fallback(None, Some(52)),
-            Ok(FocusedApplicationFallback::FrontmostApplication(52))
-        );
-        assert_eq!(
-            select_focused_application_fallback(None, None),
+            select_coherent_focused_pid(None, None, None),
             Err(FocusedApplicationFallbackError::Missing)
         );
     }
@@ -2513,7 +2505,11 @@ mod tests {
     #[test]
     fn mismatched_focused_and_frontmost_pids_are_retried() {
         assert_eq!(
-            select_focused_application_fallback(Some(41), Some(52)),
+            select_coherent_focused_pid(Some(41), Some(41), Some(52)),
+            Err(FocusedApplicationFallbackError::PidMismatch)
+        );
+        assert_eq!(
+            select_coherent_focused_pid(Some(41), Some(52), None),
             Err(FocusedApplicationFallbackError::PidMismatch)
         );
         assert!(focused_context_error_is_transient(
