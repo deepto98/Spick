@@ -437,10 +437,10 @@ where
     }
 }
 
-/// Fast, private cleanup used as the no-model baseline. It removes only a
-/// small, language-specific set of pause-punctuated hesitation sounds outside
-/// quoted or explicitly referenced text, then normalizes whitespace. Ambiguous
-/// bare words and languages without a reviewed policy pass through unchanged.
+/// Fast, private cleanup used as the no-model baseline. It removes a small,
+/// language-specific set of standalone hesitation sounds outside quoted or
+/// explicitly referenced text, then normalizes whitespace. Languages without
+/// a reviewed policy pass through unchanged.
 pub struct RuleBasedCleanupEngine {
     english_fillers: Vec<String>,
     descriptor: EngineDescriptor,
@@ -473,10 +473,7 @@ impl RuleBasedCleanupEngine {
 
     fn is_filler(&self, language: CleanupLanguage, token: &str) -> bool {
         let trimmed = token.trim_matches(is_spoken_filler_punctuation);
-        // A bare word is ambiguous: it may be a variable, acronym, or term of
-        // art. Pause punctuation is the minimum evidence this deliberately
-        // conservative cleaner requires before removing it.
-        if trimmed == token || trimmed.is_empty() {
+        if trimmed.is_empty() {
             return false;
         }
         let normalized = trimmed.to_lowercase();
@@ -512,6 +509,17 @@ impl RuleBasedCleanupEngine {
             && tokens
                 .get(index + 1)
                 .is_some_and(|next| matches!(*next, "=" | ":=" | "=>" | "==" | "(" | "["))
+        {
+            return true;
+        }
+
+        if token.eq_ignore_ascii_case(&normalized)
+            && tokens.get(index + 1).is_some_and(|next| {
+                matches!(
+                    normalized_token(next).as_str(),
+                    "is" | "was" | "means" | "meant" | "refers" | "stands"
+                )
+            })
         {
             return true;
         }
@@ -1249,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn rule_cleanup_preserves_ambiguous_bare_fillers() {
+    fn rule_cleanup_removes_standalone_bare_fillers() {
         let engine = RuleBasedCleanupEngine::default();
         let original = "I um think uh might mean erm plus one.";
         let transcript = english_transcript(original);
@@ -1261,8 +1269,8 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(result.text, original);
-        assert!(!result.changed);
+        assert_eq!(result.text, "I think might mean plus one.");
+        assert!(result.changed);
     }
 
     #[test]
@@ -1296,10 +1304,30 @@ mod tests {
     }
 
     #[test]
-    fn rule_cleanup_keeps_multilingual_quotes_references_and_bare_words() {
+    fn rule_cleanup_keeps_multilingual_quotes_and_references() {
         let engine = RuleBasedCleanupEngine::default();
         let original = "Di \"eh,\", conserva la palabra eh, y deja eh sin puntuación.";
         let transcript = transcript_in("es", original);
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.text,
+            "Di \"eh,\", conserva la palabra eh, y deja sin puntuación."
+        );
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_keeps_bare_fillers_used_as_subjects_or_nouns() {
+        let engine = RuleBasedCleanupEngine::default();
+        let original = "Um is the label. An uh can be meaningful. The term erm means a pause.";
+        let transcript = english_transcript(original);
 
         let result = engine
             .cleanup(CleanupRequest {

@@ -216,7 +216,7 @@ describe("onboarding shortcut practice", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(
-      screen.getByText("Local list · only when punctuation marks a pause"),
+      screen.getByText("Local list · keeps quoted and named uses"),
     ).toBeVisible();
     expect(screen.getByText(/short language-specific list/i)).toBeVisible();
     expect(screen.getByText(/no sentence rewriting/i)).toBeVisible();

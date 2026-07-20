@@ -601,7 +601,7 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<Languages size={18} />}
                 title="Language & cleanup"
-                description="Choose what you’re speaking. Local cleanup can trim a short list of pause-marked hesitation sounds."
+                description="Choose what you’re speaking. Local cleanup can trim a reviewed list of hesitation sounds."
               />
               <section className="settings-card settings-card--form">
                 <SelectField
@@ -633,7 +633,7 @@ export function SettingsView({
                         <small>
                           {level === "Verbatim"
                             ? "Leave the transcript alone"
-                            : "Remove reviewed sounds when punctuation marks a pause"}
+                            : "Remove reviewed standalone hesitation sounds"}
                         </small>
                         {settings.cleanupLevel === level && <Check size={14} />}
                       </button>
@@ -642,8 +642,9 @@ export function SettingsView({
                   <p className="cleanup-note">
                     When local cleanup runs, its on-device list covers English,
                     Spanish, French, German, Hindi, Italian, Russian, Japanese,
-                    and Chinese. Quoted uses, bare words, and unreviewed
-                    languages stay untouched; it does not rewrite sentences.
+                    and Chinese. Quoted uses, obvious word or code references,
+                    and unreviewed languages stay untouched; it does not rewrite
+                    sentences.
                   </p>
                 </div>
               </section>

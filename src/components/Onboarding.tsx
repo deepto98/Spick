@@ -542,9 +542,7 @@ export function Onboarding({
                     </span>
                     <div>
                       <strong>Trim obvious fillers</strong>
-                      <small>
-                        Local list · only when punctuation marks a pause
-                      </small>
+                      <small>Local list · keeps quoted and named uses</small>
                     </div>
                     {settings.cleanupLevel === "Clean" && (
                       <CheckCircle2 size={17} />
@@ -624,7 +622,7 @@ export function Onboarding({
                   <strong>Cleanup</strong>
                   <small>
                     {settings.cleanupLevel === "Clean"
-                      ? "Trim reviewed pause-marked fillers"
+                      ? "Trim reviewed standalone fillers"
                       : "As transcribed"}
                   </small>
                 </div>
@@ -682,7 +680,7 @@ function onboardingSourceCopy(
       return {
         demo: "Local transcription · audio stays on this Mac",
         cleanup:
-          "Both modes run on this Mac. Clean uses a short language-specific list; quoted uses and bare words stay untouched, with no sentence rewriting.",
+          "Both modes run on this Mac. Clean uses a short language-specific list; quoted uses and obvious word or code references stay untouched, with no sentence rewriting.",
         footer: "Local transcription · careful field handoff",
       };
     case "loading":
