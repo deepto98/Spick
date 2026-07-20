@@ -36,28 +36,139 @@ const PANEL_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: usize = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingHudShow {
+    request_id: u64,
+    target_is_live: bool,
+}
+
 #[derive(Debug, Default)]
 struct HudLifecycleState {
     renderer_ready: bool,
     show_requested: bool,
     target_is_live: bool,
+    request_id: u64,
+    shown_target_is_live: Option<bool>,
+    applied_settings: Option<HudSettings>,
+    settings_apply_id: u64,
 }
 
 impl HudLifecycleState {
-    fn request_show(&mut self, target_is_live: bool) -> bool {
+    fn reset_for_create(&mut self) {
+        // Keep generations monotonic so a completion from a superseded native
+        // window cannot acknowledge state for its replacement.
+        self.request_id = self.request_id.wrapping_add(1);
+        self.settings_apply_id = self.settings_apply_id.wrapping_add(1);
+        self.renderer_ready = false;
+        self.show_requested = false;
+        self.target_is_live = false;
+        self.shown_target_is_live = None;
+        self.applied_settings = None;
+    }
+
+    fn try_request_steady_state_transition(
+        &mut self,
+        settings: &HudSettings,
+        target_is_live: bool,
+        target_transition_is_safe: bool,
+    ) -> bool {
+        if !self.can_use_steady_state_fast_path(settings, target_is_live, target_transition_is_safe)
+        {
+            return false;
+        }
+
+        self.record_show_request(target_is_live);
+        // A target-safe panel has no native state to change between idle and
+        // live. The renderer receives its own session event, so the
+        // already-visible native window is fully up to date here.
+        self.shown_target_is_live = Some(target_is_live);
+        true
+    }
+
+    fn request_show_after_apply(&mut self, target_is_live: bool) -> Option<PendingHudShow> {
+        let pending = self.record_show_request(target_is_live);
+        self.renderer_ready.then_some(pending)
+    }
+
+    fn record_show_request(&mut self, target_is_live: bool) -> PendingHudShow {
+        self.request_id = self.request_id.wrapping_add(1);
         self.show_requested = true;
         self.target_is_live = target_is_live;
+        PendingHudShow {
+            request_id: self.request_id,
+            target_is_live,
+        }
+    }
+
+    fn can_use_steady_state_fast_path(
+        &self,
+        settings: &HudSettings,
+        target_is_live: bool,
+        target_transition_is_safe: bool,
+    ) -> bool {
         self.renderer_ready
+            && self.show_requested
+            && target_transition_is_safe
+            && self.applied_settings.as_ref() == Some(settings)
+            && self
+                .shown_target_is_live
+                .is_some_and(|shown_target| shown_target != target_is_live)
     }
 
     fn request_hide(&mut self) {
+        self.request_id = self.request_id.wrapping_add(1);
         self.show_requested = false;
         self.target_is_live = false;
+        self.shown_target_is_live = None;
+        self.invalidate_applied_settings();
     }
 
-    fn mark_renderer_ready(&mut self) -> Option<bool> {
+    fn mark_renderer_ready(&mut self) -> Option<PendingHudShow> {
         self.renderer_ready = true;
-        self.show_requested.then_some(self.target_is_live)
+        self.show_requested.then_some(PendingHudShow {
+            request_id: self.request_id,
+            target_is_live: self.target_is_live,
+        })
+    }
+
+    fn begin_show(&mut self, pending: PendingHudShow) -> bool {
+        let is_current = self.renderer_ready
+            && self.show_requested
+            && self.request_id == pending.request_id
+            && self.target_is_live == pending.target_is_live;
+        if is_current {
+            // A failure from this point onward must force the next request
+            // through the full native path.
+            self.shown_target_is_live = None;
+        }
+        is_current
+    }
+
+    fn acknowledge_show(&mut self, pending: PendingHudShow) {
+        if self.renderer_ready
+            && self.show_requested
+            && self.request_id == pending.request_id
+            && self.target_is_live == pending.target_is_live
+        {
+            self.shown_target_is_live = Some(pending.target_is_live);
+        }
+    }
+
+    fn begin_settings_apply(&mut self) -> u64 {
+        self.settings_apply_id = self.settings_apply_id.wrapping_add(1);
+        self.applied_settings = None;
+        self.settings_apply_id
+    }
+
+    fn acknowledge_settings_apply(&mut self, apply_id: u64, settings: &HudSettings) {
+        if self.settings_apply_id == apply_id {
+            self.applied_settings = Some(settings.clone());
+        }
+    }
+
+    fn invalidate_applied_settings(&mut self) {
+        self.settings_apply_id = self.settings_apply_id.wrapping_add(1);
+        self.applied_settings = None;
     }
 }
 
@@ -65,6 +176,10 @@ static HUD_LIFECYCLE: Mutex<HudLifecycleState> = Mutex::new(HudLifecycleState {
     renderer_ready: false,
     show_requested: false,
     target_is_live: false,
+    request_id: 0,
+    shown_target_is_live: None,
+    applied_settings: None,
+    settings_apply_id: 0,
 });
 
 #[cfg(target_os = "macos")]
@@ -231,15 +346,72 @@ fn reset_renderer_gate() -> Result<(), String> {
     let mut lifecycle = HUD_LIFECYCLE
         .lock()
         .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?;
-    *lifecycle = HudLifecycleState::default();
+    lifecycle.reset_for_create();
     Ok(())
 }
 
-fn request_show_after_renderer_ready(target_is_live: bool) -> Result<bool, String> {
+fn try_steady_state_transition(
+    settings: &HudSettings,
+    target_is_live: bool,
+) -> Result<bool, String> {
     HUD_LIFECYCLE
         .lock()
-        .map(|mut lifecycle| lifecycle.request_show(target_is_live))
+        .map(|mut lifecycle| {
+            lifecycle.try_request_steady_state_transition(
+                settings,
+                target_is_live,
+                target_transition_can_skip_native_operations(),
+            )
+        })
         .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())
+}
+
+fn request_show_after_apply(target_is_live: bool) -> Result<Option<PendingHudShow>, String> {
+    HUD_LIFECYCLE
+        .lock()
+        .map(|mut lifecycle| lifecycle.request_show_after_apply(target_is_live))
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn target_transition_can_skip_native_operations() -> bool {
+    NATIVE_PANEL_READY.load(AtomicOrdering::Acquire)
+        && NATIVE_PANEL_TARGET_SAFE.load(AtomicOrdering::Acquire)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn target_transition_can_skip_native_operations() -> bool {
+    true
+}
+
+fn begin_settings_apply() -> Result<u64, String> {
+    HUD_LIFECYCLE
+        .lock()
+        .map(|mut lifecycle| lifecycle.begin_settings_apply())
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())
+}
+
+fn acknowledge_settings_apply(apply_id: u64, settings: &HudSettings) -> Result<(), String> {
+    let mut lifecycle = HUD_LIFECYCLE
+        .lock()
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?;
+    lifecycle.acknowledge_settings_apply(apply_id, settings);
+    Ok(())
+}
+
+fn begin_show(pending: PendingHudShow) -> Result<bool, String> {
+    HUD_LIFECYCLE
+        .lock()
+        .map(|mut lifecycle| lifecycle.begin_show(pending))
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())
+}
+
+fn acknowledge_show(pending: PendingHudShow) -> Result<(), String> {
+    let mut lifecycle = HUD_LIFECYCLE
+        .lock()
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?;
+    lifecycle.acknowledge_show(pending);
+    Ok(())
 }
 
 fn request_hide() -> Result<(), String> {
@@ -317,6 +489,10 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<
 /// The native window is resized along with its React surface so a compact HUD
 /// does not leave a transparent rectangle intercepting the target app's input.
 pub fn apply<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<(), String> {
+    // Invalidate before the first native mutation. A partial resize followed by
+    // a placement failure must never leave the previous settings eligible for
+    // the steady-state fast path.
+    let apply_id = begin_settings_apply()?;
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
@@ -336,20 +512,27 @@ pub fn apply<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<(
             .map_err(|error| format!("could not resize dictation HUD: {error}"))?;
     }
 
-    reposition(app, settings)
+    if reposition_native(app, settings)? {
+        acknowledge_settings_apply(apply_id, settings)?;
+    }
+    Ok(())
 }
 
-pub fn reposition<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<(), String> {
+fn reposition_native<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &HudSettings,
+) -> Result<bool, String> {
     let Some(window) = app.get_webview_window(HUD_WINDOW_LABEL) else {
         return Err("dictation HUD is not available".into());
     };
     let Some(position) = position_for_settings(app, settings)? else {
-        return Ok(());
+        return Ok(false);
     };
 
     window
         .set_position(position)
-        .map_err(|error| format!("could not position dictation HUD: {error}"))
+        .map_err(|error| format!("could not position dictation HUD: {error}"))?;
+    Ok(true)
 }
 
 pub fn show<R: Runtime>(
@@ -357,6 +540,10 @@ pub fn show<R: Runtime>(
     settings: &HudSettings,
     target_is_live: bool,
 ) -> Result<(), String> {
+    if try_steady_state_transition(settings, target_is_live)? {
+        return Ok(());
+    }
+
     // Monitor enumeration can transiently fail while a display is attached or
     // removed. Keep the last valid geometry and still provide capture feedback.
     if let Err(error) = apply(app, settings) {
@@ -365,19 +552,23 @@ pub fn show<R: Runtime>(
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
-
-    if !request_show_after_renderer_ready(target_is_live)? {
+    let Some(pending) = request_show_after_apply(target_is_live)? else {
         return Ok(());
-    }
+    };
 
-    show_ready_window(app, window, target_is_live)
+    show_ready_window(app, window, pending)
 }
 
 fn show_ready_window<R: Runtime>(
     app: &AppHandle<R>,
     window: WebviewWindow<R>,
-    target_is_live: bool,
+    pending: PendingHudShow,
 ) -> Result<(), String> {
+    if !begin_show(pending)? {
+        return Ok(());
+    }
+    let target_is_live = pending.target_is_live;
+
     #[cfg(target_os = "macos")]
     {
         let shown_as_panel = with_native_panel_on_main_thread(app, "show", move |panel| {
@@ -396,6 +587,7 @@ fn show_ready_window<R: Runtime>(
                 target_is_live && !NATIVE_PANEL_TARGET_SAFE.load(AtomicOrdering::Acquire),
                 AtomicOrdering::Release,
             );
+            acknowledge_show(pending)?;
             return Ok(());
         }
 
@@ -413,7 +605,8 @@ fn show_ready_window<R: Runtime>(
 
     window
         .show()
-        .map_err(|error| format!("could not show dictation HUD: {error}"))
+        .map_err(|error| format!("could not show dictation HUD: {error}"))?;
+    acknowledge_show(pending)
 }
 
 /// Releases the startup visibility gate after the HUD renderer has committed
@@ -424,13 +617,13 @@ pub fn mark_renderer_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>
         .lock()
         .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?
         .mark_renderer_ready();
-    let Some(target_is_live) = pending_target else {
+    let Some(pending) = pending_target else {
         return Ok(());
     };
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
-    show_ready_window(app, window, target_is_live)
+    show_ready_window(app, window, pending)
 }
 
 pub fn is_visible<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
@@ -789,6 +982,21 @@ fn preset_coordinates(
 mod tests {
     use super::*;
 
+    fn settle_visible_hud(
+        lifecycle: &mut HudLifecycleState,
+        settings: &HudSettings,
+        target_is_live: bool,
+    ) {
+        let apply_id = lifecycle.begin_settings_apply();
+        lifecycle.acknowledge_settings_apply(apply_id, settings);
+        assert_eq!(lifecycle.request_show_after_apply(target_is_live), None);
+        let pending = lifecycle
+            .mark_renderer_ready()
+            .expect("the queued show should remain current");
+        assert!(lifecycle.begin_show(pending));
+        lifecycle.acknowledge_show(pending);
+    }
+
     fn monitor(
         monitor: (i32, i32, u32, u32),
         work: (i32, i32, u32, u32),
@@ -811,20 +1019,135 @@ mod tests {
     fn renderer_gate_queues_the_latest_show_until_hydration() {
         let mut lifecycle = HudLifecycleState::default();
 
-        assert!(!lifecycle.request_show(true));
-        assert!(!lifecycle.request_show(false));
-        assert_eq!(lifecycle.mark_renderer_ready(), Some(false));
-        assert!(lifecycle.request_show(true));
+        assert_eq!(lifecycle.request_show_after_apply(true), None,);
+        assert_eq!(lifecycle.request_show_after_apply(false), None,);
+        assert_eq!(
+            lifecycle.mark_renderer_ready(),
+            Some(PendingHudShow {
+                request_id: 2,
+                target_is_live: false,
+            })
+        );
+        assert_eq!(
+            lifecycle.request_show_after_apply(true),
+            Some(PendingHudShow {
+                request_id: 3,
+                target_is_live: true,
+            })
+        );
     }
 
     #[test]
     fn hiding_before_hydration_cancels_the_queued_show() {
         let mut lifecycle = HudLifecycleState::default();
 
-        assert!(!lifecycle.request_show(true));
+        assert_eq!(lifecycle.request_show_after_apply(true), None);
         lifecycle.request_hide();
 
         assert_eq!(lifecycle.mark_renderer_ready(), None);
+    }
+
+    #[test]
+    fn acknowledged_target_only_transition_uses_the_fast_path() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        assert!(lifecycle.try_request_steady_state_transition(&settings, true, true));
+        assert_eq!(lifecycle.shown_target_is_live, Some(true));
+        assert!(lifecycle.try_request_steady_state_transition(&settings, false, true));
+    }
+
+    #[test]
+    fn fast_path_rejects_changed_settings_and_same_target_requests() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        assert!(!lifecycle.try_request_steady_state_transition(&settings, false, true));
+        let mut changed = settings.clone();
+        changed.presentation = HudPresentation::Compact;
+        assert!(!lifecycle.try_request_steady_state_transition(&changed, true, true));
+
+        let mut moved = settings;
+        moved.custom_position = Some(HudCoordinates { x: 120, y: 80 });
+        assert!(!lifecycle.try_request_steady_state_transition(&moved, true, true));
+    }
+
+    #[test]
+    fn unsafe_target_transition_uses_the_full_path() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        assert!(!lifecycle.try_request_steady_state_transition(&settings, true, false));
+    }
+
+    #[test]
+    fn hide_and_failed_native_operations_invalidate_fast_path_acknowledgements() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        lifecycle.request_hide();
+        assert!(lifecycle.applied_settings.is_none());
+        assert!(lifecycle.shown_target_is_live.is_none());
+        assert!(!lifecycle.try_request_steady_state_transition(&settings, true, true));
+
+        let apply_id = lifecycle.begin_settings_apply();
+        lifecycle.acknowledge_settings_apply(apply_id, &settings);
+        let pending = lifecycle
+            .request_show_after_apply(true)
+            .expect("the renderer remains ready after hiding");
+        assert!(lifecycle.begin_show(pending));
+        // No acknowledgement models a failed native show.
+        assert!(!lifecycle.try_request_steady_state_transition(&settings, false, true));
+
+        let apply_id = lifecycle.begin_settings_apply();
+        assert!(lifecycle.applied_settings.is_none());
+        // No acknowledgement models a partial or failed native apply.
+        assert_ne!(apply_id, 0);
+        assert!(!lifecycle.try_request_steady_state_transition(&settings, true, true));
+    }
+
+    #[test]
+    fn stale_native_acknowledgements_cannot_restore_fast_path_state() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        let stale_apply = lifecycle.begin_settings_apply();
+        let stale_show = lifecycle
+            .request_show_after_apply(false)
+            .expect("the renderer is ready");
+        assert!(lifecycle.begin_show(stale_show));
+        lifecycle.request_hide();
+        lifecycle.acknowledge_settings_apply(stale_apply, &settings);
+        lifecycle.acknowledge_show(stale_show);
+
+        assert!(lifecycle.applied_settings.is_none());
+        assert!(lifecycle.shown_target_is_live.is_none());
+    }
+
+    #[test]
+    fn create_reset_rejects_acknowledgements_from_the_previous_window() {
+        let mut lifecycle = HudLifecycleState::default();
+        let settings = HudSettings::default();
+        settle_visible_hud(&mut lifecycle, &settings, false);
+
+        let stale_apply = lifecycle.begin_settings_apply();
+        let stale_show = lifecycle
+            .request_show_after_apply(false)
+            .expect("the renderer is ready");
+        assert!(lifecycle.begin_show(stale_show));
+        lifecycle.reset_for_create();
+        lifecycle.acknowledge_settings_apply(stale_apply, &settings);
+        lifecycle.acknowledge_show(stale_show);
+
+        assert!(!lifecycle.renderer_ready);
+        assert!(!lifecycle.show_requested);
+        assert!(lifecycle.applied_settings.is_none());
+        assert!(lifecycle.shown_target_is_live.is_none());
     }
 
     #[cfg(target_os = "macos")]
