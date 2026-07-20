@@ -71,4 +71,41 @@ describe("dictation delivery HUD", () => {
     expect(onMove).toHaveBeenCalledOnce();
     expect(onExpand).toHaveBeenCalledOnce();
   });
+
+  it("minimizes the expanded widget and locks presentation controls while saving", () => {
+    const onMove = vi.fn();
+    const onMinimize = vi.fn();
+    const { rerender } = render(
+      <DictationHud
+        autoAdvance={false}
+        onMovePointerDown={onMove}
+        onToggleCompact={onMinimize}
+        state="idle"
+      />,
+    );
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Move dictation widget" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Minimize dictation widget" }),
+    );
+    expect(onMove).toHaveBeenCalledOnce();
+    expect(onMinimize).toHaveBeenCalledOnce();
+
+    rerender(
+      <DictationHud
+        autoAdvance={false}
+        compact
+        compactPending
+        onMovePointerDown={onMove}
+        onToggleCompact={onMinimize}
+        state="listening"
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Expand dictation widget" }),
+    ).toBeDisabled();
+  });
 });

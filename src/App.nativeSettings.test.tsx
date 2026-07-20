@@ -157,7 +157,7 @@ vi.mock("./lib/nativeModels", () => ({
 }));
 
 const baseSettings: NativeAppSettings = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   pushToTalkShortcut: "Option",
   languagePolicy: { mode: "auto" },
   transcriptionEngine: {
@@ -499,9 +499,7 @@ describe("native language and cleanup persistence", () => {
         screen.getByRole("switch", { name: "Show floating widget" }),
       ).toHaveAttribute("aria-checked", "false"),
     );
-    expect(
-      screen.getByText(/Turn this on for your next dictation/i),
-    ).toBeVisible();
+    expect(screen.getByText(/Turn this on to show it now/i)).toBeVisible();
   });
 
   it("uses an acknowledged cloud engine in the next settings write", async () => {

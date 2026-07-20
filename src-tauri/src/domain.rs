@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) const LEGACY_SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub(crate) const OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION: u32 = 2;
 pub(crate) const MULTILINGUAL_SETTINGS_SCHEMA_VERSION: u32 = 3;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub(crate) const TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
 #[cfg(target_os = "macos")]
 pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "Option";
 #[cfg(not(target_os = "macos"))]
@@ -168,8 +169,8 @@ impl EngineConfig {
 #[serde(rename_all = "camelCase")]
 pub enum HudPosition {
     BottomLeft,
-    #[default]
     BottomCenter,
+    #[default]
     BottomRight,
 }
 
@@ -250,7 +251,9 @@ impl AppSettings {
     /// Schema v1 could contain a cleanup selection even though cleanup was not
     /// connected, so that selection is disabled. Schema v2 also predates the
     /// macOS Option default. Schema v3 predates persisted microphone/HUD
-    /// visibility choices. All migrations preserve explicit user choices.
+    /// visibility choices. Schema v4 predates the persistent corner widget;
+    /// its implicit bottom-center placement moves to bottom-right unless the
+    /// user already dragged the HUD. All migrations preserve explicit choices.
     pub(crate) fn migrate_legacy_schema(&mut self) -> bool {
         match self.schema_version {
             LEGACY_SETTINGS_SCHEMA_VERSION => {
@@ -260,6 +263,7 @@ impl AppSettings {
                     self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
                 }
                 self.hud.visible = true;
+                self.migrate_implicit_hud_position();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
@@ -269,15 +273,28 @@ impl AppSettings {
                     self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
                 }
                 self.hud.visible = true;
+                self.migrate_implicit_hud_position();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
             MULTILINGUAL_SETTINGS_SCHEMA_VERSION => {
                 self.hud.visible = true;
+                self.migrate_implicit_hud_position();
+                self.schema_version = SETTINGS_SCHEMA_VERSION;
+                true
+            }
+            TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION => {
+                self.migrate_implicit_hud_position();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
             _ => false,
+        }
+    }
+
+    fn migrate_implicit_hud_position(&mut self) {
+        if self.hud.custom_position.is_none() && self.hud.position == HudPosition::BottomCenter {
+            self.hud.position = HudPosition::BottomRight;
         }
     }
 
@@ -361,6 +378,7 @@ pub struct DictationDelivery {
 #[serde(rename_all = "camelCase")]
 pub enum SessionTrigger {
     Shortcut,
+    FloatingWidget,
     UserInterface,
 }
 
@@ -437,6 +455,7 @@ mod tests {
         );
         assert_eq!(settings.cleanup_engine, None);
         assert_eq!(settings.input_device_name, None);
+        assert_eq!(settings.hud.position, HudPosition::BottomRight);
         assert!(settings.hud.visible);
         assert!(!settings.allow_cloud_fallback);
         assert!(!settings.save_transcript_history);
@@ -570,6 +589,36 @@ mod tests {
         assert_eq!(previous.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(previous.hud.visible);
         assert_eq!(previous.input_device_name, None);
+    }
+
+    #[test]
+    fn schema_v4_moves_only_the_implicit_hud_position_to_a_corner() {
+        let mut untouched = AppSettings {
+            schema_version: TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                position: HudPosition::BottomCenter,
+                custom_position: None,
+                ..HudSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(untouched.migrate_legacy_schema());
+        assert_eq!(untouched.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(untouched.hud.position, HudPosition::BottomRight);
+
+        let dragged_position = HudCoordinates { x: 1456, y: 880 };
+        let mut dragged = AppSettings {
+            schema_version: TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                position: HudPosition::BottomCenter,
+                custom_position: Some(dragged_position),
+                ..HudSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(dragged.migrate_legacy_schema());
+        assert_eq!(dragged.hud.position, HudPosition::BottomCenter);
+        assert_eq!(dragged.hud.custom_position, Some(dragged_position));
     }
 
     #[test]

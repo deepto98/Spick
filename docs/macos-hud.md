@@ -13,8 +13,9 @@ community `tauri-nspanel` crate on macOS, pinned to commit
 `a3122e894383aa068ec5365a42994e3ac94ba1b6`. It is deliberately a target-only
 Git dependency rather than a floating branch.
 
-At startup, `hud.rs` creates one hidden, undecorated Tauri webview window and
-converts it once to `SpickHudPanel`. The panel is configured as:
+At startup, `hud.rs` creates one hidden, undecorated Tauri webview window,
+converts it once to `SpickHudPanel`, and then shows it at the saved position
+when the floating-widget preference is enabled. The panel is configured as:
 
 - borderless plus `NonactivatingPanel`;
 - unable to become key or main;
@@ -52,8 +53,9 @@ routine dependency refresh. Before changing its revision or Tauri/Tao versions:
    collapsed or expanded, or is dragged.
 3. Confirm the original caret remains active and receives the transcript.
 4. Repeat on multiple Spaces, a full-screen app, and mixed-DPI monitors.
-5. Exercise at least 100 show/hide cycles. The HUD must only hide; it must never
-   be closed or converted back to a window.
+5. Exercise at least 100 dictate/settle cycles plus repeated visibility toggles.
+   The HUD must remain reusable and must never be closed or converted back to a
+   window.
 
 This is development scope. Release readiness requires the same matrix on every
 supported macOS version and a fresh audit of the pinned plugin's open lifecycle

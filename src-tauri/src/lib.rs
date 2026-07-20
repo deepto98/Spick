@@ -120,8 +120,14 @@ pub fn run() {
 
             // A missing monitor or an unavailable global binding should not make
             // the settings window unusable. Both can be corrected after launch.
-            if let Err(error) = hud::create(app.handle(), &settings.hud) {
-                eprintln!("{error}");
+            match hud::create(app.handle(), &settings.hud) {
+                Ok(()) if settings.hud.visible => {
+                    if let Err(error) = hud::show(app.handle(), &settings.hud, false) {
+                        eprintln!("could not show the saved floating widget: {error}");
+                    }
+                }
+                Ok(()) => {}
+                Err(error) => eprintln!("{error}"),
             }
             if platform::current_platform_capabilities().supports_global_shortcut {
                 if let Err(error) =

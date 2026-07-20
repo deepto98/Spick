@@ -22,7 +22,7 @@ Begin compatibility testing with native and browser editors. Permission onboardi
 Current checkpoint:
 
 - A bare-Option gesture supports tap/tap and hold/release modes without consuming normal Option chords. A temporary accelerator fallback remains available until Input Monitoring is granted.
-- The non-activating HUD, bounded in-memory microphone capture, and cancellation path are working. The HUD has persisted expanded/compact presentation and movable, monitor-clamped coordinates.
+- The non-activating HUD, bounded in-memory microphone capture, and cancellation path are working. When enabled, the HUD remains on the desktop between sessions and has persisted expanded/compact presentation plus movable, monitor-clamped coordinates.
 - Curated models can be downloaded or cancelled, size-checked, SHA-256 verified, selected, removed, and loaded through a cached Metal-enabled `whisper.cpp` runtime. Trusted compatible GGML `.bin` models can also be imported through the native picker, copied into content-addressed app-local storage, inspected by the bundled runtime, selected, and removed.
 - Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
 - The cleanup choice is saved natively and captured per session. As-transcribed output is the safe default; the opt-in local cleaner removes a reviewed, language-tagged set of standalone hesitation sounds across nine languages while preserving quoted uses, obvious word or code references, and unreviewed languages.

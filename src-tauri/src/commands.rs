@@ -249,12 +249,14 @@ pub fn update_settings(
     };
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
     let hud_visibility_change = hud_visibility_update(previous.hud.visible, settings.hud.visible);
-    // A disable failure must leave the dashboard on its last acknowledged
+    // A visibility failure must leave the dashboard on its last acknowledged
     // value. Snapshot actual window visibility before any settings or shortcut
-    // state changes so a partially completed hide can be restored precisely.
+    // state changes so a partially completed native action can be restored.
     let hud_was_visible = match hud_visibility_change {
-        HudVisibilityUpdate::DisableNow => hud::is_visible(&app)?,
-        HudVisibilityUpdate::Unchanged | HudVisibilityUpdate::EnableNextSession => false,
+        HudVisibilityUpdate::Unchanged => false,
+        HudVisibilityUpdate::DisableNow | HudVisibilityUpdate::EnableNowIfIdle => {
+            hud::is_visible(&app)?
+        }
     };
 
     if shortcut_changed {
@@ -291,9 +293,10 @@ pub fn update_settings(
         Ok(next) => {
             reconcile_committed_hud_visibility(
                 hud_visibility_change,
+                || show_idle_hud_if_inactive(&app, state.inner(), &next.hud).map(|_| ()),
                 || hud::hide(&app),
                 || {
-                    rollback_failed_hud_disable(
+                    rollback_failed_hud_visibility(
                         &app,
                         state.inner(),
                         &previous,
@@ -596,14 +599,14 @@ pub async fn remove_local_model(
 
 #[tauri::command]
 pub fn start_dictation_session(
+    window: WebviewWindow,
     app: AppHandle,
     state: State<'_, AppState>,
-    trigger: Option<SessionTrigger>,
 ) -> Result<DictationStateEvent, String> {
     start_session(
         &app,
         state.inner(),
-        trigger.unwrap_or(SessionTrigger::UserInterface),
+        session_trigger_for_window(window.label())?,
     )
 }
 
@@ -662,8 +665,8 @@ pub(crate) fn cancel_session<R: Runtime>(
     discard_on_worker(cleanup);
 
     emit_state(app, &event)?;
-    if let Err(error) = hide_hud_for_revision(app, state, event.revision) {
-        eprintln!("dictation was cancelled but the HUD could not be hidden: {error}");
+    if let Err(error) = settle_hud_for_revision(app, state, event.revision) {
+        eprintln!("dictation was cancelled but the HUD could not return to idle: {error}");
     }
     Ok(event)
 }
@@ -849,46 +852,54 @@ fn policy_for_model_activation(
 enum HudVisibilityUpdate {
     Unchanged,
     DisableNow,
-    /// Enabling is a preference for the next session. Showing during an
-    /// existing session would create a new focus/target race mid-dictation.
-    EnableNextSession,
+    /// Show immediately when no session owns a captured target. Otherwise the
+    /// terminal settle path reveals the newly enabled persistent widget.
+    EnableNowIfIdle,
 }
 
 fn hud_visibility_update(previous: bool, next: bool) -> HudVisibilityUpdate {
     match (previous, next) {
         (true, false) => HudVisibilityUpdate::DisableNow,
-        (false, true) => HudVisibilityUpdate::EnableNextSession,
+        (false, true) => HudVisibilityUpdate::EnableNowIfIdle,
         _ => HudVisibilityUpdate::Unchanged,
     }
 }
 
-fn reconcile_committed_hud_visibility<FHide, FRollback>(
+fn reconcile_committed_hud_visibility<FShow, FHide, FRollback>(
     update: HudVisibilityUpdate,
+    show: FShow,
     hide: FHide,
     rollback: FRollback,
 ) -> Result<(), String>
 where
+    FShow: FnOnce() -> Result<(), String>,
     FHide: FnOnce() -> Result<(), String>,
     FRollback: FnOnce() -> Result<(), String>,
 {
-    if update != HudVisibilityUpdate::DisableNow {
+    let result = match update {
+        HudVisibilityUpdate::Unchanged => return Ok(()),
+        HudVisibilityUpdate::DisableNow => hide(),
+        HudVisibilityUpdate::EnableNowIfIdle => show(),
+    };
+    let Err(action_error) = result else {
         return Ok(());
-    }
-
-    let Err(hide_error) = hide() else {
-        return Ok(());
+    };
+    let operation = match update {
+        HudVisibilityUpdate::DisableNow => "hidden",
+        HudVisibilityUpdate::EnableNowIfIdle => "shown",
+        HudVisibilityUpdate::Unchanged => unreachable!(),
     };
     match rollback() {
         Ok(()) => Err(format!(
-            "floating HUD settings were not changed because the HUD could not be hidden: {hide_error}"
+            "floating HUD settings were not changed because the HUD could not be {operation}: {action_error}"
         )),
         Err(rollback_error) => Err(format!(
-            "the HUD could not be hidden: {hide_error}; settings rollback also failed: {rollback_error}"
+            "the HUD could not be {operation}: {action_error}; settings rollback also failed: {rollback_error}"
         )),
     }
 }
 
-fn rollback_failed_hud_disable<R: Runtime>(
+fn rollback_failed_hud_visibility<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     previous: &AppSettings,
@@ -922,6 +933,8 @@ fn rollback_failed_hud_disable<R: Runtime>(
             Ok(()) => {}
             Err(error) => rollback_errors.push(format!("HUD visibility: {error}")),
         }
+    } else if let Err(error) = hud::hide(app) {
+        rollback_errors.push(format!("HUD visibility: {error}"));
     }
 
     if rollback_errors.is_empty() {
@@ -929,6 +942,34 @@ fn rollback_failed_hud_disable<R: Runtime>(
     } else {
         Err(rollback_errors.join("; "))
     }
+}
+
+fn show_idle_hud_if_inactive<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    settings: &HudSettings,
+) -> Result<bool, String> {
+    // Hold both guards through the native show so a shortcut cannot capture a
+    // target between the idle check and panel presentation.
+    let session = state
+        .session
+        .lock()
+        .map_err(|_| "dictation session lock is poisoned".to_string())?;
+    if matches!(
+        session.snapshot().state,
+        SessionState::Listening | SessionState::Processing | SessionState::Inserting
+    ) {
+        return Ok(false);
+    }
+    let protection = state
+        .hud_target_protection
+        .lock()
+        .map_err(|_| "HUD target protection is unavailable".to_string())?;
+    if protection.has_owner() {
+        return Ok(false);
+    }
+    hud::show(app, settings, false)?;
+    Ok(true)
 }
 
 fn restore_settings_snapshot(state: &AppState, settings: &AppSettings) -> Result<(), String> {
@@ -1021,9 +1062,10 @@ pub(crate) fn start_session<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
-    // Shortcut sessions must prove a concrete, non-secure editable target
-    // before any session state, audio capture, or HUD window is created.
-    let captured_target = if trigger == SessionTrigger::Shortcut {
+    // External-target sessions must prove a concrete, non-secure editable
+    // target before any session state or audio capture is created. The HUD is
+    // nonactivating, so a click there still leaves the other app focused.
+    let captured_target = if trigger_uses_external_target(trigger) {
         match state.text_targets.capture() {
             Ok(target) => Some(target),
             Err(error) => return fail_target_preflight(app, state, trigger, error),
@@ -1157,7 +1199,7 @@ pub(crate) fn start_session<R: Runtime>(
             eprintln!("dictation failed but the HUD could not be shown: {show_error}");
         }
         let _ = emit_state(app, &event);
-        hide_after(app, FAILURE_HUD_DWELL, event.revision);
+        settle_after(app, FAILURE_HUD_DWELL, event.revision);
         return Err(error);
     }
 
@@ -1170,6 +1212,21 @@ pub(crate) fn start_session<R: Runtime>(
         eprintln!("could not emit listening state: {error}");
     }
     Ok(event)
+}
+
+fn session_trigger_for_window(label: &str) -> Result<SessionTrigger, String> {
+    match label {
+        MAIN_WINDOW_LABEL => Ok(SessionTrigger::UserInterface),
+        hud::HUD_WINDOW_LABEL => Ok(SessionTrigger::FloatingWidget),
+        _ => Err("dictation can only be started from a Spick window".into()),
+    }
+}
+
+fn trigger_uses_external_target(trigger: SessionTrigger) -> bool {
+    matches!(
+        trigger,
+        SessionTrigger::Shortcut | SessionTrigger::FloatingWidget
+    )
 }
 
 fn fail_target_preflight<R: Runtime>(
@@ -1203,7 +1260,7 @@ fn fail_target_preflight<R: Runtime>(
     if let Err(emit_error) = emit_state(app, &failed) {
         eprintln!("could not emit text-target failure: {emit_error}");
     }
-    hide_after(app, FAILURE_HUD_DWELL, failed.revision);
+    settle_after(app, FAILURE_HUD_DWELL, failed.revision);
     Err(error.to_string())
 }
 
@@ -1248,7 +1305,7 @@ pub(crate) fn stop_session<R: Runtime>(
         release_hud_target(app, state, hud_target_lease.as_ref());
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
             let _ = emit_state(app, &failed);
-            hide_after(app, FAILURE_HUD_DWELL, failed.revision);
+            settle_after(app, FAILURE_HUD_DWELL, failed.revision);
         }
     }
 
@@ -1377,16 +1434,18 @@ fn finalize_capture<R: Runtime>(
                             }
                             match delivery.status {
                                 DictationDeliveryStatus::Inserted => {
-                                    hide_after(app, SUCCESS_HUD_DWELL, completed.revision)
+                                    settle_after(app, SUCCESS_HUD_DWELL, completed.revision)
                                 }
                                 DictationDeliveryStatus::SecureField => {
-                                    hide_after(app, FAILURE_HUD_DWELL, completed.revision)
+                                    settle_after(app, FAILURE_HUD_DWELL, completed.revision)
                                 }
                                 DictationDeliveryStatus::FocusChanged
                                 | DictationDeliveryStatus::AccessibilityMissing
                                 | DictationDeliveryStatus::Unsupported
                                 | DictationDeliveryStatus::Failed
-                                | DictationDeliveryStatus::Indeterminate => {}
+                                | DictationDeliveryStatus::Indeterminate => {
+                                    settle_after(app, FAILURE_HUD_DWELL, completed.revision)
+                                }
                             }
                             // User-visible terminal events and HUD behavior
                             // must never wait behind optional SQLite work.
@@ -1721,7 +1780,7 @@ fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCa
             if let Err(emit_error) = emit_state(app, &event) {
                 eprintln!("could not emit microphone failure: {emit_error}");
             }
-            hide_after(app, FAILURE_HUD_DWELL, event.revision);
+            settle_after(app, FAILURE_HUD_DWELL, event.revision);
         }
         Ok(None) => {}
         Err(error) => eprintln!("could not handle microphone failure: {error}"),
@@ -1906,7 +1965,7 @@ fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, e
             if let Err(emit_error) = emit_state(app, &failed) {
                 eprintln!("could not emit capture failure: {emit_error}");
             }
-            hide_after(app, FAILURE_HUD_DWELL, failed.revision);
+            settle_after(app, FAILURE_HUD_DWELL, failed.revision);
         }
         Ok(None) => {}
         Err(error) => eprintln!("could not fail capture session: {error}"),
@@ -1973,18 +2032,18 @@ fn release_hud_target<R: Runtime>(
     protection.release_if_current(lease);
 }
 
-fn hide_hud_for_revision<R: Runtime>(
+fn settle_hud_for_revision<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     revision: u64,
 ) -> Result<bool, String> {
-    // Keep this check and the native hide in the same session critical section
-    // so a new session cannot start between them.
+    // Keep this check and the native HUD update in the same session critical
+    // section so a new session cannot start between them.
     let session = state
         .session
         .lock()
         .map_err(|_| "dictation session lock is poisoned".to_string())?;
-    if !should_hide_for_revision(&session.snapshot(), revision) {
+    if !should_settle_for_revision(&session.snapshot(), revision) {
         return Ok(false);
     }
     let protection = state
@@ -1994,7 +2053,15 @@ fn hide_hud_for_revision<R: Runtime>(
     if protection.has_owner() {
         return Ok(false);
     }
-    hud::hide(app)?;
+    let settings = state.settings_snapshot()?.hud;
+    if settings.visible {
+        // The floating widget is a persistent idle control. Showing an
+        // already-visible nonactivating panel also reapplies its saved size and
+        // monitor-clamped position after the session releases its target.
+        hud::show(app, &settings, false)?;
+    } else {
+        hud::hide(app)?;
+    }
     Ok(true)
 }
 
@@ -2015,27 +2082,27 @@ fn discard_on_worker(finalizer: Option<CaptureFinalizer>) {
     }
 }
 
-fn hide_after<R: Runtime>(app: &AppHandle<R>, delay: Duration, revision: u64) {
+fn settle_after<R: Runtime>(app: &AppHandle<R>, delay: Duration, revision: u64) {
     let app = app.clone();
     let spawn_result = thread::Builder::new()
-        .name("spick-hud-hide".into())
+        .name("spick-hud-settle".into())
         .spawn(move || {
             thread::sleep(delay);
 
-            // Do not let an old completion timer hide or unprotect a
-            // newly-started session.
+            // Do not let an old completion timer resize, reposition, hide, or
+            // unprotect a newly-started session.
             let state = app.state::<AppState>();
-            if let Err(error) = hide_hud_for_revision(&app, state.inner(), revision) {
-                eprintln!("could not hide the dictation HUD: {error}");
+            if let Err(error) = settle_hud_for_revision(&app, state.inner(), revision) {
+                eprintln!("could not return the dictation HUD to idle: {error}");
             }
         });
 
     if let Err(error) = spawn_result {
-        eprintln!("could not schedule the dictation HUD dismissal: {error}");
+        eprintln!("could not schedule the dictation HUD reset: {error}");
     }
 }
 
-fn should_hide_for_revision(event: &DictationStateEvent, revision: u64) -> bool {
+fn should_settle_for_revision(event: &DictationStateEvent, revision: u64) -> bool {
     event.revision == revision
         && matches!(
             event.state,
@@ -2093,11 +2160,27 @@ mod tests {
     }
 
     #[test]
-    fn hud_timer_requires_the_exact_terminal_revision() {
+    fn only_external_controls_capture_another_apps_text_target() {
+        assert_eq!(
+            session_trigger_for_window(MAIN_WINDOW_LABEL).unwrap(),
+            SessionTrigger::UserInterface
+        );
+        assert_eq!(
+            session_trigger_for_window(hud::HUD_WINDOW_LABEL).unwrap(),
+            SessionTrigger::FloatingWidget
+        );
+        assert!(session_trigger_for_window("unknown").is_err());
+        assert!(trigger_uses_external_target(SessionTrigger::Shortcut));
+        assert!(trigger_uses_external_target(SessionTrigger::FloatingWidget));
+        assert!(!trigger_uses_external_target(SessionTrigger::UserInterface));
+    }
+
+    #[test]
+    fn hud_settle_timer_requires_the_exact_terminal_revision() {
         let completed = event("session-a", SessionState::Completed, 4);
-        assert!(should_hide_for_revision(&completed, 4));
-        assert!(!should_hide_for_revision(&completed, 3));
-        assert!(!should_hide_for_revision(
+        assert!(should_settle_for_revision(&completed, 4));
+        assert!(!should_settle_for_revision(&completed, 3));
+        assert!(!should_settle_for_revision(
             &event("session-b", SessionState::Listening, 5),
             4
         ));
@@ -2122,16 +2205,21 @@ mod tests {
     }
 
     #[test]
-    fn hud_enablement_is_deferred_to_the_next_session() {
+    fn hud_enablement_shows_the_persistent_widget_when_idle() {
         assert_eq!(
             hud_visibility_update(false, true),
-            HudVisibilityUpdate::EnableNextSession
+            HudVisibilityUpdate::EnableNowIfIdle
         );
 
+        let mut show_called = false;
         let mut hide_called = false;
         let mut rollback_called = false;
         reconcile_committed_hud_visibility(
-            HudVisibilityUpdate::EnableNextSession,
+            HudVisibilityUpdate::EnableNowIfIdle,
+            || {
+                show_called = true;
+                Ok(())
+            },
             || {
                 hide_called = true;
                 Ok(())
@@ -2143,6 +2231,7 @@ mod tests {
         )
         .unwrap();
 
+        assert!(show_called);
         assert!(!hide_called);
         assert!(!rollback_called);
     }
@@ -2152,6 +2241,7 @@ mod tests {
         let mut rollback_called = false;
         let error = reconcile_committed_hud_visibility(
             HudVisibilityUpdate::DisableNow,
+            || Ok(()),
             || Err("native hide failed".into()),
             || {
                 rollback_called = true;
@@ -2166,10 +2256,35 @@ mod tests {
     }
 
     #[test]
+    fn hud_show_failure_is_not_acknowledged_and_triggers_rollback() {
+        let mut hide_called = false;
+        let mut rollback_called = false;
+        let error = reconcile_committed_hud_visibility(
+            HudVisibilityUpdate::EnableNowIfIdle,
+            || Err("native show failed".into()),
+            || {
+                hide_called = true;
+                Ok(())
+            },
+            || {
+                rollback_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(!hide_called);
+        assert!(rollback_called);
+        assert!(error.contains("settings were not changed"));
+        assert!(error.contains("native show failed"));
+    }
+
+    #[test]
     fn successful_hud_hide_keeps_the_committed_settings() {
         let mut rollback_called = false;
         reconcile_committed_hud_visibility(
             HudVisibilityUpdate::DisableNow,
+            || Ok(()),
             || Ok(()),
             || {
                 rollback_called = true;
@@ -2209,6 +2324,7 @@ mod tests {
     fn hud_hide_error_reports_a_failed_settings_rollback() {
         let error = reconcile_committed_hud_visibility(
             HudVisibilityUpdate::DisableNow,
+            || Ok(()),
             || Err("native hide failed".into()),
             || Err("disk is read-only".into()),
         )

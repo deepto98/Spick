@@ -16,6 +16,7 @@ use crate::{
     domain::{
         AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, MULTILINGUAL_SETTINGS_SCHEMA_VERSION,
         OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION,
+        TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
     local_data::LocalDataStore,
@@ -453,6 +454,7 @@ fn parse_settings_document(bytes: &[u8]) -> Result<ParsedSettings, SettingsParse
         LEGACY_SETTINGS_SCHEMA_VERSION
             | OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION
             | MULTILINGUAL_SETTINGS_SCHEMA_VERSION
+            | TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION
             | SETTINGS_SCHEMA_VERSION
     ) {
         settings.migrate_legacy_schema()
@@ -772,6 +774,55 @@ mod tests {
             }
         );
         assert!(loaded.save_transcript_history);
+    }
+
+    #[test]
+    fn schema_v4_moves_only_an_undragged_hud_and_preserves_the_original_backup() {
+        let (_directory, path) = test_path();
+        let previous = AppSettings {
+            schema_version: TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                position: HudPosition::BottomCenter,
+                custom_position: None,
+                ..HudSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        let original = serde_json::to_vec_pretty(&previous).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let loaded = AppState::load(path.clone())
+            .unwrap()
+            .settings_snapshot()
+            .unwrap();
+
+        assert_eq!(loaded.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(loaded.hud.position, HudPosition::BottomRight);
+        assert_eq!(loaded.hud.custom_position, None);
+        assert_eq!(parse_settings(&fs::read(&path).unwrap()).unwrap(), loaded);
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn schema_v4_preserves_a_dragged_hud_coordinate() {
+        let (_directory, path) = test_path();
+        let dragged_position = crate::domain::HudCoordinates { x: 1456, y: 880 };
+        let previous = AppSettings {
+            schema_version: TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                position: HudPosition::BottomCenter,
+                custom_position: Some(dragged_position),
+                ..HudSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        fs::write(&path, serde_json::to_vec_pretty(&previous).unwrap()).unwrap();
+
+        let loaded = AppState::load(path).unwrap().settings_snapshot().unwrap();
+
+        assert_eq!(loaded.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(loaded.hud.position, HudPosition::BottomCenter);
+        assert_eq!(loaded.hud.custom_position, Some(dragged_position));
     }
 
     #[test]

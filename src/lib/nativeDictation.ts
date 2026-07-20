@@ -102,9 +102,7 @@ export function getLastTranscript() {
 }
 
 export function startDictationSession() {
-  return invoke<NativeDictationStateEvent>("start_dictation_session", {
-    trigger: "userInterface",
-  });
+  return invoke<NativeDictationStateEvent>("start_dictation_session");
 }
 
 export function stopDictationSession() {

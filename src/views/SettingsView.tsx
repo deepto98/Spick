@@ -343,8 +343,8 @@ export function SettingsView({
                     !native
                       ? "Available in the Tauri development app."
                       : settings.showWidget
-                        ? "Turn this off to hide the current widget and keep it hidden for future dictations."
-                        : "Turn this on for your next dictation. It won’t appear midway through one already in progress."
+                        ? "It stays at your saved position between dictations. Turn this off to hide it."
+                        : "Turn this on to show it now. If you’re already dictating, it appears when that session ends."
                   }
                   control={
                     <Toggle
