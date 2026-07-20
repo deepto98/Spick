@@ -78,6 +78,12 @@ impl SessionController {
         self.stop_at(now_ms())
     }
 
+    /// Mark the microphone stream ready. Until this transition succeeds, the
+    /// session must not claim that Spick is listening.
+    pub fn ready(&mut self) -> Result<DictationStateEvent, SessionError> {
+        self.ready_at()
+    }
+
     /// Atomically claim the native side effect. Cancellation is deliberately
     /// unavailable after this transition, so it can never report success while
     /// another worker is still able to mutate the target field.
@@ -121,7 +127,10 @@ impl SessionController {
         if let Some(session) = &self.current {
             if matches!(
                 session.state,
-                SessionState::Listening | SessionState::Processing | SessionState::Inserting
+                SessionState::Starting
+                    | SessionState::Listening
+                    | SessionState::Processing
+                    | SessionState::Inserting
             ) {
                 return Err(SessionError::AlreadyActive(session.state));
             }
@@ -133,7 +142,7 @@ impl SessionController {
             // launches. A random UUID avoids clock rollback and restart
             // collisions that a process-local counter cannot prevent.
             id: format!("dictation-{}", Uuid::new_v4()),
-            state: SessionState::Listening,
+            state: SessionState::Starting,
             trigger,
             language_policy,
             transcription_engine,
@@ -145,6 +154,21 @@ impl SessionController {
             delivery: None,
         });
 
+        Ok(self.snapshot())
+    }
+
+    fn ready_at(&mut self) -> Result<DictationStateEvent, SessionError> {
+        {
+            let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
+            if session.state != SessionState::Starting {
+                return Err(SessionError::InvalidTransition {
+                    from: session.state,
+                    action: "mark ready",
+                });
+            }
+            session.state = SessionState::Listening;
+        }
+        self.revision = self.revision.saturating_add(1);
         Ok(self.snapshot())
     }
 
@@ -175,7 +199,7 @@ impl SessionController {
             let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
             if !matches!(
                 session.state,
-                SessionState::Listening | SessionState::Processing
+                SessionState::Starting | SessionState::Listening | SessionState::Processing
             ) {
                 return Err(SessionError::InvalidTransition {
                     from: session.state,
@@ -238,7 +262,7 @@ impl SessionController {
             let session = self.current.as_mut().ok_or(SessionError::NoSession)?;
             if !matches!(
                 session.state,
-                SessionState::Listening | SessionState::Processing
+                SessionState::Starting | SessionState::Listening | SessionState::Processing
             ) {
                 return Err(SessionError::InvalidTransition {
                     from: session.state,
@@ -297,11 +321,11 @@ mod tests {
     }
 
     #[test]
-    fn push_to_talk_moves_from_idle_to_listening_to_processing() {
+    fn push_to_talk_waits_for_microphone_readiness_before_listening() {
         let mut controller = SessionController::default();
 
         assert_eq!(controller.snapshot(), DictationStateEvent::idle());
-        let listening = controller
+        let starting = controller
             .start_at(
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
@@ -310,13 +334,17 @@ mod tests {
                 100,
             )
             .unwrap();
+        assert_eq!(starting.state, SessionState::Starting);
+        assert_eq!(starting.revision, 1);
+        assert_eq!(session(&starting).started_at_ms, 100);
+
+        let listening = controller.ready_at().unwrap();
         assert_eq!(listening.state, SessionState::Listening);
-        assert_eq!(listening.revision, 1);
-        assert_eq!(session(&listening).started_at_ms, 100);
+        assert_eq!(listening.revision, 2);
 
         let processing = controller.stop_at(200).unwrap();
         assert_eq!(processing.state, SessionState::Processing);
-        assert_eq!(processing.revision, 2);
+        assert_eq!(processing.revision, 3);
         assert_eq!(session(&processing).ended_at_ms, None);
     }
 
@@ -326,7 +354,7 @@ mod tests {
         let selected =
             EngineConfig::local(EngineProvider::WhisperCpp, "whisper-tiny-multilingual-f16");
         let selected_cleanup = cleanup_engine();
-        let listening = controller
+        let starting = controller
             .start_at(
                 SessionTrigger::Shortcut,
                 LanguagePolicy::Auto,
@@ -336,8 +364,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(session(&listening).transcription_engine, selected);
-        assert_eq!(session(&listening).cleanup_engine, selected_cleanup);
+        assert_eq!(session(&starting).transcription_engine, selected);
+        assert_eq!(session(&starting).cleanup_engine, selected_cleanup);
     }
 
     #[test]
@@ -361,7 +389,7 @@ mod tests {
                 cleanup_engine(),
                 101
             ),
-            Err(SessionError::AlreadyActive(SessionState::Listening))
+            Err(SessionError::AlreadyActive(SessionState::Starting))
         );
     }
 
@@ -377,13 +405,14 @@ mod tests {
                 100,
             )
             .unwrap();
+        controller.ready_at().unwrap();
         controller.stop_at(150).unwrap();
         let inserting = controller.begin_insertion_at().unwrap();
         assert_eq!(inserting.state, SessionState::Inserting);
 
         let completed = controller.complete_at(delivery(), 300).unwrap();
         assert_eq!(completed.state, SessionState::Completed);
-        assert_eq!(completed.revision, 4);
+        assert_eq!(completed.revision, 5);
         assert_eq!(session(&completed).ended_at_ms, Some(300));
         assert_eq!(session(&completed).delivery.as_ref(), Some(&delivery()));
 
@@ -396,8 +425,8 @@ mod tests {
                 400,
             )
             .unwrap();
-        assert_eq!(next.state, SessionState::Listening);
-        assert_eq!(next.revision, 5);
+        assert_eq!(next.state, SessionState::Starting);
+        assert_eq!(next.revision, 6);
         assert_ne!(session(&completed).id, session(&next).id);
     }
 
@@ -495,6 +524,7 @@ mod tests {
                 100,
             )
             .unwrap();
+        controller.ready_at().unwrap();
         controller.stop_at(150).unwrap();
         controller.begin_insertion_at().unwrap();
 

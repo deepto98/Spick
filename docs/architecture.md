@@ -55,20 +55,21 @@ These integrations share application-level contracts but are tested independentl
 One push-to-talk session follows this sequence:
 
 1. On shortcut press, capture the focused application/control identity and reject unsupported or secure targets before starting microphone capture.
-2. Show the listening widget without changing focus.
-3. Apply voice activity detection and stream audio to the selected transcription engine when that engine supports streaming.
-4. Publish partial transcripts for feedback without inserting unstable text into the target control.
-5. On shortcut release, finalize transcription and apply the selected language policy.
-6. Apply the cleanup choice captured when the session began. The current opt-in local cleaner removes a reviewed language-specific list of standalone hesitation sounds while protecting quoted and explicitly referenced uses; choosing as-transcribed output leaves the recognizer result untouched.
-7. Atomically claim the session for delivery, then confirm that the same target, focus, and selection are still valid and non-secure and that no observed change invalidated the target.
-8. Insert the final text at the original caret or replace the original selection. Never retry automatically after a write may have occurred.
-9. Record non-sensitive session measurements and expose a recoverable error or copy action if insertion fails.
+2. Show the widget in its opening-microphone state without changing focus.
+3. Enter the listening state only after the selected native microphone stream reports that it started successfully.
+4. Apply voice activity detection and stream audio to the selected transcription engine when that engine supports streaming.
+5. Publish partial transcripts for feedback without inserting unstable text into the target control.
+6. On shortcut release, finalize transcription and apply the selected language policy.
+7. Apply the cleanup choice captured when the session began. The current opt-in local cleaner removes a reviewed language-specific list of standalone hesitation sounds while protecting quoted and explicitly referenced uses; choosing as-transcribed output leaves the recognizer result untouched.
+8. Atomically claim the session for delivery, then confirm that the same target, focus, and selection are still valid and non-secure and that no observed change invalidated the target.
+9. Insert the final text at the original caret or replace the original selection. Never retry automatically after a write may have occurred.
+10. Record non-sensitive session measurements and expose a recoverable error or copy action if insertion fails.
 
-The user-visible session state is limited to idle, listening, transcribing, cleaning, inserting, success, and error. Cancellation can win before the insertion claim. Once a future insertion begins, the result must be reported as inserted, failed, or indeterminate instead of claiming that nothing was typed.
+The user-visible session state is limited to idle, opening the microphone, listening, transcribing, cleaning, inserting, success, and error. A session-bound readiness signal advances opening to listening only after the native stream starts; late signals cannot revive a cancelled or replaced session. Ready and failure messages share one ordered lifecycle channel handled away from the stream-owning thread, so UI work cannot stall audio draining. Cancellation can win before the insertion claim. Once a future insertion begins, the result must be reported as inserted, failed, or indeterminate instead of claiming that nothing was typed.
 
 The processing worker also emits one optional, in-memory latency trace when it owns a completed or failed terminal transition. The trace uses monotonic elapsed durations for the stop-to-processing handoff, microphone finalization, the full transcription operation, and text delivery. It contains no speech or transcript content, target application, language, model/provider identity, path, error message, absolute timestamp, or audio samples, and it is never written to settings or SQLite. Cancelled and superseded workers emit nothing. The Today view listens for this event only in the main window and treats it as optional diagnostics rather than recorder state.
 
-The development build now reaches step 8 through two debug-only paths. Controls with settable selected text receive an element-addressed selection replacement, followed by exact content readback or exact-caret confirmation when parameterized readback is unavailable. Controls such as some Notes versions can receive one target-PID Unicode event after a second exact target check. PID event delivery has an unavoidable focus micro-race because macOS does not bind it atomically to an Accessibility element; Spick therefore posts at most once and requires the original element to confirm the expected result. Release insertion remains gated while the InputMethodKit compatibility work continues.
+The development build now reaches step 9 through two debug-only paths. Controls with settable selected text receive an element-addressed selection replacement, followed by exact content readback or exact-caret confirmation when parameterized readback is unavailable. Controls such as some Notes versions can receive one target-PID Unicode event after a second exact target check. PID event delivery has an unavoidable focus micro-race because macOS does not bind it atomically to an Accessibility element; Spick therefore posts at most once and requires the original element to confirm the expected result. Release insertion remains gated while the InputMethodKit compatibility work continues.
 
 ## Transcription and cleanup engines
 

@@ -42,6 +42,8 @@ SQLite may also create `spick.sqlite3-wal` and `spick.sqlite3-shm` while Spick i
 
 The Option gesture needs macOS **Input Monitoring** in addition to microphone and Accessibility access. Spick shows a temporary `⌘ ⇧ Space` fallback until Input Monitoring is allowed; returning to Spick activates Option without requiring a rebuild. Option-letter, Option-click, dual-Option, and other chords are passed through. Chords seen before the hold threshold prevent dictation, and external pointer input during an active hold cancels it before delivery. Pointer input proven to target the nonactivating Spick HUD remains available so its move grip works while speaking.
 
+The widget says **Opening microphone** while the selected input is being prepared. It changes to **Listening** only after the native stream has started; cancelling or releasing the shortcut during startup discards that attempt without transcription.
+
 Run the project checks before committing:
 
 ```sh

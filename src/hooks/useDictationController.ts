@@ -47,7 +47,7 @@ export function useDictationController(includeTranscripts = true) {
     setState(toHudState(event.state));
     if (event.session)
       setLanguage(languagePolicyBadge(event.session.languagePolicy));
-    if (event.state === "listening") {
+    if (event.state === "starting" || event.state === "listening") {
       setLastTranscript(null);
       setDelivery(null);
     } else if (event.session?.delivery) {
@@ -160,6 +160,7 @@ export function useDictationController(includeTranscripts = true) {
       }
       if (
         next === "idle" &&
+        state !== "starting" &&
         state !== "listening" &&
         state !== "processing" &&
         state !== "inserting"
@@ -175,6 +176,8 @@ export function useDictationController(includeTranscripts = true) {
             return cancelDictationSession();
           case "listening":
             return startDictationSession();
+          case "starting":
+            return undefined;
           case "processing":
             return stopDictationSession();
           case "inserting":

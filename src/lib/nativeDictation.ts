@@ -9,6 +9,7 @@ export const DICTATION_LATENCY_EVENT = "dictation://latency";
 
 export type NativeSessionState =
   | "idle"
+  | "starting"
   | "listening"
   | "processing"
   | "inserting"
@@ -133,6 +134,8 @@ export function hasNativeRuntime() {
 
 export function toHudState(state: NativeSessionState): HudState {
   switch (state) {
+    case "starting":
+      return "starting";
     case "listening":
       return "listening";
     case "processing":

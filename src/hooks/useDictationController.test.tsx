@@ -15,6 +15,7 @@ const nativeMocks = vi.hoisted(() => ({
   subscribeTranscript: vi.fn(),
   stateHandler: null as ((event: NativeDictationStateEvent) => void) | null,
   latencyHandler: null as ((event: NativeDictationLatencyEvent) => void) | null,
+  startSession: vi.fn(),
   unlistenLatency: vi.fn(),
   unlistenState: vi.fn(),
   unlistenTranscript: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("../lib/nativeDictation", async (importOriginal) => {
     getLastDictationLatency: nativeMocks.getLatency,
     getLastTranscript: nativeMocks.getTranscript,
     hasNativeRuntime: () => true,
+    startDictationSession: nativeMocks.startSession,
     subscribeToDictationLatency: nativeMocks.subscribeLatency,
     subscribeToDictationState: nativeMocks.subscribeState,
     subscribeToDictationTranscript: nativeMocks.subscribeTranscript,
@@ -64,6 +66,12 @@ describe("dictation latency diagnostics", () => {
     nativeMocks.getLatency.mockResolvedValue(null);
     nativeMocks.getTranscript.mockReset();
     nativeMocks.getTranscript.mockResolvedValue(null);
+    nativeMocks.startSession.mockReset();
+    nativeMocks.startSession.mockResolvedValue({
+      ...idle,
+      revision: 1,
+      state: "starting",
+    });
     nativeMocks.subscribeState.mockReset();
     nativeMocks.subscribeState.mockImplementation(async (handler) => {
       nativeMocks.stateHandler = handler;
@@ -150,6 +158,16 @@ describe("dictation latency diagnostics", () => {
     expect(nativeMocks.subscribeTranscript).not.toHaveBeenCalled();
     expect(nativeMocks.subscribeLatency).not.toHaveBeenCalled();
     expect(nativeMocks.getLatency).not.toHaveBeenCalled();
+  });
+
+  it("keeps the UI in startup until native microphone readiness arrives", async () => {
+    const { result } = renderHook(() => useDictationController(true));
+    await waitFor(() => expect(nativeMocks.getSession).toHaveBeenCalledOnce());
+
+    act(() => result.current.transitionTo("listening"));
+
+    await waitFor(() => expect(result.current.state).toBe("starting"));
+    expect(nativeMocks.startSession).toHaveBeenCalledOnce();
   });
 
   it("does not turn a diagnostics-listener failure into a recorder error", async () => {

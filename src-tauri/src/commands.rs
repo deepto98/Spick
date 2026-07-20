@@ -1,7 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, TryLockError,
+        Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, TryLockError,
     },
     thread,
     time::{Duration, Instant},
@@ -12,8 +12,8 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::{
     audio::{
-        self, AudioCaptureFailure, AudioCaptureStatus, AudioInputDevice, CaptureFinalizer,
-        ErrorSink, LevelSink, AUDIO_LEVEL_EVENT,
+        self, AudioCaptureFailure, AudioCaptureReady, AudioCaptureStatus, AudioInputDevice,
+        CaptureFinalizer, ErrorSink, LevelSink, ReadySink, AUDIO_LEVEL_EVENT,
     },
     cloud::{provider_for_engine, validate_provider_language_policy, CloudTranscription},
     domain::{
@@ -39,6 +39,7 @@ use crate::{
     },
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
     platform::{self, TextTargetError, TextTargetErrorKind},
+    session::SessionController,
     shortcut,
     state::{AppState, HudTargetProtectionLease},
 };
@@ -63,6 +64,36 @@ struct PendingDictationTranscript {
     session_id: String,
     engine_id: String,
     transcript: crate::engines::TranscriptResult,
+}
+
+#[derive(Default)]
+struct StartPublicationGate {
+    published: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl StartPublicationGate {
+    fn wait(&self) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*published {
+            published = self
+                .changed
+                .wait(published)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    fn publish(&self) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *published = true;
+        self.changed.notify_all();
+    }
 }
 
 impl PendingDictationTranscript {
@@ -970,7 +1001,10 @@ fn show_idle_hud_if_inactive<R: Runtime>(
         .map_err(|_| "dictation session lock is poisoned".to_string())?;
     if matches!(
         session.snapshot().state,
-        SessionState::Listening | SessionState::Processing | SessionState::Inserting
+        SessionState::Starting
+            | SessionState::Listening
+            | SessionState::Processing
+            | SessionState::Inserting
     ) {
         return Ok(false);
     }
@@ -1062,7 +1096,10 @@ fn session_uses_model(
 ) -> bool {
     matches!(
         event.state,
-        SessionState::Listening | SessionState::Processing | SessionState::Inserting
+        SessionState::Starting
+            | SessionState::Listening
+            | SessionState::Processing
+            | SessionState::Inserting
     ) && event.session.as_ref().is_some_and(|session| {
         models
             .resolve(&session.transcription_engine.model)
@@ -1123,9 +1160,18 @@ pub(crate) fn start_session<R: Runtime>(
             eprintln!("could not emit microphone level: {error}");
         }
     });
+    let start_publication = Arc::new(StartPublicationGate::default());
     let error_app = app.clone();
+    let error_publication = Arc::clone(&start_publication);
     let error_sink: ErrorSink = Arc::new(move |failure| {
+        error_publication.wait();
         handle_audio_capture_failure(&error_app, failure);
+    });
+    let ready_app = app.clone();
+    let ready_publication = Arc::clone(&start_publication);
+    let ready_sink: ReadySink = Arc::new(move |ready| {
+        ready_publication.wait();
+        handle_audio_capture_ready(&ready_app, ready);
     });
 
     // These locks are held only while creating the session and spawning the
@@ -1140,7 +1186,7 @@ pub(crate) fn start_session<R: Runtime>(
             .audio
             .lock()
             .map_err(|_| "microphone capture lock is poisoned".to_string())?;
-        let listening = session
+        let starting = session
             .start(
                 trigger,
                 language_policy,
@@ -1148,7 +1194,7 @@ pub(crate) fn start_session<R: Runtime>(
                 cleanup_engine,
             )
             .map_err(|error| error.to_string())?;
-        let session_id = active_session_id(&listening)?;
+        let session_id = active_session_id(&starting)?;
         let hud_target_lease = if captured_target.is_some() {
             match state.hud_target_protection.lock() {
                 Ok(mut protection) => {
@@ -1180,10 +1226,16 @@ pub(crate) fn start_session<R: Runtime>(
             return Ok((failed, Some(error)));
         }
 
-        match audio.start(session_id, input_device_name, level_sink, error_sink) {
-            Ok(_) => Ok((listening, None)),
+        match audio.start(
+            session_id,
+            input_device_name,
+            level_sink,
+            ready_sink,
+            error_sink,
+        ) {
+            Ok(_) => Ok((starting, None)),
             Err(error) => {
-                state.finish_transcription(&active_session_id(&listening)?)?;
+                state.finish_transcription(&active_session_id(&starting)?)?;
                 let failed = session
                     .fail(error.clone())
                     .map_err(|transition| transition.to_string())?;
@@ -1199,6 +1251,7 @@ pub(crate) fn start_session<R: Runtime>(
                 state.text_targets.discard(target);
             }
             release_hud_target(app, state, claimed_hud_target_lease.as_ref());
+            start_publication.publish();
             return Err(error);
         }
     };
@@ -1212,6 +1265,7 @@ pub(crate) fn start_session<R: Runtime>(
             eprintln!("dictation failed but the HUD could not be shown: {show_error}");
         }
         let _ = emit_state(app, &event);
+        start_publication.publish();
         settle_after(app, FAILURE_HUD_DWELL, event.revision);
         return Err(error);
     }
@@ -1222,8 +1276,9 @@ pub(crate) fn start_session<R: Runtime>(
         eprintln!("dictation started but the HUD could not be shown: {error}");
     }
     if let Err(error) = emit_state(app, &event) {
-        eprintln!("could not emit listening state: {error}");
+        eprintln!("could not emit microphone starting state: {error}");
     }
+    start_publication.publish();
     Ok(event)
 }
 
@@ -1281,6 +1336,21 @@ pub(crate) fn stop_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
 ) -> Result<DictationStateEvent, String> {
+    let microphone_is_starting = state
+        .session
+        .lock()
+        .map_err(|_| "dictation session lock is poisoned".to_string())?
+        .snapshot()
+        .state
+        == SessionState::Starting;
+    if microphone_is_starting {
+        return cancel_session(
+            app,
+            state,
+            Some("Stopped before the microphone was ready".into()),
+        );
+    }
+
     // Start at the user's stop gesture, before locks, stream teardown, or the
     // worker handoff, so the total matches the delay they actually feel.
     let stop_requested_at = Instant::now();
@@ -1801,6 +1871,49 @@ fn delivery_for_target_error(
     }
 }
 
+fn handle_audio_capture_ready<R: Runtime>(app: &AppHandle<R>, ready: AudioCaptureReady) {
+    let state = app.state::<AppState>();
+    let event = {
+        let mut session = match state.session.lock() {
+            Ok(session) => session,
+            Err(_) => {
+                eprintln!(
+                    "could not mark the microphone ready: dictation session lock is poisoned"
+                );
+                return;
+            }
+        };
+        match mark_session_ready_if_matching(&mut session, &ready.session_id) {
+            Ok(Some(event)) => event,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("could not mark the microphone ready: {error}");
+                return;
+            }
+        }
+    };
+
+    if let Err(error) = emit_state(app, &event) {
+        eprintln!("could not emit listening state: {error}");
+    }
+}
+
+fn mark_session_ready_if_matching(
+    session: &mut SessionController,
+    session_id: &str,
+) -> Result<Option<DictationStateEvent>, String> {
+    let snapshot = session.snapshot();
+    if snapshot.state != SessionState::Starting
+        || !snapshot
+            .session
+            .as_ref()
+            .is_some_and(|active| active.id == session_id)
+    {
+        return Ok(None);
+    }
+    session.ready().map(Some).map_err(|error| error.to_string())
+}
+
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
     let state = app.state::<AppState>();
     let hud_target_lease = state
@@ -1849,7 +1962,10 @@ fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCa
 fn session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
     matches!(
         event.state,
-        SessionState::Listening | SessionState::Processing | SessionState::Inserting
+        SessionState::Starting
+            | SessionState::Listening
+            | SessionState::Processing
+            | SessionState::Inserting
     ) && event
         .session
         .as_ref()
@@ -2295,6 +2411,10 @@ mod tests {
     #[test]
     fn asynchronous_results_only_match_their_originating_active_session() {
         assert!(session_matches(
+            &event("session-a", SessionState::Starting, 1),
+            "session-a"
+        ));
+        assert!(session_matches(
             &event("session-a", SessionState::Listening, 1),
             "session-a"
         ));
@@ -2310,6 +2430,63 @@ mod tests {
             &event("session-a", SessionState::Completed, 3),
             "session-a"
         ));
+    }
+
+    #[test]
+    fn microphone_readiness_cannot_revive_or_repeat_an_old_session() {
+        let mut controller = SessionController::default();
+        let settings = AppSettings::default();
+        let first = controller
+            .start(
+                SessionTrigger::Shortcut,
+                settings.language_policy.clone(),
+                settings.transcription_engine.clone(),
+                settings.cleanup_engine.clone(),
+            )
+            .unwrap();
+        let first_id = active_session_id(&first).unwrap();
+        controller.cancel(None).unwrap();
+        let second = controller
+            .start(
+                SessionTrigger::Shortcut,
+                settings.language_policy,
+                settings.transcription_engine,
+                settings.cleanup_engine,
+            )
+            .unwrap();
+        let second_id = active_session_id(&second).unwrap();
+
+        assert_eq!(
+            mark_session_ready_if_matching(&mut controller, &first_id).unwrap(),
+            None
+        );
+        let listening = mark_session_ready_if_matching(&mut controller, &second_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(listening.state, SessionState::Listening);
+        assert_eq!(
+            mark_session_ready_if_matching(&mut controller, &second_id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn microphone_lifecycle_waits_until_starting_was_published() {
+        let gate = Arc::new(StartPublicationGate::default());
+        let worker_gate = Arc::clone(&gate);
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            worker_gate.wait();
+            sender.send(()).unwrap();
+        });
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        gate.publish();
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

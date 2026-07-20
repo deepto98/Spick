@@ -476,7 +476,10 @@ fn dictation_is_active<R: Runtime>(app: &AppHandle<R>) -> bool {
         state.session.lock().map_or(true, |session| {
             matches!(
                 session.snapshot().state,
-                SessionState::Listening | SessionState::Processing | SessionState::Inserting
+                SessionState::Starting
+                    | SessionState::Listening
+                    | SessionState::Processing
+                    | SessionState::Inserting
             )
         })
     })
@@ -591,12 +594,17 @@ fn run_gesture_worker<R: Runtime>(
 #[cfg(target_os = "macos")]
 fn reconcile_gesture<R: Runtime>(app: &AppHandle<R>, machine: &mut GestureMachine) {
     let state = app.state::<AppState>();
-    let listening = state
+    let recording = state
         .session
         .lock()
-        .map(|session| session.snapshot().state == SessionState::Listening)
+        .map(|session| {
+            matches!(
+                session.snapshot().state,
+                SessionState::Starting | SessionState::Listening
+            )
+        })
         .unwrap_or(false);
-    machine.reconcile(listening);
+    machine.reconcile(recording);
 }
 
 #[cfg(target_os = "macos")]

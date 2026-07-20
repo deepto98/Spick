@@ -343,6 +343,7 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub enum SessionState {
     Idle,
+    Starting,
     Listening,
     Processing,
     Inserting,

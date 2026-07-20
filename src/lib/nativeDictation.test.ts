@@ -43,6 +43,7 @@ describe("native dictation state mapping", () => {
 
   it.each<[NativeSessionState, HudState]>([
     ["idle", "idle"],
+    ["starting", "starting"],
     ["listening", "listening"],
     ["processing", "processing"],
     ["inserting", "inserting"],

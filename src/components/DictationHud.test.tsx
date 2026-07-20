@@ -5,6 +5,16 @@ import { DictationHud } from "./DictationHud";
 afterEach(cleanup);
 
 describe("dictation delivery HUD", () => {
+  it("does not claim to be listening while the microphone is starting", () => {
+    render(<DictationHud autoAdvance={false} state="starting" />);
+
+    expect(screen.getByText("Opening microphone")).toBeInTheDocument();
+    expect(
+      screen.getByText("Listening starts when it’s ready"),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Microphone audio level")).toBeNull();
+  });
+
   it("shows the insertion handoff", () => {
     render(<DictationHud autoAdvance={false} state="inserting" />);
 

@@ -215,9 +215,10 @@ export function DictationHud({
       }`}
       role="status"
       aria-live="polite"
-      aria-busy={disabled}
+      aria-busy={disabled || state === "starting"}
     >
       <span className="hud-orb" aria-hidden="true">
+        {state === "starting" && <LoaderCircle size={17} />}
         {state === "listening" && <Mic size={17} />}
         {state === "processing" && <LoaderCircle size={17} />}
         {state === "inserting" && <LoaderCircle size={17} />}
@@ -225,6 +226,24 @@ export function DictationHud({
           (delivery && !delivered ? <Copy size={17} /> : <Check size={18} />)}
         {state === "error" && <AlertTriangle size={17} />}
       </span>
+
+      {state === "starting" && (
+        <>
+          <div className="hud-status-copy">
+            <strong>Opening microphone</strong>
+            <span>Listening starts when it’s ready</span>
+          </div>
+          <button
+            type="button"
+            className="hud-stop"
+            onClick={() => transitionTo("idle")}
+            aria-label="Cancel microphone startup"
+            disabled={disabled}
+          >
+            <X size={15} />
+          </button>
+        </>
+      )}
 
       {state === "listening" && (
         <>
@@ -322,6 +341,8 @@ function compactStatusLabel(state: HudState) {
   switch (state) {
     case "idle":
       return "Spick is ready";
+    case "starting":
+      return "Spick is opening the microphone";
     case "listening":
       return "Spick is listening";
     case "processing":

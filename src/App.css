@@ -1334,6 +1334,7 @@ p {
   border-radius: 8px;
 }
 
+.dictation-hud--starting .hud-orb,
 .dictation-hud--processing .hud-orb {
   color: #efb99f;
   background: rgba(169, 79, 49, 0.22);
@@ -1496,6 +1497,7 @@ p {
   animation: waveform 720ms ease-in-out var(--bar-delay) infinite alternate;
 }
 
+.dictation-hud-compact--starting .hud-compact-wave i,
 .dictation-hud-compact--processing .hud-compact-wave i,
 .dictation-hud-compact--inserting .hud-compact-wave i {
   background: #efb99f;
@@ -4288,6 +4290,7 @@ select:focus-visible {
   background: #d98260;
 }
 
+.dictation-hud--starting .hud-orb,
 .dictation-hud--processing .hud-orb {
   color: #efb99f;
   background: rgba(179, 84, 50, 0.22);
@@ -4663,6 +4666,7 @@ select:focus-visible {
   }
 }
 
+.dictation-hud--starting .hud-orb svg,
 .dictation-hud--processing .hud-orb svg {
   animation: loader-spin 900ms linear infinite;
 }

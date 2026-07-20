@@ -1,7 +1,13 @@
 export type ViewId = "today" | "engines" | "vocabulary" | "settings";
 
 export type HudState =
-  "idle" | "listening" | "processing" | "inserting" | "success" | "error";
+  | "idle"
+  | "starting"
+  | "listening"
+  | "processing"
+  | "inserting"
+  | "success"
+  | "error";
 
 export type EngineKind = "local" | "cloud";
 
