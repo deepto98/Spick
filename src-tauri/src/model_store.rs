@@ -117,6 +117,38 @@ struct FileFingerprint {
     changed_nanoseconds: i64,
 }
 
+#[derive(Clone, Copy)]
+struct ImportArtifacts<'a> {
+    receipt: &'a Path,
+    target: &'a Path,
+    wrote_receipt: bool,
+    installed_fresh_copy: bool,
+}
+
+impl ImportArtifacts<'_> {
+    fn rollback_after(self, primary_error: String) -> String {
+        let mut cleanup_errors = Vec::new();
+        if self.wrote_receipt {
+            if let Err(error) = remove_if_present(self.receipt) {
+                cleanup_errors.push(error);
+            }
+        }
+        if self.installed_fresh_copy {
+            if let Err(error) = remove_if_present(self.target) {
+                cleanup_errors.push(error);
+            }
+        }
+        if cleanup_errors.is_empty() {
+            primary_error
+        } else {
+            format!(
+                "{primary_error}; Spick could not fully clean up the failed import: {}",
+                cleanup_errors.join("; ")
+            )
+        }
+    }
+}
+
 impl ModelStore {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -443,38 +475,76 @@ impl ModelStore {
         };
 
         let receipt = self.receipt_path(&model);
-        if let Err(error) = write_receipt(&receipt, &model.sha256) {
-            if installed_fresh_copy {
-                let _ = remove_if_present(&target);
+        let wrote_receipt = !receipt_matches(&receipt, &model.sha256);
+        if wrote_receipt {
+            if let Err(error) = write_receipt(&receipt, &model.sha256) {
+                return Err(ImportArtifacts {
+                    receipt: &receipt,
+                    target: &target,
+                    wrote_receipt: false,
+                    installed_fresh_copy,
+                }
+                .rollback_after(error));
             }
-            return Err(error);
         }
-        let registry_result = if registry_needs_update {
-            (|| {
-                let mut imported = self
-                    .imported
-                    .lock()
-                    .map_err(|_| "imported model registry is unavailable".to_string())?;
-                let mut next = imported.clone();
-                next.insert(model.id.clone(), Arc::clone(&model));
-                persist_imported_registry(&self.root, &next)?;
-                *imported = next;
-                Ok::<(), String>(())
-            })()
-        } else {
-            Ok(())
+        let artifacts = ImportArtifacts {
+            receipt: &receipt,
+            target: &target,
+            wrote_receipt,
+            installed_fresh_copy,
         };
-        if let Err(error) = registry_result {
-            let _ = remove_if_present(&receipt);
-            if installed_fresh_copy {
-                let _ = remove_if_present(&target);
-            }
-            return Err(error);
-        }
+        let fingerprint = match file_fingerprint(&target) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return Err(artifacts.rollback_after(error)),
+        };
+        self.finish_imported_model(&model, fingerprint, registry_needs_update, artifacts)?;
 
-        self.remember_verified(&model.id, file_fingerprint(&target)?)?;
         sync_parent_directory(&self.root);
         Ok(self.summary(&model, false))
+    }
+
+    fn finish_imported_model(
+        &self,
+        model: &Arc<WhisperModelManifest>,
+        fingerprint: FileFingerprint,
+        registry_needs_update: bool,
+        artifacts: ImportArtifacts<'_>,
+    ) -> Result<(), String> {
+        if let Err(error) = self.commit_imported_model(model, fingerprint, registry_needs_update) {
+            return Err(artifacts.rollback_after(error));
+        }
+        Ok(())
+    }
+
+    fn commit_imported_model(
+        &self,
+        model: &Arc<WhisperModelManifest>,
+        fingerprint: FileFingerprint,
+        registry_needs_update: bool,
+    ) -> Result<(), String> {
+        if !registry_needs_update {
+            return self.remember_verified(&model.id, fingerprint);
+        }
+
+        // Acquire every fallible in-memory dependency before the durable
+        // registry write. No other path holds these two locks in reverse.
+        let mut imported = self
+            .imported
+            .lock()
+            .map_err(|_| "imported model registry is unavailable".to_string())?;
+        let mut verified = self
+            .verified
+            .lock()
+            .map_err(|_| "local model verification cache is unavailable".to_string())?;
+        let mut next = imported.clone();
+        next.insert(model.id.clone(), Arc::clone(model));
+
+        // This durable registry write is the logical commit. Everything after
+        // it is deliberately infallible.
+        persist_imported_registry(&self.root, &next)?;
+        *imported = next;
+        verified.insert(model.id.clone(), fingerprint);
+        Ok(())
     }
 
     pub fn cancel_download(&self, model_id: &str) -> Result<bool, String> {
@@ -1461,6 +1531,184 @@ mod tests {
             .unwrap_err()
             .contains("display metadata"));
         assert!(!directory.path().join(IMPORTED_MODELS_FILE).exists());
+    }
+
+    #[test]
+    fn import_cache_failure_cannot_publish_a_registry_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(directory.path().to_path_buf()).unwrap();
+        let model = imported_manifest();
+        let fingerprint_source = directory.path().join("fingerprint.bin");
+        fs::write(&fingerprint_source, b"fingerprint").unwrap();
+        let fingerprint = file_fingerprint(&fingerprint_source).unwrap();
+
+        assert!(std::panic::catch_unwind(|| {
+            let _verified = store.verified.lock().unwrap();
+            panic!("poison verification cache");
+        })
+        .is_err());
+        let error = store
+            .commit_imported_model(&model, fingerprint, true)
+            .unwrap_err();
+
+        assert!(error.contains("verification cache"));
+        assert!(store.resolve(&model.id).is_none());
+        assert!(!directory.path().join(IMPORTED_MODELS_FILE).exists());
+    }
+
+    #[test]
+    fn failed_registry_persistence_does_not_publish_or_cache_an_import() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(directory.path().to_path_buf()).unwrap();
+        let model = imported_manifest();
+        let target = store.path_for(&model);
+        fs::write(&target, vec![5_u8; model.download_bytes as usize]).unwrap();
+        let receipt = store.receipt_path(&model);
+        write_receipt(&receipt, &model.sha256).unwrap();
+        let fingerprint = file_fingerprint(&target).unwrap();
+        fs::create_dir(directory.path().join(IMPORTED_MODELS_FILE)).unwrap();
+
+        let error = store
+            .finish_imported_model(
+                &model,
+                fingerprint,
+                true,
+                ImportArtifacts {
+                    receipt: &receipt,
+                    target: &target,
+                    wrote_receipt: true,
+                    installed_fresh_copy: true,
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.contains("could not save imported model metadata"));
+        assert!(store.resolve(&model.id).is_none());
+        assert!(!store.verified.lock().unwrap().contains_key(&model.id));
+        assert!(!target.exists());
+        assert!(!receipt.exists());
+    }
+
+    #[test]
+    fn failed_metadata_refresh_preserves_an_existing_installed_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(directory.path().to_path_buf()).unwrap();
+        let existing = imported_manifest();
+        let mut refreshed = existing.as_ref().clone();
+        refreshed.quantization = WhisperQuantization::Q8_0;
+        refreshed.display_name = imported_display_name(
+            &WhisperModelInspection {
+                family: refreshed.family,
+                languages: refreshed.languages,
+                quantization: refreshed.quantization.clone(),
+            },
+            &refreshed.sha256,
+        );
+        let refreshed = Arc::new(refreshed);
+        store
+            .imported
+            .lock()
+            .unwrap()
+            .insert(existing.id.clone(), Arc::clone(&existing));
+
+        let target = store.path_for(&existing);
+        let target_bytes = vec![7_u8; existing.download_bytes as usize];
+        fs::write(&target, &target_bytes).unwrap();
+        let receipt = store.receipt_path(&existing);
+        write_receipt(&receipt, &existing.sha256).unwrap();
+        let receipt_bytes = fs::read(&receipt).unwrap();
+        let fingerprint = file_fingerprint(&target).unwrap();
+        store
+            .verified
+            .lock()
+            .unwrap()
+            .insert(existing.id.clone(), fingerprint.clone());
+        fs::create_dir(directory.path().join(IMPORTED_MODELS_FILE)).unwrap();
+
+        let error = store
+            .finish_imported_model(
+                &refreshed,
+                fingerprint.clone(),
+                true,
+                ImportArtifacts {
+                    receipt: &receipt,
+                    target: &target,
+                    wrote_receipt: false,
+                    installed_fresh_copy: false,
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.contains("could not save imported model metadata"));
+        assert_eq!(
+            store.resolve(&existing.id).as_deref(),
+            Some(existing.as_ref())
+        );
+        assert_eq!(fs::read(&target).unwrap(), target_bytes);
+        assert_eq!(fs::read(&receipt).unwrap(), receipt_bytes);
+        assert_eq!(
+            store.verified.lock().unwrap().get(&existing.id),
+            Some(&fingerprint)
+        );
+    }
+
+    #[test]
+    fn incomplete_import_cleanup_is_reported_with_the_primary_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("receipt-directory");
+        let target = directory.path().join("target-directory");
+        fs::create_dir(&receipt).unwrap();
+        fs::create_dir(&target).unwrap();
+
+        let error = ImportArtifacts {
+            receipt: &receipt,
+            target: &target,
+            wrote_receipt: true,
+            installed_fresh_copy: true,
+        }
+        .rollback_after("registry persistence failed".into());
+
+        assert!(error.contains("registry persistence failed"));
+        assert!(error.contains("could not fully clean up"));
+        assert!(error.contains("receipt-directory"));
+        assert!(error.contains("target-directory"));
+        assert!(receipt.is_dir());
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn imported_registry_is_the_final_fallible_commit_step() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(directory.path().to_path_buf()).unwrap();
+        let model = imported_manifest();
+        let target = store.path_for(&model);
+        fs::write(&target, vec![3_u8; model.download_bytes as usize]).unwrap();
+        write_receipt(&store.receipt_path(&model), &model.sha256).unwrap();
+        let fingerprint = file_fingerprint(&target).unwrap();
+
+        store
+            .commit_imported_model(&model, fingerprint.clone(), true)
+            .unwrap();
+
+        assert_eq!(store.resolve(&model.id).as_deref(), Some(model.as_ref()));
+        assert_eq!(
+            store.verified.lock().unwrap().get(&model.id),
+            Some(&fingerprint)
+        );
+        let restarted = ModelStore::new(directory.path().to_path_buf()).unwrap();
+        assert_eq!(
+            restarted.resolve(&model.id).as_deref(),
+            Some(model.as_ref())
+        );
+        assert_eq!(
+            restarted
+                .catalog(&model.id)
+                .into_iter()
+                .find(|summary| summary.manifest.id == model.id)
+                .unwrap()
+                .state,
+            ModelInstallationState::Installed
+        );
     }
 
     #[test]
