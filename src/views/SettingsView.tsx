@@ -26,6 +26,7 @@ import type {
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
 import type { NativeAudioInputDevice } from "../lib/nativeAudio";
+import type { MicrophonePermissionStatus } from "../lib/nativeMicrophone";
 import { captureMacShortcut } from "../lib/shortcutCapture";
 import {
   shortcutDisplayName,
@@ -46,6 +47,9 @@ interface SettingsViewProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
+  microphonePermissionStatus?: MicrophonePermissionStatus | null;
+  microphonePermissionPending?: boolean;
+  microphonePermissionError?: string;
   shortcutStatus: NativeShortcutStatus | null;
   shortcutPending: boolean;
   shortcutError?: string;
@@ -65,6 +69,7 @@ interface SettingsViewProps {
   onShortcutChange: (shortcut: string) => void;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
+  onRequestMicrophone?: () => void;
   onRefreshShortcut: () => void;
   onRequestInputMonitoring: () => void;
   onRestartOnboarding: () => void;
@@ -116,12 +121,34 @@ function optionShortcutDescription(status: NativeShortcutStatus | null) {
   return "Tap Option to start and stop, or hold it while you speak.";
 }
 
+function microphonePermissionDescription(
+  status: MicrophonePermissionStatus | null | undefined,
+) {
+  switch (status?.state) {
+    case "granted":
+      return "Ready for recording. Spick does not keep the audio.";
+    case "missing":
+      return status.canRequest
+        ? "Allow the microphone before starting from another app."
+        : "Microphone access is off in macOS System Settings.";
+    case "restricted":
+      return "This Mac’s policy does not allow microphone recording.";
+    case "unsupported":
+      return "Microphone permission is handled by the desktop app.";
+    default:
+      return "Checking microphone access.";
+  }
+}
+
 export function SettingsView({
   settings,
   native = true,
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
+  microphonePermissionStatus = null,
+  microphonePermissionPending = false,
+  microphonePermissionError,
   shortcutStatus,
   shortcutPending,
   shortcutError,
@@ -141,6 +168,7 @@ export function SettingsView({
   onShortcutChange,
   onRequestAccessibility,
   onRefreshAccessibility,
+  onRequestMicrophone,
   onRefreshShortcut,
   onRequestInputMonitoring,
   onRestartOnboarding,
@@ -291,6 +319,13 @@ export function SettingsView({
         <div className="engine-inline-error" role="alert">
           <strong>Couldn’t check Accessibility</strong>
           <span>{accessibilityError}</span>
+        </div>
+      )}
+
+      {microphonePermissionError && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Couldn’t check microphone access</strong>
+          <span>{microphonePermissionError}</span>
         </div>
       )}
 
@@ -457,6 +492,39 @@ export function SettingsView({
                     )}
                   </div>
                 </div>
+                <SettingRow
+                  icon={<Mic2 size={17} />}
+                  title="Microphone access"
+                  description={microphonePermissionDescription(
+                    microphonePermissionStatus,
+                  )}
+                  control={
+                    microphonePermissionStatus?.state === "granted" ? (
+                      <span className="fixed-value permission-value--granted">
+                        <Check size={14} /> Allowed
+                      </span>
+                    ) : microphonePermissionStatus?.state === "unsupported" ? (
+                      <span className="fixed-value">Desktop app only</span>
+                    ) : microphonePermissionStatus?.state === "restricted" ? (
+                      <span className="fixed-value">Restricted</span>
+                    ) : onRequestMicrophone ? (
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={onRequestMicrophone}
+                        disabled={microphonePermissionPending}
+                      >
+                        {microphonePermissionPending
+                          ? "Checking…"
+                          : microphonePermissionStatus?.canRequest
+                            ? "Allow microphone"
+                            : "Open System Settings"}
+                      </button>
+                    ) : (
+                      <span className="fixed-value">Checking…</span>
+                    )
+                  }
+                />
                 <div className="setting-block">
                   <div className="setting-block__heading">
                     <span>

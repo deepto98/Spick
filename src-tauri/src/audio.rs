@@ -27,6 +27,9 @@ pub const AUDIO_LEVEL_EVENT: &str = "dictation://audio-level";
 pub const OUTPUT_SAMPLE_RATE: u32 = 16_000;
 pub const AUDIO_LEVEL_INTERVAL_MS: u64 = 50;
 pub const MAX_CAPTURE_DURATION_MS: u64 = 10 * 60 * 1_000;
+/// Upper bound for native device discovery, permission resolution, stream
+/// construction, and `Stream::play` before the owning session is recovered.
+pub(crate) const MICROPHONE_START_READY_TIMEOUT: Duration = Duration::from_secs(8);
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
 const LEVEL_FLOOR_DB: f32 = -60.0;
@@ -37,6 +40,8 @@ const MAX_OUTPUT_SAMPLES: usize =
     OUTPUT_SAMPLE_RATE as usize * (MAX_CAPTURE_DURATION_MS as usize / 1_000);
 const DISCONTINUOUS_CAPTURE_ERROR: &str =
     "The microphone buffer fell behind and missed part of this recording. Nothing was transcribed or typed. Please try again.";
+const MICROPHONE_START_TIMEOUT_ERROR: &str =
+    "The microphone didn’t become ready in time. Check microphone access or choose another input, then try again.";
 
 pub(crate) type LevelSink = Arc<dyn Fn(AudioLevelEvent) + Send + Sync>;
 pub(crate) type ReadySink = Arc<dyn Fn(AudioCaptureReady) + Send + Sync>;
@@ -51,6 +56,9 @@ pub(crate) struct AudioCaptureReady {
 pub(crate) struct AudioCaptureFailure {
     pub session_id: String,
     pub message: String,
+    /// Startup watchdog failures may only transition the matching session
+    /// while it is still in `Starting`.
+    pub requires_starting: bool,
 }
 
 /// Lightweight IPC payload for the HUD waveform. PCM never crosses the Tauri
@@ -191,9 +199,9 @@ impl AudioCaptureController {
             None => return Err(format!("session {session_id} has no microphone capture")),
         }
 
-        Ok(CaptureFinalizer {
-            active: self.active.take().expect("active capture was checked"),
-        })
+        let active = self.active.take().expect("active capture was checked");
+        active.mark_finalizing();
+        Ok(CaptureFinalizer { active })
     }
 
     /// Detach only an exact session match. Stale error/cancel callbacks can
@@ -204,9 +212,9 @@ impl AudioCaptureController {
             .as_ref()
             .is_some_and(|active| active.session_id == session_id)
         {
-            Some(CaptureFinalizer {
-                active: self.active.take().expect("active capture was checked"),
-            })
+            let active = self.active.take().expect("active capture was checked");
+            active.mark_finalizing();
+            Some(CaptureFinalizer { active })
         } else {
             None
         }
@@ -257,6 +265,47 @@ struct ActiveCapture {
 }
 
 impl ActiveCapture {
+    fn mark_finalizing(&self) -> bool {
+        let mut current = self.phase.load(Ordering::Acquire);
+        loop {
+            match InternalCapturePhase::from_raw(current) {
+                InternalCapturePhase::Starting => {
+                    match self.phase.compare_exchange(
+                        current,
+                        InternalCapturePhase::Finalizing as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            // There is no usable capture to retain yet. Wake a
+                            // late platform open/play and let discard finish
+                            // without waiting for an owner response.
+                            self.shutdown.store(true, Ordering::Release);
+                            return true;
+                        }
+                        Err(next) => current = next,
+                    }
+                }
+                InternalCapturePhase::Capturing => {
+                    match self.phase.compare_exchange(
+                        current,
+                        InternalCapturePhase::Finalizing as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return true,
+                        Err(next) => current = next,
+                    }
+                }
+                InternalCapturePhase::Finalizing => return true,
+                InternalCapturePhase::Failed | InternalCapturePhase::Stopped => {
+                    self.shutdown.store(true, Ordering::Release);
+                    return false;
+                }
+            }
+        }
+    }
+
     fn spawn(
         session_id: String,
         input_device_name: Option<String>,
@@ -274,18 +323,20 @@ impl ActiveCapture {
         let (command_sender, command_receiver) = mpsc::channel();
         let (lifecycle_sender, lifecycle_receiver) = mpsc::channel();
 
+        let notifier_session_id = session_id.clone();
+        let notifier_shutdown = Arc::clone(&shutdown);
+        let notifier_phase = Arc::clone(&phase);
         thread::Builder::new()
             .name("spick-audio-notifier".into())
             .spawn(move || {
-                while let Ok(event) = lifecycle_receiver.recv() {
-                    match event {
-                        AudioCaptureLifecycleEvent::Ready(ready) => ready_sink(ready),
-                        AudioCaptureLifecycleEvent::Failed(failure) => {
-                            error_sink(failure);
-                            return;
-                        }
-                    }
-                }
+                run_capture_notifier(
+                    notifier_session_id,
+                    lifecycle_receiver,
+                    notifier_shutdown,
+                    notifier_phase,
+                    ready_sink,
+                    error_sink,
+                );
             })
             .map_err(|error| format!("could not start the microphone notifier: {error}"))?;
 
@@ -368,8 +419,9 @@ impl ActiveCapture {
         retain_audio: bool,
         timeout: Duration,
     ) -> Result<Option<FinalizedCapture>, String> {
-        self.phase
-            .store(InternalCapturePhase::Finalizing as u8, Ordering::Relaxed);
+        if !self.mark_finalizing() || (!retain_audio && self.shutdown.load(Ordering::Acquire)) {
+            return Ok(None);
+        }
         let (response_sender, response_receiver) = mpsc::channel();
         self.command_sender
             .send(CaptureCommand::Finalize {
@@ -425,7 +477,11 @@ enum InternalCapturePhase {
 
 impl InternalCapturePhase {
     fn load(value: &AtomicU8) -> Self {
-        match value.load(Ordering::Relaxed) {
+        Self::from_raw(value.load(Ordering::Acquire))
+    }
+
+    fn from_raw(value: u8) -> Self {
+        match value {
             0 => Self::Starting,
             1 => Self::Capturing,
             2 => Self::Finalizing,
@@ -462,6 +518,149 @@ enum CaptureCommand {
 enum AudioCaptureLifecycleEvent {
     Ready(AudioCaptureReady),
     Failed(AudioCaptureFailure),
+}
+
+fn run_capture_notifier(
+    session_id: String,
+    receiver: Receiver<AudioCaptureLifecycleEvent>,
+    shutdown: Arc<AtomicBool>,
+    phase: Arc<AtomicU8>,
+    ready_sink: ReadySink,
+    error_sink: ErrorSink,
+) {
+    let initial = match receiver.recv_timeout(MICROPHONE_START_READY_TIMEOUT) {
+        Ok(event) => Some(event),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            if mark_start_timed_out(&phase, &shutdown) {
+                error_sink(AudioCaptureFailure {
+                    session_id,
+                    message: MICROPHONE_START_TIMEOUT_ERROR.into(),
+                    requires_starting: true,
+                });
+                return;
+            }
+            // Ready may have won its phase CAS immediately before publishing
+            // the event. Only that state can still owe the notifier an event;
+            // cancellation/finalization and failure are already terminal here.
+            if matches!(
+                InternalCapturePhase::load(&phase),
+                InternalCapturePhase::Capturing
+            ) {
+                receiver.recv().ok()
+            } else {
+                None
+            }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            if mark_capture_failed(&phase) {
+                shutdown.store(true, Ordering::Release);
+                error_sink(AudioCaptureFailure {
+                    session_id,
+                    message: "The microphone stopped before it became ready. Please try again."
+                        .into(),
+                    requires_starting: true,
+                });
+            }
+            return;
+        }
+    };
+
+    if let Some(event) = initial {
+        if !dispatch_capture_lifecycle(event, &ready_sink, &error_sink) {
+            return;
+        }
+    } else {
+        return;
+    }
+
+    while let Ok(event) = receiver.recv() {
+        if !dispatch_capture_lifecycle(event, &ready_sink, &error_sink) {
+            return;
+        }
+    }
+}
+
+fn dispatch_capture_lifecycle(
+    event: AudioCaptureLifecycleEvent,
+    ready_sink: &ReadySink,
+    error_sink: &ErrorSink,
+) -> bool {
+    match event {
+        AudioCaptureLifecycleEvent::Ready(ready) => {
+            ready_sink(ready);
+            true
+        }
+        AudioCaptureLifecycleEvent::Failed(failure) => {
+            error_sink(failure);
+            false
+        }
+    }
+}
+
+fn mark_start_timed_out(phase: &AtomicU8, shutdown: &AtomicBool) -> bool {
+    let won = phase
+        .compare_exchange(
+            InternalCapturePhase::Starting as u8,
+            InternalCapturePhase::Failed as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok();
+    if won {
+        shutdown.store(true, Ordering::Release);
+    }
+    won
+}
+
+fn mark_capture_ready(phase: &AtomicU8) -> bool {
+    phase
+        .compare_exchange(
+            InternalCapturePhase::Starting as u8,
+            InternalCapturePhase::Capturing as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+fn mark_capture_failed(phase: &AtomicU8) -> bool {
+    let mut current = phase.load(Ordering::Acquire);
+    loop {
+        if current != InternalCapturePhase::Starting as u8
+            && current != InternalCapturePhase::Capturing as u8
+        {
+            return false;
+        }
+        match phase.compare_exchange(
+            current,
+            InternalCapturePhase::Failed as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn mark_capture_stopped_if_active(phase: &AtomicU8) {
+    let mut current = phase.load(Ordering::Acquire);
+    loop {
+        if current != InternalCapturePhase::Starting as u8
+            && current != InternalCapturePhase::Capturing as u8
+        {
+            return;
+        }
+        match phase.compare_exchange(
+            current,
+            InternalCapturePhase::Stopped as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(next) => current = next,
+        }
+    }
 }
 
 /// A short-lived handoff to the transcription pipeline. PCM is borrowed by the
@@ -549,7 +748,7 @@ fn run_capture_owner(
     }) {
         Ok(true) => {}
         Ok(false) => {
-            phase.store(InternalCapturePhase::Stopped as u8, Ordering::Relaxed);
+            mark_capture_stopped_if_active(&phase);
             return;
         }
         Err(error) => {
@@ -561,7 +760,10 @@ fn run_capture_owner(
     if let Ok(mut shared) = shared_metadata.lock() {
         *shared = Some(metadata.clone());
     }
-    notify_ready(&session_id, &phase, &lifecycle_sender);
+    if !notify_ready(&session_id, &phase, &lifecycle_sender) {
+        drop(stream);
+        return;
+    }
 
     let mut stream = Some(stream);
     let mut samples_16khz = SensitivePcm::default();
@@ -574,7 +776,7 @@ fn run_capture_owner(
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
-            phase.store(InternalCapturePhase::Stopped as u8, Ordering::Relaxed);
+            mark_capture_stopped_if_active(&phase);
             return;
         }
 
@@ -629,7 +831,7 @@ fn run_capture_owner(
                 return;
             }
             Err(TryRecvError::Disconnected) => {
-                phase.store(InternalCapturePhase::Stopped as u8, Ordering::Relaxed);
+                mark_capture_stopped_if_active(&phase);
                 return;
             }
             Err(TryRecvError::Empty) => {}
@@ -661,7 +863,7 @@ fn run_capture_owner(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                phase.store(InternalCapturePhase::Stopped as u8, Ordering::Relaxed);
+                mark_capture_stopped_if_active(&phase);
                 return;
             }
         }
@@ -722,10 +924,13 @@ fn notify_failure(
     phase: &AtomicU8,
     lifecycle_sender: &mpsc::Sender<AudioCaptureLifecycleEvent>,
 ) {
-    phase.store(InternalCapturePhase::Failed as u8, Ordering::Relaxed);
+    if !mark_capture_failed(phase) {
+        return;
+    }
     let _ = lifecycle_sender.send(AudioCaptureLifecycleEvent::Failed(AudioCaptureFailure {
         session_id: session_id.to_string(),
         message,
+        requires_starting: false,
     }));
 }
 
@@ -733,11 +938,14 @@ fn notify_ready(
     session_id: &str,
     phase: &AtomicU8,
     lifecycle_sender: &mpsc::Sender<AudioCaptureLifecycleEvent>,
-) {
-    phase.store(InternalCapturePhase::Capturing as u8, Ordering::Relaxed);
+) -> bool {
+    if !mark_capture_ready(phase) {
+        return false;
+    }
     let _ = lifecycle_sender.send(AudioCaptureLifecycleEvent::Ready(AudioCaptureReady {
         session_id: session_id.to_string(),
     }));
+    true
 }
 
 fn open_microphone_stream(
@@ -1026,6 +1234,97 @@ fn output_sample_count_rounded(input_frames: u64, input_rate: u32, output_rate: 
 mod tests {
     use super::*;
 
+    fn inactive_capture(session_id: &str) -> (ActiveCapture, Arc<AtomicBool>) {
+        let (command_sender, _command_receiver) = mpsc::channel::<CaptureCommand>();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        (
+            ActiveCapture {
+                session_id: session_id.into(),
+                command_sender,
+                owner: None,
+                shutdown: Arc::clone(&shutdown),
+                phase: Arc::new(AtomicU8::new(InternalCapturePhase::Starting as u8)),
+                metadata: Arc::new(Mutex::new(None)),
+                captured_frames: Arc::new(AtomicU64::new(0)),
+                observed_frames: Arc::new(AtomicU64::new(0)),
+                dropped_chunks: Arc::new(AtomicU64::new(0)),
+            },
+            shutdown,
+        )
+    }
+
+    #[test]
+    fn timeout_bound_is_explicit_and_human_scale() {
+        assert_eq!(MICROPHONE_START_READY_TIMEOUT, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn ready_wins_the_startup_race_exactly_once() {
+        let phase = AtomicU8::new(InternalCapturePhase::Starting as u8);
+        let shutdown = AtomicBool::new(false);
+
+        assert!(mark_capture_ready(&phase));
+        assert!(!mark_start_timed_out(&phase, &shutdown));
+        assert!(!mark_capture_ready(&phase));
+        assert!(!shutdown.load(Ordering::Acquire));
+        assert!(matches!(
+            InternalCapturePhase::load(&phase),
+            InternalCapturePhase::Capturing
+        ));
+    }
+
+    #[test]
+    fn timeout_wins_the_startup_race_and_suppresses_late_callbacks() {
+        let phase = AtomicU8::new(InternalCapturePhase::Starting as u8);
+        let shutdown = AtomicBool::new(false);
+        let (sender, receiver) = mpsc::channel();
+
+        assert!(mark_start_timed_out(&phase, &shutdown));
+        assert!(shutdown.load(Ordering::Acquire));
+        mark_capture_stopped_if_active(&phase);
+        assert!(!notify_ready("session-a", &phase, &sender));
+        notify_failure("session-a", "late failure".into(), &phase, &sender);
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(
+            InternalCapturePhase::load(&phase),
+            InternalCapturePhase::Failed
+        ));
+    }
+
+    #[test]
+    fn finalization_beats_both_ready_and_timeout() {
+        let (capture, shutdown) = inactive_capture("session-a");
+        capture.mark_finalizing();
+        let (sender, receiver) = mpsc::channel();
+
+        assert!(!mark_start_timed_out(&capture.phase, &shutdown));
+        mark_capture_stopped_if_active(&capture.phase);
+        assert!(!notify_ready("session-a", &capture.phase, &sender));
+        notify_failure("session-a", "late failure".into(), &capture.phase, &sender);
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(
+            InternalCapturePhase::load(&capture.phase),
+            InternalCapturePhase::Finalizing
+        ));
+    }
+
+    #[test]
+    fn matching_detach_never_takes_another_sessions_audio_owner() {
+        let (capture, shutdown) = inactive_capture("session-a");
+        let mut controller = AudioCaptureController {
+            active: Some(capture),
+        };
+
+        assert!(controller.take_matching("session-b").is_none());
+        assert!(!shutdown.load(Ordering::Relaxed));
+
+        let finalizer = controller.take_matching("session-a").unwrap();
+        assert_eq!(finalizer.session_id(), "session-a");
+        assert!(controller.active.is_none());
+        drop(finalizer);
+        assert!(shutdown.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn downmixes_interleaved_stereo_and_ignores_incomplete_frames() {
         let input = [1.0_f32, 0.0, -1.0, -0.5, 0.8];
@@ -1174,6 +1473,7 @@ mod tests {
             AudioCaptureLifecycleEvent::Failed(AudioCaptureFailure {
                 session_id: "session-a".into(),
                 message: "device disappeared".into(),
+                requires_starting: false,
             })
         );
         assert!(matches!(
@@ -1187,7 +1487,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let phase = AtomicU8::new(InternalCapturePhase::Starting as u8);
 
-        notify_ready("session-a", &phase, &sender);
+        assert!(notify_ready("session-a", &phase, &sender));
 
         assert!(matches!(
             InternalCapturePhase::load(&phase),

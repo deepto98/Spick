@@ -25,8 +25,7 @@ describe("Spick product shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
 
     const continueButton = screen.getByRole("button", { name: "Continue" });
-    expect(screen.getByText("Asked on first use")).toBeInTheDocument();
-    expect(screen.getByText("Not needed in this preview")).toBeInTheDocument();
+    expect(screen.getAllByText("Not needed in this preview")).toHaveLength(2);
     expect(screen.queryByText(/simulate/i)).not.toBeInTheDocument();
     expect(continueButton).toBeEnabled();
   });
@@ -57,11 +56,16 @@ describe("Spick product shell", () => {
     expect(
       screen.getByText(/Choose an engine · finish in Engines/),
     ).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an engine" }));
 
     expect(
       screen.getByRole("heading", { name: "Engines" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Pick a working engine")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Choose an engine first" }),
+    ).toBeDisabled();
+    expect(window.localStorage.getItem("spick-onboarding-complete")).toBeNull();
     expect(
       screen.queryByRole("heading", { name: "Today" }),
     ).not.toBeInTheDocument();

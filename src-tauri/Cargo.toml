@@ -17,7 +17,6 @@ macos-input-method-unsafe-dev-peers = ["macos-input-method-prototype"]
 # real controls. It accepts only checked-in cases and compiled fixture text.
 macos-input-method-compatibility-harness = [
   "macos-input-method-prototype",
-  "dep:objc2-foundation",
 ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -55,6 +54,7 @@ zeroize = "1.8.2"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 core-foundation = "0.10.1"
 core-graphics = { version = "0.25.0", features = ["elcapitan"] }
 # Tauri does not expose NSPanel construction. Keep this development-only
@@ -63,9 +63,10 @@ core-graphics = { version = "0.25.0", features = ["elcapitan"] }
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 objc2 = { version = "0.6.4", optional = true }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "AXError", "AXUIElement", "AXValue", "HIServices"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString"] }
-objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

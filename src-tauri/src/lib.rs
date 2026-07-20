@@ -19,6 +19,7 @@ pub mod engines;
 mod hud;
 mod latency;
 mod local_data;
+mod microphone_permission;
 mod model_store;
 pub mod platform;
 mod session;
@@ -182,6 +183,8 @@ pub fn run() {
             commands::get_platform_capabilities,
             commands::get_accessibility_permission_status,
             commands::request_accessibility_permission,
+            commands::get_microphone_permission_status,
+            commands::request_microphone_permission,
         ])
         .build({
             let mut context = tauri::generate_context!();

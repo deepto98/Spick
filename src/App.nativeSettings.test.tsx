@@ -126,6 +126,16 @@ vi.mock("./hooks/useAccessibilityPermission", () => ({
   }),
 }));
 
+vi.mock("./hooks/useMicrophonePermission", () => ({
+  useMicrophonePermission: () => ({
+    error: null,
+    pending: false,
+    refresh: vi.fn(),
+    request: vi.fn(),
+    status: { state: "granted", canRequest: false },
+  }),
+}));
+
 vi.mock("./hooks/useShortcutStatus", () => ({
   useShortcutStatus: () => ({
     error: null,

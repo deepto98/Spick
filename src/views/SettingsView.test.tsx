@@ -109,6 +109,43 @@ describe("cleanup settings", () => {
     ).toBeVisible();
   });
 
+  it("offers microphone recovery from Dictation settings", () => {
+    const onRequestMicrophone = vi.fn();
+    render(
+      <SettingsView
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePermissionStatus={{ state: "missing", canRequest: false }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        onChange={vi.fn()}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRequestMicrophone={onRequestMicrophone}
+        onRestartOnboarding={vi.fn()}
+        settings={settings}
+        settingsSaving={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    expect(
+      screen.getByText("Microphone access is off in macOS System Settings."),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open System Settings" }),
+    );
+    expect(onRequestMicrophone).toHaveBeenCalledOnce();
+  });
+
   it("disables the native floating-widget setting in browser preview", () => {
     const onChange = vi.fn();
     render(

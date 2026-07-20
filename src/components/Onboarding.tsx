@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
+import type { MicrophonePermissionStatus } from "../lib/nativeMicrophone";
 import type { AppSettings, TranscriptionSource } from "../types";
 import { DictationHud } from "./DictationHud";
 import {
@@ -29,6 +30,9 @@ interface OnboardingProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
+  microphoneStatus: MicrophonePermissionStatus | null;
+  microphonePending: boolean;
+  microphoneError?: string;
   shortcutStatus: NativeShortcutStatus | null;
   shortcutPending: boolean;
   shortcutError?: string;
@@ -39,8 +43,11 @@ interface OnboardingProps {
   transcriptionSource: TranscriptionSource;
   engineName?: string | null;
   engineReady: boolean;
+  engineChecking?: boolean;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
+  onRequestMicrophone: () => void;
+  onRefreshMicrophone: () => void;
   onRefreshShortcut: () => void;
   onRequestInputMonitoring: () => void;
   onRetrySettings: () => void;
@@ -66,6 +73,9 @@ export function Onboarding({
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
+  microphoneStatus,
+  microphonePending,
+  microphoneError,
   shortcutStatus,
   shortcutPending,
   shortcutError,
@@ -76,8 +86,11 @@ export function Onboarding({
   transcriptionSource,
   engineName,
   engineReady,
+  engineChecking = false,
   onRequestAccessibility,
   onRefreshAccessibility,
+  onRequestMicrophone,
+  onRefreshMicrophone,
   onRefreshShortcut,
   onRequestInputMonitoring,
   onRetrySettings,
@@ -92,6 +105,9 @@ export function Onboarding({
   const accessibilityReady =
     accessibilityStatus?.state === "granted" ||
     accessibilityStatus?.state === "unsupported";
+  const microphoneReady =
+    microphoneStatus?.state === "granted" ||
+    microphoneStatus?.state === "unsupported";
   const usesOptionGesture = settings.hotkey === "⌥";
   const browserPreview = accessibilityStatus?.state === "unsupported";
   const optionListenerReady = shortcutStatus?.optionListenerActive === true;
@@ -379,9 +395,34 @@ export function Onboarding({
                 number="01"
                 icon={<Mic2 size={21} />}
                 title="Microphone"
-                description="Used only while you’re recording. macOS will ask the first time."
-                ready={false}
-                status="Asked on first use"
+                description="Set this up now so macOS never interrupts a captured field. Audio is used only while you record."
+                ready={microphoneStatus?.state === "granted"}
+                status={
+                  microphoneStatus?.state === "unsupported"
+                    ? "Not needed in this preview"
+                    : microphoneStatus?.state === "granted"
+                      ? "Allowed"
+                      : microphoneStatus?.state === "restricted"
+                        ? "Blocked by this Mac"
+                        : undefined
+                }
+                button={
+                  microphoneStatus?.state === "missing"
+                    ? microphoneStatus.canRequest
+                      ? "Allow microphone"
+                      : "Open System Settings"
+                    : microphoneStatus === null
+                      ? microphonePending
+                        ? "Checking…"
+                        : "Check again"
+                      : undefined
+                }
+                disabled={microphonePending}
+                onGrant={
+                  microphoneStatus?.state === "missing"
+                    ? onRequestMicrophone
+                    : onRefreshMicrophone
+                }
               />
               <PermissionCard
                 number="02"
@@ -463,6 +504,11 @@ export function Onboarding({
                 {accessibilityError}
               </div>
             )}
+            {microphoneError && (
+              <div className="permission-error" role="alert">
+                {microphoneError}
+              </div>
+            )}
             {shortcutError && (
               <div className="permission-error" role="alert">
                 {shortcutError}
@@ -471,7 +517,9 @@ export function Onboarding({
             <StepActions
               onBack={previous}
               onNext={next}
-              nextDisabled={!accessibilityReady || !shortcutPathReady}
+              nextDisabled={
+                !microphoneReady || !accessibilityReady || !shortcutPathReady
+              }
             />
           </section>
         )}
@@ -637,8 +685,10 @@ export function Onboarding({
                 <div>
                   <strong>Engine</strong>
                   <small>
-                    {engineName ?? "Choose an engine"}
-                    {!engineReady && " · finish in Engines"}
+                    {engineChecking
+                      ? "Checking…"
+                      : (engineName ?? "Choose an engine")}
+                    {!engineChecking && !engineReady && " · finish in Engines"}
                   </small>
                 </div>
               </span>
@@ -666,9 +716,14 @@ export function Onboarding({
                 type="button"
                 className="button button--primary button--large"
                 onClick={onComplete}
-                disabled={settingsSaving || !settingsReady}
+                disabled={settingsSaving || !settingsReady || engineChecking}
               >
-                Finish setup <ArrowRight size={17} />
+                {engineChecking
+                  ? "Checking engine…"
+                  : engineReady
+                    ? "Finish setup"
+                    : "Choose an engine"}{" "}
+                <ArrowRight size={17} />
               </button>
             </div>
           </section>

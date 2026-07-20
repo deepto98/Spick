@@ -4453,6 +4453,40 @@ select:focus-visible {
   color: #755b4f;
 }
 
+.engine-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 15px;
+  margin-bottom: 12px;
+  background: #fff8ef;
+  border: 1px solid #d9c4ae;
+  border-radius: 11px;
+}
+
+.engine-setup-banner > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.engine-setup-banner strong {
+  color: #4f4439;
+  font-family: var(--font-display);
+  font-size: 14px;
+}
+
+.engine-setup-banner span {
+  color: #75695d;
+  font-size: 10px;
+}
+
+.engine-setup-banner .button {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
 .dictation-row--real {
   background: #fff9f1;
   box-shadow: inset 3px 0 0 var(--accent);

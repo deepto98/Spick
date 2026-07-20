@@ -12,6 +12,7 @@ import { useCloudProviders } from "./hooks/useCloudProviders";
 import { useDictationController } from "./hooks/useDictationController";
 import { useHudWindow } from "./hooks/useHudWindow";
 import { useLocalData } from "./hooks/useLocalData";
+import { useMicrophonePermission } from "./hooks/useMicrophonePermission";
 import { useShortcutStatus } from "./hooks/useShortcutStatus";
 import {
   listNativeAudioInputDevices,
@@ -133,6 +134,9 @@ function App() {
   const accessibility = useAccessibilityPermission(
     dictation.native && !hudOnly,
   );
+  const microphonePermission = useMicrophonePermission(
+    dictation.native && !hudOnly,
+  );
   const shortcut = useShortcutStatus(dictation.native && !hudOnly);
   const hudWindow = useHudWindow(hudOnly && dictation.native);
   const audioFrame = useAudioLevel(dictation.state === "listening");
@@ -140,6 +144,7 @@ function App() {
   const [onboardingComplete, setOnboardingComplete] = useState(
     () => window.localStorage.getItem("spick-onboarding-complete") === "true",
   );
+  const [engineSetupRequired, setEngineSetupRequired] = useState(false);
 
   const acceptNativeSettings = useCallback(
     (saved: NativeAppSettings, syncIntent = true) => {
@@ -548,6 +553,13 @@ function App() {
       ? selectedCloudProvider?.configured === true
       : selectedLocalEngine?.usable === true
     : false;
+  const selectedEngineChecking =
+    dictation.native &&
+    (settingsLoading ||
+      nativeSettings === null ||
+      (nativeSettings.transcriptionEngine.location === "cloud"
+        ? cloudProviders.loading
+        : localModelsLoading));
   const transcriptionSource: TranscriptionSource = !dictation.native
     ? "preview"
     : !nativeSettings
@@ -685,9 +697,24 @@ function App() {
   };
 
   const completeOnboarding = () => {
-    window.localStorage.setItem("spick-onboarding-complete", "true");
-    setActiveView("engines");
+    if (selectedEngineChecking) return;
+    if (selectedEngineReady) {
+      window.localStorage.setItem("spick-onboarding-complete", "true");
+      setEngineSetupRequired(false);
+      setActiveView("today");
+    } else {
+      window.localStorage.removeItem("spick-onboarding-complete");
+      setEngineSetupRequired(true);
+      setActiveView("engines");
+    }
     setOnboardingComplete(true);
+  };
+
+  const finishEngineSetup = () => {
+    if (selectedEngineChecking || !selectedEngineReady) return;
+    window.localStorage.setItem("spick-onboarding-complete", "true");
+    setEngineSetupRequired(false);
+    setActiveView("today");
   };
 
   const retrySettingsLoad = () => {
@@ -706,6 +733,7 @@ function App() {
 
   const restartOnboarding = () => {
     window.localStorage.removeItem("spick-onboarding-complete");
+    setEngineSetupRequired(false);
     setOnboardingComplete(false);
   };
 
@@ -747,6 +775,9 @@ function App() {
         accessibilityError={accessibility.error ?? undefined}
         accessibilityPending={accessibility.pending}
         accessibilityStatus={accessibility.status}
+        microphoneError={microphonePermission.error ?? undefined}
+        microphonePending={microphonePermission.pending}
+        microphoneStatus={microphonePermission.status}
         shortcutError={shortcut.error ?? undefined}
         shortcutPending={shortcut.pending}
         shortcutStatus={shortcut.status}
@@ -757,8 +788,11 @@ function App() {
         transcriptionSource={transcriptionSource}
         engineName={selectedEngineName}
         engineReady={selectedEngineReady}
+        engineChecking={selectedEngineChecking}
         onRefreshAccessibility={() => void accessibility.refresh()}
         onRequestAccessibility={() => void accessibility.request()}
+        onRefreshMicrophone={() => void microphonePermission.refresh()}
+        onRequestMicrophone={() => void microphonePermission.request()}
         onRefreshShortcut={() => void shortcut.refresh()}
         onRequestInputMonitoring={() => void shortcut.request()}
         onRetrySettings={retrySettingsLoad}
@@ -846,6 +880,9 @@ function App() {
               cloudPending={cloudProviders.pending}
               cloudError={cloudProviders.error ?? undefined}
               cloudFallbackEnabled={settings.cloudFallback}
+              setupRequired={engineSetupRequired}
+              setupReady={selectedEngineReady}
+              setupChecking={selectedEngineChecking}
               onActivate={activateEngine}
               onCancelInstall={cancelEngineInstall}
               onInstall={installEngine}
@@ -856,6 +893,7 @@ function App() {
               onCloudConfigure={cloudProviders.configure}
               onCloudDelete={cloudProviders.removeCredential}
               onCloudActivate={activateCloudEngine}
+              onFinishSetup={finishEngineSetup}
             />
           )}
           {activeView === "vocabulary" && (
@@ -882,6 +920,11 @@ function App() {
               accessibilityError={accessibility.error ?? undefined}
               accessibilityPending={accessibility.pending}
               accessibilityStatus={accessibility.status}
+              microphonePermissionError={
+                microphonePermission.error ?? undefined
+              }
+              microphonePermissionPending={microphonePermission.pending}
+              microphonePermissionStatus={microphonePermission.status}
               shortcutError={shortcut.error ?? undefined}
               shortcutPending={shortcut.pending}
               shortcutStatus={shortcut.status}
@@ -903,6 +946,7 @@ function App() {
               onShortcutChange={changeShortcut}
               onRefreshAccessibility={() => void accessibility.refresh()}
               onRequestAccessibility={() => void accessibility.request()}
+              onRequestMicrophone={() => void microphonePermission.request()}
               onRefreshShortcut={() => void shortcut.refresh()}
               onRequestInputMonitoring={() => void shortcut.request()}
               onRestartOnboarding={restartOnboarding}

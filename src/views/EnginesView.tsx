@@ -41,6 +41,9 @@ interface EnginesViewProps {
   cloudPending: CloudProviderPendingAction | null;
   cloudError?: string;
   cloudFallbackEnabled: boolean;
+  setupRequired?: boolean;
+  setupReady?: boolean;
+  setupChecking?: boolean;
   onActivate: (id: string) => void;
   onCancelInstall: (id: string) => void;
   onInstall: (id: string) => void;
@@ -54,6 +57,7 @@ interface EnginesViewProps {
   ) => Promise<boolean>;
   onCloudDelete: (provider: CloudProviderId) => Promise<boolean>;
   onCloudActivate: (provider: CloudProviderId) => Promise<boolean>;
+  onFinishSetup?: () => void;
 }
 
 const providerMeta: Record<
@@ -120,6 +124,9 @@ export function EnginesView({
   cloudPending,
   cloudError,
   cloudFallbackEnabled,
+  setupRequired = false,
+  setupReady = false,
+  setupChecking = false,
   onActivate,
   onCancelInstall,
   onInstall,
@@ -130,6 +137,7 @@ export function EnginesView({
   onCloudConfigure,
   onCloudDelete,
   onCloudActivate,
+  onFinishSetup,
 }: EnginesViewProps) {
   const [kind, setKind] = useState<EngineKind>("local");
   const [editingProvider, setEditingProvider] =
@@ -214,6 +222,35 @@ export function EnginesView({
           </div>
         }
       />
+
+      {setupRequired && (
+        <section className="engine-setup-banner" aria-live="polite">
+          <div>
+            <strong>Pick a working engine</strong>
+            <span>
+              Download and select a local model, or add a key and select a cloud
+              provider.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={onFinishSetup}
+            disabled={
+              setupChecking ||
+              !setupReady ||
+              pendingModelId !== null ||
+              cloudPending !== null
+            }
+          >
+            {setupChecking
+              ? "Checking…"
+              : setupReady
+                ? "Finish setup"
+                : "Choose an engine first"}
+          </button>
+        </section>
+      )}
 
       {error && (
         <div className="engine-inline-error" role="alert">

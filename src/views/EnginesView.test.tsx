@@ -115,6 +115,35 @@ function providerCard(name: string) {
 describe("EnginesView cloud providers", () => {
   afterEach(cleanup);
 
+  it("finishes first-run setup only after the selected engine is ready", () => {
+    const onFinishSetup = vi.fn();
+    const { rerender } = render(
+      <EnginesView
+        {...props({
+          setupRequired: true,
+          setupReady: false,
+          onFinishSetup,
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Choose an engine first" }),
+    ).toBeDisabled();
+
+    rerender(
+      <EnginesView
+        {...props({
+          setupRequired: true,
+          setupReady: true,
+          onFinishSetup,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+    expect(onFinishSetup).toHaveBeenCalledOnce();
+  });
+
   it("shows an honest, disabled cloud preview in a browser", () => {
     render(
       <EnginesView

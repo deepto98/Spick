@@ -37,8 +37,9 @@ use crate::{
         RecordOutcome, UsageDashboard, VocabularyEntryDto, VocabularyInput,
         LOCAL_DATA_CHANGED_EVENT,
     },
+    microphone_permission::{self, MicrophonePermissionState, MicrophonePermissionStatus},
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
-    platform::{self, TextTargetError, TextTargetErrorKind},
+    platform::{self, TextTargetError, TextTargetErrorKind, TextTargetToken},
     session::SessionController,
     shortcut,
     state::{AppState, HudTargetProtectionLease},
@@ -64,6 +65,13 @@ struct PendingDictationTranscript {
     session_id: String,
     engine_id: String,
     transcript: crate::engines::TranscriptResult,
+}
+
+struct AudioFailureTransition {
+    event: DictationStateEvent,
+    cleanup: Option<CaptureFinalizer>,
+    target: Option<TextTargetToken>,
+    hud_target_lease: Option<HudTargetProtectionLease>,
 }
 
 #[derive(Default)]
@@ -747,6 +755,62 @@ pub fn request_accessibility_permission(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub fn get_microphone_permission_status(
+    window: WebviewWindow,
+) -> Result<MicrophonePermissionStatus, String> {
+    require_main_window(&window)?;
+    microphone_permission::status()
+}
+
+#[tauri::command]
+pub async fn request_microphone_permission(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<MicrophonePermissionStatus, String> {
+    require_main_window(&window)?;
+    drop(window);
+
+    let current = microphone_permission::status()?;
+    if current.state == MicrophonePermissionState::Missing && !current.can_request {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let _ = sender.send(microphone_permission::open_microphone_privacy_settings());
+        })
+        .map_err(|error| format!("could not open microphone settings: {error}"))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            receiver
+                .recv()
+                .map_err(|_| "the microphone settings request stopped unexpectedly".to_string())?
+        })
+        .await
+        .map_err(|error| format!("microphone settings worker failed: {error}"))??;
+        return microphone_permission::status();
+    }
+    if current.state != MicrophonePermissionState::Missing || !current.can_request {
+        return Ok(current);
+    }
+
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let callback_sender = sender.clone();
+        if let Err(error) = microphone_permission::request_access(move |result| {
+            let _ = callback_sender.send(result);
+        }) {
+            let _ = sender.send(Err(error));
+        }
+    })
+    .map_err(|error| format!("could not request microphone access: {error}"))?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        receiver
+            .recv()
+            .map_err(|_| "the microphone permission request stopped unexpectedly".to_string())?
+    })
+    .await
+    .map_err(|error| format!("microphone permission worker failed: {error}"))?
+}
+
 fn require_main_window(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == MAIN_WINDOW_LABEL {
         Ok(())
@@ -1118,6 +1182,10 @@ pub(crate) fn start_session<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
+    if let Err(error) = microphone_permission::ensure_capture_allowed() {
+        return fail_microphone_preflight(app, state, trigger, error);
+    }
+
     // External-target sessions must prove a concrete, non-secure editable
     // target before any session state or audio capture is created. The HUD is
     // nonactivating, so a click there still leaves the other app focused.
@@ -1284,8 +1352,44 @@ pub(crate) fn start_session<R: Runtime>(
     if let Err(error) = emit_state(app, &event) {
         eprintln!("could not emit microphone starting state: {error}");
     }
+    // Ready, failure, and timeout callbacks wait on this publication boundary,
+    // so none can overtake the user-visible Starting revision.
     start_publication.publish();
     Ok(event)
+}
+
+fn fail_microphone_preflight<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    trigger: SessionTrigger,
+    error: String,
+) -> Result<DictationStateEvent, String> {
+    let settings = state.settings_snapshot()?;
+    let hud_settings = settings.hud.clone();
+    let failed = {
+        let mut session = state
+            .session
+            .lock()
+            .map_err(|_| "dictation session lock is poisoned".to_string())?;
+        session
+            .start(
+                trigger,
+                settings.language_policy,
+                settings.transcription_engine,
+                settings.cleanup_engine,
+            )
+            .and_then(|_| session.fail(error.clone()))
+            .map_err(|transition| transition.to_string())?
+    };
+
+    if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
+        eprintln!("microphone check failed but the HUD could not be shown: {show_error}");
+    }
+    if let Err(emit_error) = emit_state(app, &failed) {
+        eprintln!("could not emit microphone permission failure: {emit_error}");
+    }
+    settle_after(app, FAILURE_HUD_DWELL, failed.revision);
+    Err(error)
 }
 
 fn session_trigger_for_window(label: &str) -> Result<SessionTrigger, String> {
@@ -1909,56 +2013,82 @@ fn mark_session_ready_if_matching(
     session_id: &str,
 ) -> Result<Option<DictationStateEvent>, String> {
     let snapshot = session.snapshot();
-    if snapshot.state != SessionState::Starting
-        || !snapshot
-            .session
-            .as_ref()
-            .is_some_and(|active| active.id == session_id)
-    {
+    if !starting_session_matches(&snapshot, session_id) {
         return Ok(None);
     }
     session.ready().map(Some).map_err(|error| error.to_string())
 }
 
+fn starting_session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
+    event.state == SessionState::Starting
+        && event
+            .session
+            .as_ref()
+            .is_some_and(|session| session.id == session_id)
+}
+
+fn audio_failure_matches_session(
+    event: &DictationStateEvent,
+    failure: &AudioCaptureFailure,
+) -> bool {
+    if failure.requires_starting {
+        starting_session_matches(event, &failure.session_id)
+    } else {
+        session_matches(event, &failure.session_id)
+    }
+}
+
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
     let state = app.state::<AppState>();
-    let hud_target_lease = state
-        .transcription_operation(&failure.session_id)
-        .ok()
-        .flatten()
-        .and_then(|operation| operation.hud_target_lease);
-    discard_target_for_session(state.inner(), &failure.session_id);
-    release_hud_target(app, state.inner(), hud_target_lease.as_ref());
-    let transition =
-        (|| -> Result<Option<(DictationStateEvent, Option<CaptureFinalizer>)>, String> {
-            let mut session = state
-                .session
-                .lock()
-                .map_err(|_| "dictation session lock is poisoned".to_string())?;
-            let snapshot = session.snapshot();
-            if !session_matches(&snapshot, &failure.session_id) {
-                return Ok(None);
-            }
+    let transition = (|| -> Result<Option<AudioFailureTransition>, String> {
+        let mut session = state
+            .session
+            .lock()
+            .map_err(|_| "dictation session lock is poisoned".to_string())?;
+        let snapshot = session.snapshot();
+        if !audio_failure_matches_session(&snapshot, &failure) {
+            return Ok(None);
+        }
 
-            let mut audio = state
-                .audio
-                .lock()
-                .map_err(|_| "microphone capture lock is poisoned".to_string())?;
-            let cleanup = audio.take_matching(&failure.session_id);
-            state.finish_transcription(&failure.session_id)?;
-            let failed = session
-                .fail(failure.message)
-                .map_err(|error| error.to_string())?;
-            Ok(Some((failed, cleanup)))
-        })();
+        let operation = state.transcription_operation(&failure.session_id)?;
+        let target = operation
+            .as_ref()
+            .and_then(|operation| operation.target.as_ref())
+            .map(|target| target.token);
+        let hud_target_lease = operation.and_then(|operation| operation.hud_target_lease);
+        let mut audio = state
+            .audio
+            .lock()
+            .map_err(|_| "microphone capture lock is poisoned".to_string())?;
+        let cleanup = audio.take_matching(&failure.session_id);
+        let failed = session
+            .fail(failure.message)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = state.cancel_transcription(&failure.session_id) {
+            eprintln!("could not cancel failed transcription state: {error}");
+        }
+        if let Err(error) = state.finish_transcription(&failure.session_id) {
+            eprintln!("could not discard failed transcription state: {error}");
+        }
+        Ok(Some(AudioFailureTransition {
+            event: failed,
+            cleanup,
+            target,
+            hud_target_lease,
+        }))
+    })();
 
     match transition {
-        Ok(Some((event, cleanup))) => {
-            discard_on_worker(cleanup);
-            if let Err(emit_error) = emit_state(app, &event) {
+        Ok(Some(transition)) => {
+            if let Some(target) = transition.target {
+                state.text_targets.discard(target);
+            }
+            release_hud_target(app, state.inner(), transition.hud_target_lease.as_ref());
+            discard_on_worker(transition.cleanup);
+            if let Err(emit_error) = emit_state(app, &transition.event) {
                 eprintln!("could not emit microphone failure: {emit_error}");
             }
-            settle_after(app, FAILURE_HUD_DWELL, event.revision);
+            settle_after(app, FAILURE_HUD_DWELL, transition.event.revision);
         }
         Ok(None) => {}
         Err(error) => eprintln!("could not handle microphone failure: {error}"),
@@ -2474,6 +2604,52 @@ mod tests {
             mark_session_ready_if_matching(&mut controller, &second_id).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn startup_timeout_cannot_fail_a_ready_cancelled_or_newer_session() {
+        let mut controller = SessionController::default();
+        let settings = AppSettings::default();
+        let first = controller
+            .start(
+                SessionTrigger::Shortcut,
+                settings.language_policy.clone(),
+                settings.transcription_engine.clone(),
+                settings.cleanup_engine.clone(),
+            )
+            .unwrap();
+        let first_id = active_session_id(&first).unwrap();
+        let timeout = AudioCaptureFailure {
+            session_id: first_id.clone(),
+            message: "timed out".into(),
+            requires_starting: true,
+        };
+
+        assert!(audio_failure_matches_session(&first, &timeout));
+        let listening = controller.ready().unwrap();
+        assert!(!audio_failure_matches_session(&listening, &timeout));
+        controller.cancel(None).unwrap();
+        let second = controller
+            .start(
+                SessionTrigger::Shortcut,
+                settings.language_policy,
+                settings.transcription_engine,
+                settings.cleanup_engine,
+            )
+            .unwrap();
+        assert!(!audio_failure_matches_session(&second, &timeout));
+    }
+
+    #[test]
+    fn ordinary_stream_failure_still_applies_after_readiness() {
+        let listening = event("session-a", SessionState::Listening, 2);
+        let failure = AudioCaptureFailure {
+            session_id: "session-a".into(),
+            message: "device disappeared".into(),
+            requires_starting: false,
+        };
+
+        assert!(audio_failure_matches_session(&listening, &failure));
     }
 
     #[test]

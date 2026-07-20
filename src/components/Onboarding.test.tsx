@@ -32,6 +32,8 @@ function renderPractice(
     <Onboarding
       accessibilityPending={false}
       accessibilityStatus={{ state: "granted", canRequest: true }}
+      microphonePending={false}
+      microphoneStatus={{ state: "granted", canRequest: false }}
       shortcutPending={false}
       shortcutStatus={shortcutStatus}
       settings={settings}
@@ -42,6 +44,8 @@ function renderPractice(
       engineReady
       onRequestAccessibility={vi.fn()}
       onRefreshAccessibility={vi.fn()}
+      onRequestMicrophone={vi.fn()}
+      onRefreshMicrophone={vi.fn()}
       onRefreshShortcut={vi.fn()}
       onRequestInputMonitoring={vi.fn()}
       onRetrySettings={vi.fn()}
@@ -188,6 +192,8 @@ describe("onboarding shortcut practice", () => {
       <Onboarding
         accessibilityPending={false}
         accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePending={false}
+        microphoneStatus={{ state: "granted", canRequest: false }}
         shortcutPending={false}
         shortcutStatus={{
           optionSelected: true,
@@ -203,6 +209,8 @@ describe("onboarding shortcut practice", () => {
         engineReady
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
+        onRequestMicrophone={vi.fn()}
+        onRefreshMicrophone={vi.fn()}
         onRefreshShortcut={vi.fn()}
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
@@ -219,11 +227,53 @@ describe("onboarding shortcut practice", () => {
     ).toBeVisible();
   });
 
+  it("does not advance until microphone access is granted", () => {
+    const onRequestMicrophone = vi.fn();
+    render(
+      <Onboarding
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePending={false}
+        microphoneStatus={{ state: "missing", canRequest: true }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        settings={optionSettings}
+        settingsReady
+        settingsSaving={false}
+        transcriptionSource="local"
+        engineName="Whisper Small"
+        engineReady
+        onRequestAccessibility={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRequestMicrophone={onRequestMicrophone}
+        onRefreshMicrophone={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRetrySettings={vi.fn()}
+        onSettingsChange={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Allow microphone" }));
+    expect(onRequestMicrophone).toHaveBeenCalledOnce();
+  });
+
   it("describes cloud transcription without claiming audio stays local", () => {
     render(
       <Onboarding
         accessibilityPending={false}
         accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePending={false}
+        microphoneStatus={{ state: "granted", canRequest: false }}
         shortcutPending={false}
         shortcutStatus={{
           optionSelected: true,
@@ -239,6 +289,8 @@ describe("onboarding shortcut practice", () => {
         engineReady
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
+        onRequestMicrophone={vi.fn()}
+        onRefreshMicrophone={vi.fn()}
         onRefreshShortcut={vi.fn()}
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
@@ -265,6 +317,8 @@ describe("onboarding shortcut practice", () => {
       <Onboarding
         accessibilityPending={false}
         accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePending={false}
+        microphoneStatus={{ state: "granted", canRequest: false }}
         shortcutPending={false}
         shortcutStatus={{
           optionSelected: true,
@@ -280,6 +334,8 @@ describe("onboarding shortcut practice", () => {
         engineReady
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
+        onRequestMicrophone={vi.fn()}
+        onRefreshMicrophone={vi.fn()}
         onRefreshShortcut={vi.fn()}
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
