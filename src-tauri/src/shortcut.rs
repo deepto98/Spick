@@ -49,6 +49,7 @@ static SHORTCUT_CONTROLLER: OnceLock<Mutex<ShortcutController>> = OnceLock::new(
 struct ChordQueueFlags {
     keyboard: AtomicBool,
     pointer: AtomicBool,
+    hud_pointer: AtomicBool,
 }
 
 #[cfg(target_os = "macos")]
@@ -57,6 +58,7 @@ impl ChordQueueFlags {
         let flag = match input {
             GestureInput::KeyboardChord => &self.keyboard,
             GestureInput::PointerChord => &self.pointer,
+            GestureInput::HudPointerChord => &self.hud_pointer,
             _ => return true,
         };
         flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -67,6 +69,7 @@ impl ChordQueueFlags {
         match input {
             GestureInput::KeyboardChord => self.keyboard.store(false, Ordering::Release),
             GestureInput::PointerChord => self.pointer.store(false, Ordering::Release),
+            GestureInput::HudPointerChord => self.hud_pointer.store(false, Ordering::Release),
             _ => {}
         }
     }
@@ -695,11 +698,15 @@ mod tests {
         let queued = ChordQueueFlags::default();
         assert!(queued.claim(GestureInput::PointerChord));
         assert!(!queued.claim(GestureInput::PointerChord));
+        assert!(queued.claim(GestureInput::HudPointerChord));
+        assert!(!queued.claim(GestureInput::HudPointerChord));
         assert!(queued.claim(GestureInput::KeyboardChord));
         assert!(!queued.claim(GestureInput::KeyboardChord));
 
         queued.release(GestureInput::PointerChord);
         assert!(queued.claim(GestureInput::PointerChord));
+        queued.release(GestureInput::HudPointerChord);
+        assert!(queued.claim(GestureInput::HudPointerChord));
         queued.release(GestureInput::KeyboardChord);
         assert!(queued.claim(GestureInput::KeyboardChord));
     }

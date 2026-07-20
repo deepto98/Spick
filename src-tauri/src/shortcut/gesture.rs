@@ -9,6 +9,7 @@ pub enum GestureInput {
     OptionUp,
     KeyboardChord,
     PointerChord,
+    HudPointerChord,
     ListenerDisabled,
     Shutdown,
 }
@@ -103,6 +104,10 @@ impl GestureMachine {
                 self.state = GestureState::DirtyIdle;
                 None
             }
+            // The HUD is a nonactivating panel, so using its move grip cannot
+            // change the captured insertion target. Keep arming the hold while
+            // its native drag begins.
+            (GestureState::Armed { .. }, GestureInput::HudPointerChord) => None,
             (GestureState::Armed { .. }, GestureInput::ListenerDisabled) => {
                 self.state = GestureState::Idle;
                 None
@@ -129,11 +134,14 @@ impl GestureMachine {
                 self.state = GestureState::DirtyIdle;
                 Some(GestureAction::Cancel)
             }
-            // Pointer input may be the user dragging Spick's nonactivating HUD.
-            // Keeping the recording alive is safe even when it targets another
-            // app: insertion still revalidates the captured field and fails
-            // closed if that click moved focus.
-            (GestureState::Holding, GestureInput::PointerChord) => None,
+            (GestureState::Holding, GestureInput::PointerChord) => {
+                self.state = GestureState::DirtyIdle;
+                Some(GestureAction::Cancel)
+            }
+            // Only pointer input proven to target Spick's nonactivating NSPanel
+            // may coexist with hold-to-talk. Ordinary Option-click and scroll
+            // input cancel above, before a transcript can be delivered.
+            (GestureState::Holding, GestureInput::HudPointerChord) => None,
             (GestureState::Holding, GestureInput::ListenerDisabled) => {
                 self.state = GestureState::Idle;
                 Some(GestureAction::Cancel)
@@ -148,7 +156,10 @@ impl GestureMachine {
             }
             (
                 GestureState::ToggleStopArmed,
-                GestureInput::KeyboardChord | GestureInput::PointerChord | GestureInput::OptionDown,
+                GestureInput::KeyboardChord
+                | GestureInput::PointerChord
+                | GestureInput::HudPointerChord
+                | GestureInput::OptionDown,
             ) => {
                 self.state = GestureState::DirtyToggle;
                 None
@@ -423,17 +434,63 @@ mod tests {
     }
 
     #[test]
-    fn pointer_input_does_not_cancel_hold_to_talk() {
+    fn external_pointer_input_prevents_or_cancels_hold_to_talk() {
         let start = Instant::now();
         let mut machine = GestureMachine::default();
         machine.handle(GestureInput::OptionDown, start);
+        assert_eq!(
+            machine.handle(
+                GestureInput::PointerChord,
+                start + Duration::from_millis(40)
+            ),
+            None
+        );
+        assert_eq!(machine.handle_timeout(start + HOLD_THRESHOLD), None);
+        assert_eq!(
+            machine.handle(GestureInput::OptionUp, start + HOLD_THRESHOLD),
+            None
+        );
+
+        machine.handle(GestureInput::OptionDown, start + Duration::from_secs(1));
+        assert_eq!(
+            machine.handle_timeout(start + Duration::from_secs(1) + HOLD_THRESHOLD),
+            Some(GestureAction::Start)
+        );
+        assert_eq!(
+            machine.handle(
+                GestureInput::PointerChord,
+                start + Duration::from_secs(1) + HOLD_THRESHOLD + Duration::from_millis(10)
+            ),
+            Some(GestureAction::Cancel)
+        );
+        assert_eq!(
+            machine.handle(
+                GestureInput::OptionUp,
+                start + Duration::from_secs(1) + HOLD_THRESHOLD + Duration::from_millis(20)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn hud_pointer_input_keeps_hold_to_talk_active() {
+        let start = Instant::now();
+        let mut machine = GestureMachine::default();
+        machine.handle(GestureInput::OptionDown, start);
+        assert_eq!(
+            machine.handle(
+                GestureInput::HudPointerChord,
+                start + Duration::from_millis(40)
+            ),
+            None
+        );
         assert_eq!(
             machine.handle_timeout(start + HOLD_THRESHOLD),
             Some(GestureAction::Start)
         );
         assert_eq!(
             machine.handle(
-                GestureInput::PointerChord,
+                GestureInput::HudPointerChord,
                 start + HOLD_THRESHOLD + Duration::from_millis(10)
             ),
             None

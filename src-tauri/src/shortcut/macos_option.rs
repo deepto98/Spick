@@ -18,6 +18,7 @@ use super::{
     gesture::{GestureEvent, GestureInput},
     ChordQueueFlags,
 };
+use crate::hud;
 
 const LISTENER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(100);
@@ -138,8 +139,12 @@ fn run_listener(
                 callback_rebuild.store(true, Ordering::Release);
             }
             let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-            callback_pressed_inputs.observe(event_type, keycode);
-            let mut input = normalize_fields(event_type, keycode, event.get_flags());
+            let pointer_targets_hud = pointer_event_targets_hud(event_type, event);
+            callback_pressed_inputs.observe(event_type, keycode, pointer_targets_hud);
+            let mut input = classify_pointer_target(
+                normalize_fields(event_type, keycode, event.get_flags()),
+                pointer_targets_hud,
+            );
             if input == Some(GestureInput::OptionDown) {
                 input = callback_pressed_inputs.chord_input().or(input);
             }
@@ -155,11 +160,11 @@ fn run_listener(
                     Ok(()) => {}
                     Err(TrySendError::Full(event)) => {
                         callback_chord_queue.release(event.input);
-                        // Pointer/scroll events are deliberately lossy and
-                        // coalesced; dropping one must not masquerade as event
-                        // tap failure. A lost keyboard or Option transition is
-                        // still fatal so keyboard chords remain fail-closed.
-                        if event.input != GestureInput::PointerChord {
+                        // Repeated HUD pointer input is deliberately lossy and
+                        // coalesced. Every external pointer, keyboard, or Option
+                        // transition is fail-closed because losing one could
+                        // turn an ordinary chord into an accepted dictation.
+                        if lost_input_requires_recovery(event.input) {
                             callback_overflowed.store(true, Ordering::Release);
                         }
                     }
@@ -241,6 +246,7 @@ fn run_listener(
 struct PressedInputs {
     keys: [AtomicU64; KEY_WORDS],
     mouse_buttons: AtomicU8,
+    hud_mouse_buttons: AtomicU8,
 }
 
 impl Default for PressedInputs {
@@ -248,21 +254,22 @@ impl Default for PressedInputs {
         Self {
             keys: std::array::from_fn(|_| AtomicU64::new(0)),
             mouse_buttons: AtomicU8::new(0),
+            hud_mouse_buttons: AtomicU8::new(0),
         }
     }
 }
 
 impl PressedInputs {
-    fn observe(&self, event_type: CGEventType, keycode: i64) {
+    fn observe(&self, event_type: CGEventType, keycode: i64, pointer_targets_hud: bool) {
         match event_type {
             CGEventType::KeyDown => self.set_key(keycode, true),
             CGEventType::KeyUp => self.set_key(keycode, false),
-            CGEventType::LeftMouseDown => self.set_mouse(0, true),
-            CGEventType::LeftMouseUp => self.set_mouse(0, false),
-            CGEventType::RightMouseDown => self.set_mouse(1, true),
-            CGEventType::RightMouseUp => self.set_mouse(1, false),
-            CGEventType::OtherMouseDown => self.set_mouse(2, true),
-            CGEventType::OtherMouseUp => self.set_mouse(2, false),
+            CGEventType::LeftMouseDown => self.set_mouse(0, true, pointer_targets_hud),
+            CGEventType::LeftMouseUp => self.set_mouse(0, false, false),
+            CGEventType::RightMouseDown => self.set_mouse(1, true, pointer_targets_hud),
+            CGEventType::RightMouseUp => self.set_mouse(1, false, false),
+            CGEventType::OtherMouseDown => self.set_mouse(2, true, pointer_targets_hud),
+            CGEventType::OtherMouseUp => self.set_mouse(2, false, false),
             _ => {}
         }
     }
@@ -274,10 +281,16 @@ impl PressedInputs {
             .any(|word| word.load(Ordering::Relaxed) != 0)
         {
             Some(GestureInput::KeyboardChord)
-        } else if self.mouse_buttons.load(Ordering::Relaxed) != 0 {
-            Some(GestureInput::PointerChord)
         } else {
-            None
+            let mouse_buttons = self.mouse_buttons.load(Ordering::Relaxed);
+            let hud_mouse_buttons = self.hud_mouse_buttons.load(Ordering::Relaxed) & mouse_buttons;
+            if mouse_buttons & !hud_mouse_buttons != 0 {
+                Some(GestureInput::PointerChord)
+            } else if hud_mouse_buttons != 0 {
+                Some(GestureInput::HudPointerChord)
+            } else {
+                None
+            }
         }
     }
 
@@ -297,14 +310,50 @@ impl PressedInputs {
         }
     }
 
-    fn set_mouse(&self, button: u8, down: bool) {
+    fn set_mouse(&self, button: u8, down: bool, targets_hud: bool) {
         let bit = 1_u8 << button;
         if down {
             self.mouse_buttons.fetch_or(bit, Ordering::Relaxed);
+            if targets_hud {
+                self.hud_mouse_buttons.fetch_or(bit, Ordering::Relaxed);
+            } else {
+                self.hud_mouse_buttons.fetch_and(!bit, Ordering::Relaxed);
+            }
         } else {
             self.mouse_buttons.fetch_and(!bit, Ordering::Relaxed);
+            self.hud_mouse_buttons.fetch_and(!bit, Ordering::Relaxed);
         }
     }
+}
+
+fn pointer_event_targets_hud(event_type: CGEventType, event: &CGEvent) -> bool {
+    if !matches!(
+        event_type,
+        CGEventType::LeftMouseDown
+            | CGEventType::RightMouseDown
+            | CGEventType::OtherMouseDown
+            | CGEventType::ScrollWheel
+    ) {
+        return false;
+    }
+    hud::owns_native_window_number(
+        event.get_integer_value_field(EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER),
+    )
+}
+
+fn classify_pointer_target(
+    input: Option<GestureInput>,
+    pointer_targets_hud: bool,
+) -> Option<GestureInput> {
+    if input == Some(GestureInput::PointerChord) && pointer_targets_hud {
+        Some(GestureInput::HudPointerChord)
+    } else {
+        input
+    }
+}
+
+fn lost_input_requires_recovery(input: GestureInput) -> bool {
+    input != GestureInput::HudPointerChord
 }
 
 fn normalize_fields(
@@ -412,6 +461,29 @@ mod tests {
     }
 
     #[test]
+    fn only_pointer_chords_targeting_the_hud_receive_the_drag_exemption() {
+        assert_eq!(
+            classify_pointer_target(Some(GestureInput::PointerChord), true),
+            Some(GestureInput::HudPointerChord)
+        );
+        assert_eq!(
+            classify_pointer_target(Some(GestureInput::PointerChord), false),
+            Some(GestureInput::PointerChord)
+        );
+        assert_eq!(
+            classify_pointer_target(Some(GestureInput::OptionDown), true),
+            Some(GestureInput::OptionDown)
+        );
+    }
+
+    #[test]
+    fn losing_an_external_pointer_chord_fails_closed() {
+        assert!(lost_input_requires_recovery(GestureInput::PointerChord));
+        assert!(lost_input_requires_recovery(GestureInput::KeyboardChord));
+        assert!(!lost_input_requires_recovery(GestureInput::HudPointerChord));
+    }
+
+    #[test]
     fn option_release_wins_over_remaining_disallowed_modifiers() {
         for flags in [
             CGEventFlags::CGEventFlagShift,
@@ -440,14 +512,29 @@ mod tests {
     #[test]
     fn inputs_held_before_option_are_tracked_until_release() {
         let pressed = PressedInputs::default();
-        pressed.observe(CGEventType::KeyDown, 12);
+        pressed.observe(CGEventType::KeyDown, 12, false);
         assert_eq!(pressed.chord_input(), Some(GestureInput::KeyboardChord));
-        pressed.observe(CGEventType::KeyUp, 12);
+        pressed.observe(CGEventType::KeyUp, 12, false);
         assert_eq!(pressed.chord_input(), None);
 
-        pressed.observe(CGEventType::LeftMouseDown, 0);
+        pressed.observe(CGEventType::LeftMouseDown, 0, false);
         assert_eq!(pressed.chord_input(), Some(GestureInput::PointerChord));
-        pressed.observe(CGEventType::LeftMouseUp, 0);
+        pressed.observe(CGEventType::LeftMouseUp, 0, false);
+        assert_eq!(pressed.chord_input(), None);
+    }
+
+    #[test]
+    fn mouse_origin_distinguishes_the_hud_from_external_pointer_chords() {
+        let pressed = PressedInputs::default();
+        pressed.observe(CGEventType::LeftMouseDown, 0, true);
+        assert_eq!(pressed.chord_input(), Some(GestureInput::HudPointerChord));
+
+        // An external second button wins so a HUD drag cannot mask other input.
+        pressed.observe(CGEventType::RightMouseDown, 0, false);
+        assert_eq!(pressed.chord_input(), Some(GestureInput::PointerChord));
+        pressed.observe(CGEventType::RightMouseUp, 0, false);
+        assert_eq!(pressed.chord_input(), Some(GestureInput::HudPointerChord));
+        pressed.observe(CGEventType::LeftMouseUp, 0, false);
         assert_eq!(pressed.chord_input(), None);
     }
 }

@@ -38,7 +38,7 @@ Open **Engines** in the desktop build to download and select a local model, or s
 
 SQLite may also create `spick.sqlite3-wal` and `spick.sqlite3-shm` while Spick is running. Quit the development app before resetting it, then remove `settings.json` (and its `.bak`) plus all three `spick.sqlite3*` files. Remove `models/` only if downloaded model weights should be reset too. Provider keys are separate Keychain items under the `app.spick.desktop` service; remove them in **Engines** if those should also be reset. Windows keeps the database under the app-local data directory (`%LOCALAPPDATA%`), while Linux uses the platform local-data/XDG directory; settings follow each platform's config directory.
 
-The Option gesture needs macOS **Input Monitoring** in addition to microphone and Accessibility access. Spick shows a temporary `⌘ ⇧ Space` fallback until Input Monitoring is allowed; returning to Spick activates Option without requiring a rebuild. Option-letter, Option-click, dual-Option, and other chords are passed through without starting dictation.
+The Option gesture needs macOS **Input Monitoring** in addition to microphone and Accessibility access. Spick shows a temporary `⌘ ⇧ Space` fallback until Input Monitoring is allowed; returning to Spick activates Option without requiring a rebuild. Option-letter, Option-click, dual-Option, and other chords are passed through. Chords seen before the hold threshold prevent dictation, and external pointer input during an active hold cancels it before delivery. Pointer input proven to target the nonactivating Spick HUD remains available so its move grip works while speaking.
 
 Run the project checks before committing:
 

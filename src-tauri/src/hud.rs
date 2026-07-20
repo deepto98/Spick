@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 #[cfg(target_os = "macos")]
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicIsize, Ordering as AtomicOrdering},
         mpsc,
     },
     time::Duration,
@@ -37,6 +37,8 @@ static NATIVE_PANEL_READY: AtomicBool = AtomicBool::new(false);
 static NATIVE_PANEL_TARGET_SAFE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static HUD_TARGET_PROTECTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static NATIVE_PANEL_WINDOW_NUMBER: AtomicIsize = AtomicIsize::new(0);
 
 // NSWindowStyleMaskNonactivatingPanel only works for NSPanel subclasses. The
 // class is installed once while the Tauri window is hidden and is never changed
@@ -114,10 +116,32 @@ fn install_native_panel<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Str
         eprintln!("native dictation panel unexpectedly accepts key or main window status");
     }
 
+    remember_native_panel_window_number(&panel);
     HUD_TARGET_PROTECTED.store(false, AtomicOrdering::Release);
     NATIVE_PANEL_TARGET_SAFE.store(target_safe, AtomicOrdering::Release);
     NATIVE_PANEL_READY.store(true, AtomicOrdering::Release);
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn remember_native_panel_window_number<R: Runtime>(panel: &PanelHandle<R>) {
+    // SAFETY: callers run on AppKit's main thread and `as_panel` remains valid
+    // for the lifetime of the Tauri-owned HUD. Hidden windows can report zero;
+    // `show` refreshes the number after ordering the panel on screen.
+    let window_number: isize =
+        unsafe { tauri_nspanel::objc2::msg_send![panel.as_panel(), windowNumber] };
+    NATIVE_PANEL_WINDOW_NUMBER.store(window_number.max(0), AtomicOrdering::Release);
+}
+
+/// Reports whether a CoreGraphics pointer event targets the live native HUD.
+///
+/// The Option listener uses the NSWindow number rather than broad process or
+/// screen bounds, so clicks in Spick's dashboard or a nearby app do not receive
+/// the HUD drag exemption.
+#[cfg(target_os = "macos")]
+pub(crate) fn owns_native_window_number(window_number: i64) -> bool {
+    let hud_window_number = NATIVE_PANEL_WINDOW_NUMBER.load(AtomicOrdering::Acquire);
+    hud_window_number > 0 && window_number == hud_window_number as i64
 }
 
 #[cfg(target_os = "macos")]
@@ -208,6 +232,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<
         // A normal Tauri window is not guaranteed to remain nonactivating when
         // clicked. Fail closed until a caller explicitly shows an idle HUD.
         NATIVE_PANEL_READY.store(false, AtomicOrdering::Release);
+        NATIVE_PANEL_WINDOW_NUMBER.store(0, AtomicOrdering::Release);
         HUD_TARGET_PROTECTED.store(true, AtomicOrdering::Release);
         window
             .set_ignore_cursor_events(true)
@@ -281,7 +306,12 @@ pub fn show<R: Runtime>(
         let shown_as_panel = with_native_panel_on_main_thread(app, "show", move |panel| {
             let protect = target_is_live && !NATIVE_PANEL_TARGET_SAFE.load(AtomicOrdering::Acquire);
             panel.set_ignores_mouse_events(protect);
+            // An existing hidden NSPanel normally retains its window number.
+            // Publish it before ordering the panel front to close the tiny gap
+            // in which a very fast move-grip press could otherwise look external.
+            remember_native_panel_window_number(&panel);
             panel.show();
+            remember_native_panel_window_number(&panel);
             Ok(())
         })?;
         if shown_as_panel {
@@ -318,6 +348,7 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     {
         let hidden_as_panel = with_native_panel_on_main_thread(app, "hide", |panel| {
             panel.hide();
+            NATIVE_PANEL_WINDOW_NUMBER.store(0, AtomicOrdering::Release);
             Ok(())
         })?;
         if hidden_as_panel {
