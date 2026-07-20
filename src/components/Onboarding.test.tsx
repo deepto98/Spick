@@ -36,6 +36,9 @@ function renderPractice(settings: AppSettings = optionSettings) {
       settings={settings}
       settingsReady
       settingsSaving={false}
+      transcriptionSource="local"
+      engineName="Whisper Small"
+      engineReady
       onRequestAccessibility={vi.fn()}
       onRefreshAccessibility={vi.fn()}
       onRefreshShortcut={vi.fn()}
@@ -140,5 +143,46 @@ describe("onboarding shortcut practice", () => {
       shiftKey: true,
     });
     expect(status).toHaveTextContent("Try it here");
+  });
+
+  it("describes cloud transcription without claiming audio stays local", () => {
+    render(
+      <Onboarding
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        settings={optionSettings}
+        settingsReady
+        settingsSaving={false}
+        transcriptionSource="cloud"
+        engineName="GPT-4o Transcribe"
+        engineReady
+        onRequestAccessibility={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRetrySettings={vi.fn()}
+        onSettingsChange={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Cloud transcription · GPT-4o Transcribe"),
+    ).toBeVisible();
+    expect(screen.queryByText(/audio stays on this Mac/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(
+      screen.getByText(/Audio leaves this Mac for transcription/i),
+    ).toBeVisible();
   });
 });

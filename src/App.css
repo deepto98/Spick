@@ -880,6 +880,11 @@ p {
   font-size: 9px;
 }
 
+.settings-saved--unavailable {
+  color: #8a6f55;
+  background: #f2e6d7;
+}
+
 .auto-badge i {
   width: 6px;
   height: 6px;
@@ -2329,6 +2334,21 @@ p {
 }
 
 .section-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+  font-size: 8px;
+}
+
+.section-heading__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.section-heading__actions > span {
   display: inline-flex;
   align-items: center;
   gap: 5px;

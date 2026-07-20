@@ -5,6 +5,9 @@ export type HudState =
 
 export type EngineKind = "local" | "cloud";
 
+export type TranscriptionSource =
+  "local" | "localWithCloudFallback" | "cloud" | "loading" | "preview";
+
 export type EngineStatus = "active" | "ready" | "available" | "invalid";
 
 export interface Engine {

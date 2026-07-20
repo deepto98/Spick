@@ -80,6 +80,7 @@ function props(
     native: true,
     cancellingModelIds: new Set<string>(),
     pendingModelId: null,
+    localLoading: false,
     cloudProviders,
     cloudLoading: false,
     cloudPending: null,
@@ -88,6 +89,7 @@ function props(
     onCancelInstall: vi.fn(),
     onInstall: vi.fn(),
     onRemove: vi.fn(),
+    onLocalRefresh: vi.fn(),
     onCloudRefresh: vi.fn(),
     onCloudConfigure: vi.fn(async () => true),
     onCloudDelete: vi.fn(async () => true),
@@ -297,5 +299,34 @@ describe("EnginesView cloud providers", () => {
     expect(
       screen.getByText(/first configured, language-compatible cloud provider/i),
     ).toBeVisible();
+  });
+
+  it("loads an empty native catalog honestly and lets the user retry", () => {
+    const onLocalRefresh = vi.fn();
+    const { rerender } = render(
+      <EnginesView
+        {...props({
+          engines: [],
+          localLoading: true,
+          onLocalRefresh,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Loading local models…")).toBeVisible();
+    expect(screen.queryByText(/Metal ready/i)).toBeNull();
+    expect(screen.queryByText(/haven’t checked this Mac/i)).toBeNull();
+
+    rerender(
+      <EnginesView
+        {...props({
+          engines: [],
+          error: "catalog unavailable",
+          onLocalRefresh,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onLocalRefresh).toHaveBeenCalledOnce();
   });
 });

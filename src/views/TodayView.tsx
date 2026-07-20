@@ -162,6 +162,7 @@ export function TodayView({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [checkedFieldId, setCheckedFieldId] = useState<string | null>(null);
   const latestDelivery = lastTranscript?.delivery ?? delivery;
+  const lifetimeWpm = dashboard?.lifetime.averageWpm;
   const days = dashboard?.days ?? [];
   const maxWords = Math.max(0, ...days.map((item) => item.words));
   const sparkDays = days.length
@@ -282,6 +283,11 @@ export function TodayView({
             <strong>{dashboard?.today.words.toLocaleString() ?? "—"}</strong>
             <span>words today</span>
           </div>
+          <small>
+            {dashboard
+              ? `${dashboard.lifetime.words.toLocaleString()} words all time`
+              : "All-time total"}
+          </small>
           <div className="stat-card__sparkline" aria-hidden="true">
             {sparkDays.map((item) => (
               <i
@@ -301,7 +307,11 @@ export function TodayView({
             <strong>{dashboard?.today.averageWpm ?? "—"}</strong>
             <span>recording words/min</span>
           </div>
-          <small>Full capture time, including pauses</small>
+          <small>
+            {lifetimeWpm == null
+              ? "Full capture time, including pauses"
+              : `${lifetimeWpm} WPM all time · includes pauses`}
+          </small>
         </article>
         <article className="stat-card">
           <span className="stat-card__icon">

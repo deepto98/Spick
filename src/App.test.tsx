@@ -47,6 +47,26 @@ describe("Spick product shell", () => {
     expect(screen.getByText("None selected")).toBeInTheDocument();
   });
 
+  it("finishes onboarding in Engines so setup can be completed", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(
+      screen.getByText(/Choose an engine · finish in Engines/),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Engines" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Today" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders only the compact widget for the HUD window", () => {
     window.history.replaceState({}, "", "/?window=hud");
     render(<App />);

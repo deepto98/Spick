@@ -129,8 +129,9 @@ describe("local usage and transcript history", () => {
 
     expect(screen.getAllByText("120").length).toBeGreaterThan(0);
     expect(screen.getByText("recording words/min")).toBeInTheDocument();
+    expect(screen.getByText("500 words all time")).toBeInTheDocument();
     expect(
-      screen.getByText("Full capture time, including pauses"),
+      screen.getByText("100 WPM all time · includes pauses"),
     ).toBeInTheDocument();
     expect(screen.getByText("25% from the prior period")).toBeInTheDocument();
     expect(screen.queryByText(/sample data/i)).not.toBeInTheDocument();

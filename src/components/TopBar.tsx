@@ -1,4 +1,4 @@
-import { Bell, CircleHelp, Keyboard, PanelLeft } from "lucide-react";
+import { Keyboard, PanelLeft } from "lucide-react";
 import type { ViewId } from "../types";
 import { ShortcutKeys } from "./Ui";
 
@@ -37,20 +37,6 @@ export function TopBar({ activeView, hotkey, onOpenNav }: TopBarProps) {
           <span>{hotkey === "⌥" ? "Tap or hold" : "Hold to speak"}</span>
           <ShortcutKeys value={hotkey} />
         </div>
-        <button type="button" className="icon-button" aria-label="Help">
-          <CircleHelp size={18} />
-        </button>
-        <button
-          type="button"
-          className="icon-button icon-button--notification"
-          aria-label="Notifications"
-        >
-          <Bell size={18} />
-          <span />
-        </button>
-        <button type="button" className="avatar" aria-label="Account menu">
-          D
-        </button>
       </div>
     </header>
   );

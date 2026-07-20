@@ -7,12 +7,14 @@ import {
   Settings2,
   ShieldCheck,
 } from "lucide-react";
-import type { ViewId } from "../types";
+import type { TranscriptionSource, ViewId } from "../types";
 import { ShortcutKeys, SpickLogo } from "./Ui";
 
 interface SidebarProps {
   activeView: ViewId;
   hotkey: string;
+  transcriptionSource: TranscriptionSource;
+  engineName?: string | null;
   onNavigate: (view: ViewId) => void;
 }
 
@@ -23,7 +25,48 @@ const navItems: Array<{ id: ViewId; label: string; icon: typeof BarChart3 }> = [
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
-export function Sidebar({ activeView, hotkey, onNavigate }: SidebarProps) {
+function transcriptionStatus(
+  source: TranscriptionSource,
+  engineName?: string | null,
+) {
+  switch (source) {
+    case "cloud":
+      return {
+        title: "Cloud transcription",
+        detail: engineName ?? "Selected cloud provider",
+      };
+    case "localWithCloudFallback":
+      return {
+        title: "Local first",
+        detail: `${engineName ?? "Local model"} · fallback on`,
+      };
+    case "local":
+      return {
+        title: "Local transcription",
+        detail: engineName ?? "Blocks protected fields",
+      };
+    case "loading":
+      return {
+        title: "Checking engine",
+        detail: "Loading saved settings",
+      };
+    case "preview":
+      return {
+        title: "Browser preview",
+        detail: "Development app required",
+      };
+  }
+}
+
+export function Sidebar({
+  activeView,
+  hotkey,
+  transcriptionSource,
+  engineName,
+  onNavigate,
+}: SidebarProps) {
+  const status = transcriptionStatus(transcriptionSource, engineName);
+
   return (
     <aside className="sidebar">
       <div className="sidebar__top">
@@ -69,8 +112,8 @@ export function Sidebar({ activeView, hotkey, onNavigate }: SidebarProps) {
         <div className="privacy-status">
           <ShieldCheck size={16} />
           <div>
-            <strong>Local transcription</strong>
-            <span>Blocks protected fields</span>
+            <strong>{status.title}</strong>
+            <span>{status.detail}</span>
           </div>
           <span className="status-dot" aria-label="Early build" />
         </div>

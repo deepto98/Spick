@@ -49,7 +49,10 @@ interface SettingsViewProps {
   shortcutPending: boolean;
   shortcutError?: string;
   settingsSaving: boolean;
+  settingsAcknowledged?: boolean;
+  settingsLoading?: boolean;
   nativeError?: string;
+  nativeErrorTitle?: string;
   clearError?: string;
   clearPendingScope?: ClearLocalDataScope | null;
   lastClearResult?: ClearLocalDataResult | null;
@@ -60,6 +63,7 @@ interface SettingsViewProps {
   onRefreshShortcut: () => void;
   onRequestInputMonitoring: () => void;
   onRestartOnboarding: () => void;
+  onRetryNativeSettings?: () => void;
   onClearLocalData?: (
     scope: ClearLocalDataScope,
   ) => Promise<ClearLocalDataResult | null>;
@@ -115,7 +119,10 @@ export function SettingsView({
   shortcutPending,
   shortcutError,
   settingsSaving,
+  settingsAcknowledged = true,
+  settingsLoading = false,
   nativeError,
+  nativeErrorTitle = "Couldn’t save that change",
   clearError,
   clearPendingScope = null,
   lastClearResult = null,
@@ -126,6 +133,7 @@ export function SettingsView({
   onRefreshShortcut,
   onRequestInputMonitoring,
   onRestartOnboarding,
+  onRetryNativeSettings,
   onClearLocalData,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("general");
@@ -136,7 +144,8 @@ export function SettingsView({
   const [confirmClearScope, setConfirmClearScope] =
     useState<ClearLocalDataScope | null>(null);
   const usesOptionGesture = settings.hotkey === "⌥";
-  const shortcutControlsDisabled = settingsSaving || shortcutPending;
+  const settingsControlsDisabled = settingsSaving || !settingsAcknowledged;
+  const shortcutControlsDisabled = settingsControlsDisabled || shortcutPending;
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
@@ -202,17 +211,37 @@ export function SettingsView({
         title="Settings"
         description="Shortcut, language, cleanup, and privacy choices are saved here. Unconnected controls are marked."
         actions={
-          <span className="settings-saved">
-            <Check size={14} />
-            {settingsSaving ? "Saving…" : "Saved on this Mac"}
+          <span
+            className={`settings-saved ${settingsAcknowledged ? "" : "settings-saved--unavailable"}`}
+            role="status"
+            aria-busy={settingsLoading || settingsSaving}
+          >
+            {settingsAcknowledged && <Check size={14} />}
+            {settingsLoading
+              ? "Loading saved settings…"
+              : settingsSaving
+                ? "Saving…"
+                : settingsAcknowledged
+                  ? "Saved on this Mac"
+                  : "Settings not loaded"}
           </span>
         }
       />
 
       {nativeError && (
         <div className="engine-inline-error" role="alert">
-          <strong>Couldn’t save that change</strong>
+          <strong>{nativeErrorTitle}</strong>
           <span>{nativeError}</span>
+          {onRetryNativeSettings && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={onRetryNativeSettings}
+              disabled={settingsLoading}
+            >
+              {settingsLoading ? "Trying again…" : "Try again"}
+            </button>
+          )}
         </div>
       )}
 
@@ -517,7 +546,7 @@ export function SettingsView({
                 <SelectField
                   label="Speech language"
                   value={settings.language}
-                  disabled={settingsSaving}
+                  disabled={settingsControlsDisabled}
                   onChange={(value) => update("language", value)}
                   options={[...SPEECH_LANGUAGE_OPTIONS]}
                   hint="Auto works with the widest range of models. Fixed choices are checked against the model or provider; xAI only accepts its shorter formatting-language list."
@@ -532,7 +561,7 @@ export function SettingsView({
                         className={
                           settings.cleanupLevel === level ? "active" : ""
                         }
-                        disabled={settingsSaving}
+                        disabled={settingsControlsDisabled}
                         onClick={() => update("cleanupLevel", level)}
                       >
                         <span>
@@ -588,7 +617,7 @@ export function SettingsView({
                     <Toggle
                       label="Keep transcript history"
                       checked={settings.keepHistory}
-                      disabled={settingsSaving}
+                      disabled={settingsControlsDisabled}
                       onChange={(value) => update("keepHistory", value)}
                     />
                   }
@@ -601,7 +630,7 @@ export function SettingsView({
                     <Toggle
                       label="Allow cloud fallback"
                       checked={settings.cloudFallback}
-                      disabled={settingsSaving}
+                      disabled={settingsControlsDisabled}
                       onChange={(value) => update("cloudFallback", value)}
                     />
                   }

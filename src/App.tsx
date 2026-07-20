@@ -38,7 +38,7 @@ import {
 } from "./lib/nativeSettings";
 import type { ClearLocalDataScope } from "./lib/nativeLocalData";
 import type { CloudProviderId } from "./lib/nativeCloud";
-import type { AppSettings, Engine, ViewId } from "./types";
+import type { AppSettings, Engine, TranscriptionSource, ViewId } from "./types";
 import { EnginesView } from "./views/EnginesView";
 import { SettingsView } from "./views/SettingsView";
 import { TodayView } from "./views/TodayView";
@@ -59,8 +59,14 @@ const defaultSettings: AppSettings = {
 function App() {
   const hudOnly =
     new URLSearchParams(window.location.search).get("window") === "hud";
+  const dictation = useDictationController(!hudOnly);
   const [activeView, setActiveView] = useState<ViewId>("today");
-  const [engines, setEngines] = useState<Engine[]>(initialEngines);
+  const [engines, setEngines] = useState<Engine[]>(() =>
+    dictation.native ? [] : initialEngines,
+  );
+  const [localModelsLoading, setLocalModelsLoading] = useState(
+    dictation.native && !hudOnly,
+  );
   const [modelDownloads, setModelDownloads] = useState<
     Record<string, ModelDownloadProgress>
   >({});
@@ -73,6 +79,12 @@ function App() {
   const cancelledModelDownloads = useRef(new Set<string>());
   const [modelError, setModelError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(
+    null,
+  );
+  const [settingsLoading, setSettingsLoading] = useState(
+    dictation.native && !hudOnly,
+  );
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsLoadRevision, setSettingsLoadRevision] = useState(0);
   const [nativeSettings, setNativeSettings] =
@@ -93,7 +105,6 @@ function App() {
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const engineSelectionRevision = useRef(0);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const dictation = useDictationController(!hudOnly);
   const localData = useLocalData(dictation.native && !hudOnly);
   const cloudProviders = useCloudProviders(dictation.native && !hudOnly);
   const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
@@ -142,12 +153,18 @@ function App() {
     let disposed = false;
     void getNativeSettings()
       .then((saved) => {
-        if (!disposed) acceptNativeSettings(saved);
+        if (!disposed) {
+          acceptNativeSettings(saved);
+          setSettingsLoadError(null);
+        }
       })
       .catch((reason) => {
         if (!disposed) {
-          setSettingsError(`Couldn’t read saved settings: ${reason}`);
+          setSettingsLoadError(`Couldn’t read saved settings: ${reason}`);
         }
+      })
+      .finally(() => {
+        if (!disposed) setSettingsLoading(false);
       });
     return () => {
       disposed = true;
@@ -155,10 +172,13 @@ function App() {
   }, [acceptNativeSettings, dictation.native, hudOnly, settingsLoadRevision]);
 
   const refreshLocalEngines = useCallback(async () => {
-    if (!dictation.native) return;
-    const catalog = await listLocalModels();
-    setEngines((current) => {
-      const templates = new Map(current.map((engine) => [engine.id, engine]));
+    if (!dictation.native || hudOnly) return;
+    setLocalModelsLoading(true);
+    try {
+      const catalog = await listLocalModels();
+      const templates = new Map(
+        initialEngines.map((engine) => [engine.id, engine]),
+      );
       const local = catalog.map<Engine>((model) => {
         const template = templates.get(model.manifest.id);
         return {
@@ -177,23 +197,26 @@ function App() {
           performance:
             model.state === "installed"
               ? "Ready on this Mac"
-              : "Benchmark pending",
+              : "Speed varies by Mac",
           recommended: model.manifest.id === "whisper-small-multilingual-q5-1",
         };
       });
-      return local;
-    });
-  }, [dictation.native]);
+      setEngines(local);
+      setModelError(null);
+    } finally {
+      setLocalModelsLoading(false);
+    }
+  }, [dictation.native, hudOnly]);
 
   useEffect(() => {
-    if (!dictation.native) return;
+    if (!dictation.native || hudOnly) return;
     const timeout = window.setTimeout(() => {
       void refreshLocalEngines().catch((reason) => {
         setModelError(`Couldn’t read local models: ${String(reason)}`);
       });
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [dictation.native, refreshLocalEngines]);
+  }, [dictation.native, hudOnly, refreshLocalEngines]);
 
   useEffect(() => {
     if (!dictation.native || dictation.state !== "error") return;
@@ -421,6 +444,33 @@ function App() {
   const hudLanguage = nativeSettings
     ? languagePolicyBadge(nativeSettings.languagePolicy)
     : dictation.language;
+  const selectedCloudProvider = cloudProviders.providers.find(
+    (provider) =>
+      provider.provider === nativeSettings?.transcriptionEngine.provider,
+  );
+  const selectedLocalEngine = engines.find(
+    (engine) => engine.id === nativeSettings?.transcriptionEngine.model,
+  );
+  const selectedEngineName = nativeSettings
+    ? (selectedCloudProvider?.modelName ??
+      selectedLocalEngine?.name ??
+      nativeSettings.transcriptionEngine.model)
+    : null;
+  const selectedEngineReady = nativeSettings
+    ? nativeSettings.transcriptionEngine.location === "cloud"
+      ? selectedCloudProvider?.configured === true
+      : selectedLocalEngine?.status === "active" ||
+        selectedLocalEngine?.status === "ready"
+    : false;
+  const transcriptionSource: TranscriptionSource = !dictation.native
+    ? "preview"
+    : !nativeSettings
+      ? "loading"
+      : nativeSettings.transcriptionEngine.location === "cloud"
+        ? "cloud"
+        : settings.cloudFallback
+          ? "localWithCloudFallback"
+          : "local";
 
   const installEngine = (id: string) => {
     if (dictation.native) {
@@ -500,7 +550,22 @@ function App() {
 
   const completeOnboarding = () => {
     window.localStorage.setItem("spick-onboarding-complete", "true");
+    setActiveView("engines");
     setOnboardingComplete(true);
+  };
+
+  const retrySettingsLoad = () => {
+    setSettingsError(null);
+    setSettingsLoadError(null);
+    setSettingsLoading(true);
+    setSettingsLoadRevision((revision) => revision + 1);
+  };
+
+  const retryLocalModels = () => {
+    setModelError(null);
+    void refreshLocalEngines().catch((reason) => {
+      setModelError(`Couldn’t read local models: ${String(reason)}`);
+    });
   };
 
   const restartOnboarding = () => {
@@ -549,17 +614,17 @@ function App() {
         shortcutPending={shortcut.pending}
         shortcutStatus={shortcut.status}
         settings={settings}
-        settingsError={settingsError ?? undefined}
+        settingsError={settingsLoadError ?? settingsError ?? undefined}
         settingsReady={settingsReady}
         settingsSaving={settingsSaving}
+        transcriptionSource={transcriptionSource}
+        engineName={selectedEngineName}
+        engineReady={selectedEngineReady}
         onRefreshAccessibility={() => void accessibility.refresh()}
         onRequestAccessibility={() => void accessibility.request()}
         onRefreshShortcut={() => void shortcut.refresh()}
         onRequestInputMonitoring={() => void shortcut.request()}
-        onRetrySettings={() => {
-          setSettingsError(null);
-          setSettingsLoadRevision((revision) => revision + 1);
-        }}
+        onRetrySettings={retrySettingsLoad}
         onSettingsChange={changeSettings}
         onComplete={completeOnboarding}
       />
@@ -585,6 +650,8 @@ function App() {
         <Sidebar
           activeView={activeView}
           hotkey={settings.hotkey}
+          transcriptionSource={transcriptionSource}
+          engineName={selectedEngineName}
           onNavigate={navigate}
         />
       </div>
@@ -631,6 +698,7 @@ function App() {
               native={dictation.native}
               cancellingModelIds={cancellingModels}
               pendingModelId={modelActionPending}
+              localLoading={localModelsLoading}
               error={modelError ?? undefined}
               cloudProviders={cloudProviders.providers}
               cloudLoading={cloudProviders.loading}
@@ -641,6 +709,7 @@ function App() {
               onCancelInstall={cancelEngineInstall}
               onInstall={installEngine}
               onRemove={removeEngine}
+              onLocalRefresh={retryLocalModels}
               onCloudRefresh={() => void cloudProviders.refresh()}
               onCloudConfigure={cloudProviders.configure}
               onCloudDelete={cloudProviders.removeCredential}
@@ -669,8 +738,17 @@ function App() {
               shortcutError={shortcut.error ?? undefined}
               shortcutPending={shortcut.pending}
               shortcutStatus={shortcut.status}
+              settingsAcknowledged={
+                !dictation.native || nativeSettings !== null
+              }
+              settingsLoading={settingsLoading}
               settingsSaving={settingsSaving}
-              nativeError={settingsError ?? undefined}
+              nativeError={settingsLoadError ?? settingsError ?? undefined}
+              nativeErrorTitle={
+                settingsLoadError
+                  ? "Couldn’t load saved settings"
+                  : "Couldn’t save that change"
+              }
               clearError={localData.clearError ?? undefined}
               clearPendingScope={localData.clearPendingScope}
               lastClearResult={localData.lastClearResult}
@@ -681,6 +759,9 @@ function App() {
               onRefreshShortcut={() => void shortcut.refresh()}
               onRequestInputMonitoring={() => void shortcut.request()}
               onRestartOnboarding={restartOnboarding}
+              onRetryNativeSettings={
+                settingsLoadError ? retrySettingsLoad : undefined
+              }
               onClearLocalData={clearSavedLocalData}
             />
           )}

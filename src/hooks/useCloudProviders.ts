@@ -43,6 +43,20 @@ function readableError(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+function sanitizedActivationError(reason: unknown) {
+  const printable = Array.from(readableError(reason), (character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127 ? " " : character;
+  }).join("");
+  const message = printable
+    .replace(/(?:sk-|xai-)[A-Za-z0-9._-]{8,}/g, "[redacted]")
+    .replace(/AIza[A-Za-z0-9_-]{8,}/g, "[redacted]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (message || "The native app did not provide a reason.").slice(0, 240);
+}
+
 export function useCloudProviders(enabled: boolean) {
   const [providers, setProviders] = useState<CloudProviderStatus[]>([]);
   const [loading, setLoading] = useState(enabled);
@@ -194,12 +208,12 @@ export function useCloudProviders(enabled: boolean) {
         );
         void refresh();
         return settings;
-      } catch {
+      } catch (reason) {
         ++dataGenerationRef.current;
         if (aliveRef.current) {
           setLoading(false);
           setError(
-            "Couldn’t activate that cloud provider. Check its saved key and try again.",
+            `Couldn’t activate that cloud provider: ${sanitizedActivationError(reason)}`,
           );
         }
         return null;

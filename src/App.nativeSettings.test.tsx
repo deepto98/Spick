@@ -33,6 +33,10 @@ const cloudMocks = vi.hoisted(() => ({
   removeCredential: vi.fn(),
 }));
 
+const modelMocks = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 vi.mock("./lib/nativeSettings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/nativeSettings")>();
   return {
@@ -130,7 +134,7 @@ vi.mock("./lib/nativeModels", () => ({
   cancelLocalModelInstall: vi.fn(),
   formatModelBytes: vi.fn(() => "0 MB"),
   installLocalModel: vi.fn(),
-  listLocalModels: vi.fn(async () => []),
+  listLocalModels: modelMocks.list,
   modelStatus: vi.fn(() => "available"),
   removeLocalModel: vi.fn(),
   subscribeToModelDownload: vi.fn(async () => () => undefined),
@@ -225,6 +229,8 @@ describe("native language and cleanup persistence", () => {
     cloudMocks.refresh.mockReset();
     cloudMocks.refresh.mockResolvedValue(true);
     cloudMocks.removeCredential.mockReset();
+    modelMocks.list.mockReset();
+    modelMocks.list.mockResolvedValue([]);
     nativeMocks.getSettings.mockResolvedValue(baseSettings);
   });
 
@@ -677,5 +683,51 @@ describe("native language and cleanup persistence", () => {
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("marks main settings unacknowledged until a failed load is retried", async () => {
+    nativeMocks.getSettings
+      .mockRejectedValueOnce(new Error("settings database is busy"))
+      .mockResolvedValueOnce(baseSettings);
+    render(<App />);
+
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Settings not loaded",
+      ),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "settings database is busy",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      expect(nativeMocks.getSettings).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Saved on this Mac"),
+    );
+  });
+
+  it("does not invent local models while the native catalog loads", async () => {
+    const catalog = deferred<[]>();
+    modelMocks.list.mockReturnValueOnce(catalog.promise);
+    render(<App />);
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Engines" }));
+
+    expect(screen.getByText("Loading local models…")).toBeVisible();
+    expect(screen.queryByText("Whisper Small")).toBeNull();
+
+    await act(async () => {
+      catalog.resolve([]);
+      await catalog.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByText("No local models found")).toBeVisible(),
+    );
   });
 });

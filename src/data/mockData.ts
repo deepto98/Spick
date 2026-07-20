@@ -10,7 +10,7 @@ export const initialEngines: Engine[] = [
     status: "available",
     languageSupport: "Multilingual model",
     size: "77.7 MB",
-    performance: "Benchmark pending",
+    performance: "Speed varies by Mac",
   },
   {
     id: "whisper-base-english-q5-1",
@@ -21,7 +21,7 @@ export const initialEngines: Engine[] = [
     status: "available",
     languageSupport: "English-only (.en)",
     size: "59.7 MB",
-    performance: "Benchmark pending",
+    performance: "Speed varies by Mac",
   },
   {
     id: "whisper-small-multilingual-q5-1",
@@ -32,7 +32,7 @@ export const initialEngines: Engine[] = [
     status: "available",
     languageSupport: "Multilingual model",
     size: "190.1 MB",
-    performance: "Benchmark pending",
+    performance: "Speed varies by Mac",
   },
   {
     id: "whisper-large-v3-turbo-multilingual-q5-0",
@@ -43,6 +43,6 @@ export const initialEngines: Engine[] = [
     status: "available",
     languageSupport: "Multilingual · includes Cantonese",
     size: "574.0 MB",
-    performance: "Benchmark pending",
+    performance: "Speed varies by Mac",
   },
 ];

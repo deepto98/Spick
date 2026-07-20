@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
-import type { AppSettings } from "../types";
+import type { AppSettings, TranscriptionSource } from "../types";
 import { DictationHud } from "./DictationHud";
 import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
 import { captureMacShortcut, matchesMacShortcut } from "../lib/shortcutCapture";
@@ -33,6 +33,9 @@ interface OnboardingProps {
   settingsError?: string;
   settingsReady: boolean;
   settingsSaving: boolean;
+  transcriptionSource: TranscriptionSource;
+  engineName?: string | null;
+  engineReady: boolean;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
   onRefreshShortcut: () => void;
@@ -67,6 +70,9 @@ export function Onboarding({
   settingsError,
   settingsReady,
   settingsSaving,
+  transcriptionSource,
+  engineName,
+  engineReady,
   onRequestAccessibility,
   onRefreshAccessibility,
   onRefreshShortcut,
@@ -84,6 +90,7 @@ export function Onboarding({
     accessibilityStatus?.state === "granted" ||
     accessibilityStatus?.state === "unsupported";
   const usesOptionGesture = settings.hotkey === "⌥";
+  const sourceCopy = onboardingSourceCopy(transcriptionSource, engineName);
 
   useEffect(() => {
     shortcutPracticeRef.current = "idle";
@@ -325,7 +332,7 @@ export function Onboarding({
                 <DictationHud state="listening" shortcut={settings.hotkey} />
               </div>
               <div className="welcome-demo__note">
-                <Check size={13} /> Local dictation, without sending audio away
+                <Check size={13} /> {sourceCopy.demo}
               </div>
             </div>
           </section>
@@ -546,8 +553,7 @@ export function Onboarding({
                 </div>
                 <span className="setup-field-group__hint">
                   <ShieldCheck size={13} />
-                  Both stay on this Mac. Bare words and other languages are left
-                  alone.
+                  {sourceCopy.cleanup}
                 </span>
               </div>
             </div>
@@ -606,7 +612,10 @@ export function Onboarding({
                 <Check size={14} />
                 <div>
                   <strong>Engine</strong>
-                  <small>whisper.cpp · choose a model next</small>
+                  <small>
+                    {engineName ?? "Choose an engine"}
+                    {!engineReady && " · finish in Engines"}
+                  </small>
                 </div>
               </span>
               <span>
@@ -644,10 +653,51 @@ export function Onboarding({
 
       <footer className="onboarding-footer">
         <span>Early macOS build</span>
-        <span>Local transcription · careful field handoff</span>
+        <span>{sourceCopy.footer}</span>
       </footer>
     </main>
   );
+}
+
+function onboardingSourceCopy(
+  source: TranscriptionSource,
+  engineName?: string | null,
+) {
+  switch (source) {
+    case "cloud":
+      return {
+        demo: `Cloud transcription${engineName ? ` · ${engineName}` : ""}`,
+        cleanup:
+          "Audio leaves this Mac for transcription. Filler cleanup, when on, runs here after the text returns.",
+        footer: "Cloud transcription · careful field handoff",
+      };
+    case "localWithCloudFallback":
+      return {
+        demo: "Local first · cloud fallback is on",
+        cleanup:
+          "Local cleanup stays here. If fallback runs, provider handling applies to that upload.",
+        footer: "Local first · cloud fallback on",
+      };
+    case "local":
+      return {
+        demo: "Local transcription · audio stays on this Mac",
+        cleanup:
+          "Both cleanup modes run on this Mac. Bare words and other languages are left alone.",
+        footer: "Local transcription · careful field handoff",
+      };
+    case "loading":
+      return {
+        demo: "Checking your saved transcription engine",
+        cleanup: "Your saved cleanup and engine choices are still loading.",
+        footer: "Loading saved engine · careful field handoff",
+      };
+    case "preview":
+      return {
+        demo: "Desktop preview · recording stays off",
+        cleanup: "These choices take effect in the Tauri development app.",
+        footer: "Browser preview · development app required",
+      };
+  }
 }
 
 function SetupHeading({

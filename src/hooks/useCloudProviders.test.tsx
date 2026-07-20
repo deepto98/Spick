@@ -252,4 +252,31 @@ describe("useCloudProviders", () => {
     expect(result.current.error).toBeNull();
     expect(result.current.providers).toHaveLength(3);
   });
+
+  it("preserves the native activation reason without exposing a credential", async () => {
+    const credential = ["sk", "never-render-this-secret"].join("-");
+    mocks.list.mockResolvedValue([
+      { ...statuses.openAi, configured: true },
+      statuses.xAi,
+      statuses.gemini,
+    ]);
+    mocks.activate.mockRejectedValueOnce(
+      new Error(
+        `Fixed language is not supported by OpenAI. Debug token: ${credential}`,
+      ),
+    );
+    const { result } = renderHook(() => useCloudProviders(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let saved: NativeAppSettings | null = cloudSettings;
+    await act(async () => {
+      saved = await result.current.activate("openAi");
+    });
+
+    expect(saved).toBeNull();
+    expect(result.current.error).toBe(
+      "Couldn’t activate that cloud provider: Fixed language is not supported by OpenAI. Debug token: [redacted]",
+    );
+    expect(result.current.error).not.toContain(credential);
+  });
 });

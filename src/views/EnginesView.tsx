@@ -32,6 +32,7 @@ interface EnginesViewProps {
   native: boolean;
   cancellingModelIds: ReadonlySet<string>;
   pendingModelId: string | null;
+  localLoading: boolean;
   error?: string;
   cloudProviders: CloudProviderStatus[];
   cloudLoading: boolean;
@@ -42,6 +43,7 @@ interface EnginesViewProps {
   onCancelInstall: (id: string) => void;
   onInstall: (id: string) => void;
   onRemove: (id: string) => void;
+  onLocalRefresh: () => void;
   onCloudRefresh: () => void;
   onCloudConfigure: (
     provider: CloudProviderId,
@@ -107,6 +109,7 @@ export function EnginesView({
   native,
   cancellingModelIds,
   pendingModelId,
+  localLoading,
   error,
   cloudProviders,
   cloudLoading,
@@ -117,6 +120,7 @@ export function EnginesView({
   onCancelInstall,
   onInstall,
   onRemove,
+  onLocalRefresh,
   onCloudRefresh,
   onCloudConfigure,
   onCloudDelete,
@@ -141,12 +145,6 @@ export function EnginesView({
   );
   const localCount = engines.filter((engine) => engine.kind === "local").length;
   const cloudCount = shownCloudProviders.length;
-  const installedCount = engines.filter(
-    (engine) =>
-      engine.kind === "local" &&
-      (engine.status === "active" || engine.status === "ready"),
-  ).length;
-
   const clearCredentialDraft = () => {
     setCredentialDraft("");
     setShowCredential(false);
@@ -216,6 +214,16 @@ export function EnginesView({
         <div className="engine-inline-error" role="alert">
           <strong>Model action didn’t finish</strong>
           <span>{error}</span>
+          {native && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={onLocalRefresh}
+              disabled={localLoading || pendingModelId !== null}
+            >
+              {localLoading ? "Refreshing…" : "Try again"}
+            </button>
+          )}
         </div>
       )}
 
@@ -256,72 +264,82 @@ export function EnginesView({
 
       {kind === "local" ? (
         <>
-          <section className="hardware-banner">
-            <div className="hardware-banner__icon">
-              <Cpu size={21} />
-            </div>
-            <div className="hardware-banner__copy">
-              <span className="hardware-banner__eyebrow">THIS MAC</span>
-              <strong>We haven’t checked this Mac yet</strong>
-              <p>Spick will test model speed here before suggesting one.</p>
-            </div>
-            <div className="hardware-banner__stats">
-              <span>
-                <Gauge size={14} /> <strong>Speed test</strong> after install
-              </span>
-              <span>
-                <HardDrive size={14} /> <strong>{installedCount}</strong>{" "}
-                {installedCount === 1 ? "model" : "models"} installed
-              </span>
-            </div>
-            <span className="compatibility-badge">
-              <Gauge size={13} /> {native ? "Metal ready" : "Desktop only"}
-            </span>
-          </section>
-
           <div className="section-heading">
             <div>
               <h2>Local models</h2>
               <p>Every download is checked before Spick can load it.</p>
             </div>
-            <span>
-              <ShieldCheck size={14} />
-              {cloudFallbackEnabled
-                ? "Local first · fallback on"
-                : "Stays on this Mac"}
-            </span>
-          </div>
-
-          <div className="engine-list">
-            {visibleEngines.map((engine) => (
-              <EngineCard
-                engine={engine}
-                key={engine.id}
-                download={downloads[engine.id]}
-                actionsDisabled={
-                  pendingModelId !== null || cloudPending !== null
-                }
-                cancelling={cancellingModelIds.has(engine.id)}
-                pending={pendingModelId === engine.id}
-                onActivate={() => onActivate(engine.id)}
-                onCancelInstall={() => onCancelInstall(engine.id)}
-                onInstall={() => onInstall(engine.id)}
-                onRemove={() => onRemove(engine.id)}
-              />
-            ))}
-          </div>
-
-          <div className="engine-note">
-            <LockKeyhole size={17} />
-            <div>
-              <strong>This model runs on this Mac</strong>
+            <div className="section-heading__actions">
               <span>
+                <ShieldCheck size={14} />
                 {cloudFallbackEnabled
-                  ? "Cloud fallback is on. If local transcription cannot finish, that recording can be sent to your first configured, language-compatible cloud provider."
-                  : "With cloud fallback off, recordings go from memory to whisper.cpp and are released when the session ends."}
+                  ? "Local first · fallback on"
+                  : "Stays on this Mac"}
               </span>
+              {native && (
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  onClick={onLocalRefresh}
+                  disabled={localLoading || pendingModelId !== null}
+                >
+                  <RefreshCw size={14} />
+                  {localLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              )}
             </div>
           </div>
+
+          {visibleEngines.length > 0 ? (
+            <div className="engine-list" aria-busy={localLoading}>
+              {visibleEngines.map((engine) => (
+                <EngineCard
+                  engine={engine}
+                  key={engine.id}
+                  download={downloads[engine.id]}
+                  actionsDisabled={
+                    localLoading ||
+                    pendingModelId !== null ||
+                    cloudPending !== null
+                  }
+                  cancelling={cancellingModelIds.has(engine.id)}
+                  pending={pendingModelId === engine.id}
+                  onActivate={() => onActivate(engine.id)}
+                  onCancelInstall={() => onCancelInstall(engine.id)}
+                  onInstall={() => onInstall(engine.id)}
+                  onRemove={() => onRemove(engine.id)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="cloud-provider-empty" aria-busy={localLoading}>
+              <Laptop size={20} />
+              <strong>
+                {localLoading
+                  ? "Loading local models…"
+                  : "No local models found"}
+              </strong>
+              <span>
+                {localLoading
+                  ? "Reading the verified catalog from the native app."
+                  : "Refresh to ask the native app for its model catalog again."}
+              </span>
+            </div>
+          )}
+
+          {visibleEngines.length > 0 && (
+            <div className="engine-note">
+              <LockKeyhole size={17} />
+              <div>
+                <strong>Local models run on this Mac</strong>
+                <span>
+                  {cloudFallbackEnabled
+                    ? "Cloud fallback is on. If local transcription cannot finish, that recording can be sent to your first configured, language-compatible cloud provider."
+                    : "With cloud fallback off, recordings go from memory to whisper.cpp and are released when the session ends."}
+                </span>
+              </div>
+            </div>
+          )}
         </>
       ) : (
         <>

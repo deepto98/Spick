@@ -24,6 +24,46 @@ const settings: AppSettings = {
 afterEach(cleanup);
 
 describe("cleanup settings", () => {
+  it("marks settings unacknowledged and offers a native load retry", () => {
+    const onRetryNativeSettings = vi.fn();
+    render(
+      <SettingsView
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        onChange={vi.fn()}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRestartOnboarding={vi.fn()}
+        onRetryNativeSettings={onRetryNativeSettings}
+        settings={settings}
+        settingsAcknowledged={false}
+        settingsLoading={false}
+        settingsSaving={false}
+        nativeError="Couldn’t read saved settings: database busy"
+        nativeErrorTitle="Couldn’t load saved settings"
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Settings not loaded");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Couldn’t load saved settings",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Language & cleanup" }));
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetryNativeSettings).toHaveBeenCalledOnce();
+  });
+
   it("offers only the cleanup behavior the native pipeline can perform", () => {
     const onChange = vi.fn();
     render(
