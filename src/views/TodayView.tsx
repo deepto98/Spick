@@ -497,7 +497,7 @@ export function TodayView({
         <section className="panel try-panel">
           <div className="try-panel__glow" />
           <span className="try-panel__eyebrow">
-            <i /> {native ? "MIC CONNECTED" : "BROWSER PREVIEW"}
+            <i /> {native ? "DESKTOP DICTATION" : "BROWSER PREVIEW"}
           </span>
           <h2>Try the shortcut</h2>
           <p>
@@ -529,7 +529,7 @@ export function TodayView({
                     : latestDelivery.transcriptAvailable
                       ? "Ready to copy"
                       : "Field left alone"
-                  : "Local recorder ready"
+                  : "Waiting for your shortcut"
                 : "Development app required"}
             </strong>
           </div>

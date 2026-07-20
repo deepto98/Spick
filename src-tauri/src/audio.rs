@@ -35,6 +35,8 @@ const FINALIZE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const DISCARD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_OUTPUT_SAMPLES: usize =
     OUTPUT_SAMPLE_RATE as usize * (MAX_CAPTURE_DURATION_MS as usize / 1_000);
+const DISCONTINUOUS_CAPTURE_ERROR: &str =
+    "The microphone buffer fell behind and missed part of this recording. Nothing was transcribed or typed. Please try again.";
 
 pub(crate) type LevelSink = Arc<dyn Fn(AudioLevelEvent) + Send + Sync>;
 pub(crate) type ErrorSink = Arc<dyn Fn(AudioCaptureFailure) + Send + Sync>;
@@ -215,9 +217,11 @@ impl CaptureFinalizer {
     }
 
     pub(crate) fn finalize(self) -> Result<FinalizedCapture, String> {
-        self.active
+        let capture = self
+            .active
             .request_finalization(true, FINALIZE_RESPONSE_TIMEOUT)?
-            .ok_or_else(|| "the microphone worker did not return captured audio".into())
+            .ok_or_else(|| "the microphone worker did not return captured audio".to_string())?;
+        require_continuous_capture(capture)
     }
 
     pub(crate) fn discard(self) -> Result<(), String> {
@@ -468,6 +472,14 @@ impl FinalizedCapture {
 
     pub(crate) fn pcm_16khz(&self) -> &[f32] {
         &self.samples_16khz
+    }
+}
+
+fn require_continuous_capture(capture: FinalizedCapture) -> Result<FinalizedCapture, String> {
+    if capture.dropped_chunks == 0 {
+        Ok(capture)
+    } else {
+        Err(DISCONTINUOUS_CAPTURE_ERROR.into())
     }
 }
 
@@ -1044,6 +1056,38 @@ mod tests {
         assert_eq!(capture.pcm_16khz(), &[0.1, 0.2]);
         assert_eq!(capture.status().captured_ms, 1);
         assert_eq!(capture.samples_16khz, vec![0.1, 0.2]);
+    }
+
+    #[test]
+    fn discontinuous_capture_is_rejected_before_transcription() {
+        let capture = FinalizedCapture {
+            samples_16khz: vec![0.1, 0.2],
+            device_name: "Test".into(),
+            input_sample_rate: 48_000,
+            input_channels: 1,
+            captured_ms: 1,
+            dropped_chunks: 2,
+        };
+
+        assert_eq!(
+            require_continuous_capture(capture).err().unwrap(),
+            DISCONTINUOUS_CAPTURE_ERROR
+        );
+    }
+
+    #[test]
+    fn complete_capture_remains_available_for_transcription() {
+        let capture = FinalizedCapture {
+            samples_16khz: vec![0.1, 0.2],
+            device_name: "Test".into(),
+            input_sample_rate: 48_000,
+            input_channels: 1,
+            captured_ms: 1,
+            dropped_chunks: 0,
+        };
+
+        let capture = require_continuous_capture(capture).unwrap();
+        assert_eq!(capture.pcm_16khz(), &[0.1, 0.2]);
     }
 
     #[test]

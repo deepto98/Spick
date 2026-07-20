@@ -127,6 +127,8 @@ describe("local usage and transcript history", () => {
   it("renders real usage with capture-duration wording and a safe trend", () => {
     render(<TodayView {...baseProps} />);
 
+    expect(screen.getByText("DESKTOP DICTATION")).toBeVisible();
+    expect(screen.queryByText("MIC CONNECTED")).toBeNull();
     expect(screen.getAllByText("120").length).toBeGreaterThan(0);
     expect(screen.getByText("recording words/min")).toBeInTheDocument();
     expect(screen.getByText("500 words all time")).toBeInTheDocument();
@@ -135,6 +137,14 @@ describe("local usage and transcript history", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("25% from the prior period")).toBeInTheDocument();
     expect(screen.queryByText(/sample data/i)).not.toBeInTheDocument();
+  });
+
+  it("uses a neutral idle recorder status without claiming a mic connection", () => {
+    render(<TodayView {...baseProps} delivery={null} lastTranscript={null} />);
+
+    expect(screen.getByText("DESKTOP DICTATION")).toBeVisible();
+    expect(screen.getByText("Waiting for your shortcut")).toBeVisible();
+    expect(screen.queryByText(/mic connected/i)).toBeNull();
   });
 
   it("shows loading, empty, and retryable error states without sample rows", () => {
