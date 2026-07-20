@@ -37,10 +37,12 @@ import {
   SettingRow,
   ShortcutKeys,
   Toggle,
+  type SelectFieldOption,
 } from "../components/Ui";
 
 interface SettingsViewProps {
   settings: AppSettings;
+  native?: boolean;
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
@@ -49,6 +51,7 @@ interface SettingsViewProps {
   shortcutError?: string;
   settingsSaving: boolean;
   audioInputDevices?: NativeAudioInputDevice[];
+  audioInputDevicesLoaded?: boolean;
   audioInputDevicesLoading?: boolean;
   audioInputDevicesError?: string;
   settingsAcknowledged?: boolean;
@@ -115,6 +118,7 @@ function optionShortcutDescription(status: NativeShortcutStatus | null) {
 
 export function SettingsView({
   settings,
+  native = true,
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
@@ -123,6 +127,7 @@ export function SettingsView({
   shortcutError,
   settingsSaving,
   audioInputDevices = [],
+  audioInputDevicesLoaded = false,
   audioInputDevicesLoading = false,
   audioInputDevicesError,
   settingsAcknowledged = true,
@@ -154,16 +159,35 @@ export function SettingsView({
   const settingsControlsDisabled = settingsSaving || !settingsAcknowledged;
   const shortcutControlsDisabled = settingsControlsDisabled || shortcutPending;
   const systemMicrophone = "System default microphone";
-  const microphoneOptions = Array.from(
-    new Set([
-      systemMicrophone,
-      settings.microphone,
-      ...audioInputDevices.map((device) => device.name),
-    ]),
-  );
+  const savedMicrophoneUnavailable =
+    native &&
+    audioInputDevicesLoaded &&
+    !audioInputDevicesLoading &&
+    !audioInputDevicesError &&
+    settings.microphone !== systemMicrophone &&
+    !audioInputDevices.some((device) => device.name === settings.microphone);
+  const microphoneOptions: SelectFieldOption[] = [systemMicrophone];
+  const microphoneOptionValues = new Set([systemMicrophone]);
+  if (!microphoneOptionValues.has(settings.microphone)) {
+    microphoneOptions.push(
+      savedMicrophoneUnavailable
+        ? {
+            value: settings.microphone,
+            label: `${settings.microphone} — disconnected`,
+            disabled: true,
+          }
+        : settings.microphone,
+    );
+    microphoneOptionValues.add(settings.microphone);
+  }
+  audioInputDevices.forEach((device) => {
+    if (microphoneOptionValues.has(device.name)) return;
+    microphoneOptions.push(device.name);
+    microphoneOptionValues.add(device.name);
+  });
   const defaultMicrophone = audioInputDevices.find(
     (device) => device.isDefault,
-  )?.name;
+  );
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
@@ -315,12 +339,18 @@ export function SettingsView({
                 <SettingRow
                   icon={<AppWindow size={17} />}
                   title="Show floating widget"
-                  description="Show the movable microphone control above other apps while dictating."
+                  description={
+                    !native
+                      ? "Available in the Tauri development app."
+                      : settings.showWidget
+                        ? "Turn this off to hide the current widget and keep it hidden for future dictations."
+                        : "Turn this on for your next dictation. It won’t appear midway through one already in progress."
+                  }
                   control={
                     <Toggle
                       label="Show floating widget"
                       checked={settings.showWidget}
-                      disabled={settingsControlsDisabled}
+                      disabled={settingsControlsDisabled || !native}
                       onChange={(value) => update("showWidget", value)}
                     />
                   }
@@ -439,31 +469,42 @@ export function SettingsView({
                           ? "Looking for connected microphones…"
                           : audioInputDevicesError
                             ? "Spick couldn’t refresh the device list. Your saved choice is unchanged."
-                            : defaultMicrophone
-                              ? `System default: ${defaultMicrophone}`
-                              : "Choose a microphone, or follow the system default."}
+                            : savedMicrophoneUnavailable
+                              ? "Your saved microphone is not connected."
+                              : defaultMicrophone
+                                ? `System default: ${defaultMicrophone.name}`
+                                : "Choose a microphone, or follow the system default."}
                       </p>
                     </div>
                   </div>
-                  <SelectField
-                    label="Microphone"
-                    value={settings.microphone}
-                    disabled={
-                      settingsControlsDisabled || audioInputDevicesLoading
-                    }
-                    onChange={(value) => update("microphone", value)}
-                    options={microphoneOptions}
-                  />
-                  {audioInputDevicesError && onRefreshAudioInputDevices && (
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={onRefreshAudioInputDevices}
-                      disabled={audioInputDevicesLoading}
-                    >
-                      Refresh microphones
-                    </button>
-                  )}
+                  <div className="microphone-control">
+                    <SelectField
+                      label="Microphone"
+                      value={settings.microphone}
+                      disabled={
+                        settingsControlsDisabled || audioInputDevicesLoading
+                      }
+                      onChange={(value) => update("microphone", value)}
+                      options={microphoneOptions}
+                    />
+                    {savedMicrophoneUnavailable && (
+                      <span className="microphone-warning" role="status">
+                        <AlertTriangle size={13} />
+                        Choose System default or a connected microphone before
+                        your next dictation.
+                      </span>
+                    )}
+                    {audioInputDevicesError && onRefreshAudioInputDevices && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={onRefreshAudioInputDevices}
+                        disabled={audioInputDevicesLoading}
+                      >
+                        Refresh microphones
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <SettingRow
                   icon={<BellRing size={17} />}

@@ -68,11 +68,14 @@ export function PageHeader({
   );
 }
 
+export type SelectFieldOption =
+  string | { value: string; label: string; disabled?: boolean };
+
 interface SelectFieldProps {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  options: string[];
+  options: SelectFieldOption[];
   hint?: string;
   disabled?: boolean;
 }
@@ -101,11 +104,17 @@ export function SelectField({
           aria-describedby={hintId}
           onChange={(event) => onChange(event.currentTarget.value)}
         >
-          {options.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
+          {options.map((option) => {
+            const value = typeof option === "string" ? option : option.value;
+            const label = typeof option === "string" ? option : option.label;
+            const optionDisabled =
+              typeof option === "string" ? false : option.disabled;
+            return (
+              <option key={value} value={value} disabled={optionDisabled}>
+                {label}
+              </option>
+            );
+          })}
         </select>
         <ChevronDown size={15} aria-hidden="true" />
       </span>

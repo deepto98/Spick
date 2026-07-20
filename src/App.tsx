@@ -118,9 +118,11 @@ function App() {
   >([]);
   const [audioInputDevicesLoading, setAudioInputDevicesLoading] =
     useState(false);
+  const [audioInputDevicesLoaded, setAudioInputDevicesLoaded] = useState(false);
   const [audioInputDevicesError, setAudioInputDevicesError] = useState<
     string | null
   >(null);
+  const audioInputDevicesRequest = useRef(0);
   const localData = useLocalData(dictation.native && !hudOnly);
   const cloudProviders = useCloudProviders(dictation.native && !hudOnly);
   const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
@@ -193,14 +195,21 @@ function App() {
 
   const refreshAudioInputDevices = useCallback(async () => {
     if (!dictation.native || hudOnly) return;
+    const request = ++audioInputDevicesRequest.current;
     setAudioInputDevicesLoading(true);
     setAudioInputDevicesError(null);
     try {
-      setAudioInputDevices(await listNativeAudioInputDevices());
+      const devices = await listNativeAudioInputDevices();
+      if (request !== audioInputDevicesRequest.current) return;
+      setAudioInputDevices(devices);
+      setAudioInputDevicesLoaded(true);
     } catch (reason) {
+      if (request !== audioInputDevicesRequest.current) return;
       setAudioInputDevicesError(`Couldn’t list microphones: ${String(reason)}`);
     } finally {
-      setAudioInputDevicesLoading(false);
+      if (request === audioInputDevicesRequest.current) {
+        setAudioInputDevicesLoading(false);
+      }
     }
   }, [dictation.native, hudOnly]);
 
@@ -794,7 +803,9 @@ function App() {
           {activeView === "settings" && (
             <SettingsView
               settings={settings}
+              native={dictation.native}
               audioInputDevices={audioInputDevices}
+              audioInputDevicesLoaded={audioInputDevicesLoaded}
               audioInputDevicesLoading={audioInputDevicesLoading}
               audioInputDevicesError={audioInputDevicesError ?? undefined}
               accessibilityError={accessibility.error ?? undefined}

@@ -3226,6 +3226,24 @@ p {
 .setting-block > .field {
   width: 100%;
 }
+.microphone-control {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+.microphone-warning {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: #8a452e;
+  font-size: 7.5px;
+  line-height: 1.45;
+}
+.microphone-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
 .shortcut-control {
   display: flex;
   min-width: 0;

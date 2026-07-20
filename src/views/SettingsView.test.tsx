@@ -70,6 +70,77 @@ describe("cleanup settings", () => {
     ).toBeVisible();
   });
 
+  it("marks a saved disconnected microphone and keeps System default available", () => {
+    render(
+      <SettingsView
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        audioInputDevices={[{ name: "MacBook Microphone", isDefault: true }]}
+        audioInputDevicesLoaded
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        onChange={vi.fn()}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRestartOnboarding={vi.fn()}
+        settings={{ ...settings, microphone: "Desk Mic" }}
+        settingsSaving={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+
+    expect(
+      screen.getByRole("option", { name: "Desk Mic — disconnected" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("option", { name: "System default microphone" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText(/Choose System default or a connected microphone/),
+    ).toBeVisible();
+  });
+
+  it("disables the native floating-widget setting in browser preview", () => {
+    const onChange = vi.fn();
+    render(
+      <SettingsView
+        native={false}
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "unsupported", canRequest: false }}
+        shortcutPending={false}
+        shortcutStatus={null}
+        onChange={onChange}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRestartOnboarding={vi.fn()}
+        settings={settings}
+        settingsSaving={false}
+      />,
+    );
+
+    const widget = screen.getByRole("switch", {
+      name: "Show floating widget",
+    });
+    expect(widget).toBeDisabled();
+    expect(
+      screen.getByText("Available in the Tauri development app."),
+    ).toBeVisible();
+    fireEvent.click(widget);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("marks settings unacknowledged and offers a native load retry", () => {
     const onRetryNativeSettings = vi.fn();
     render(

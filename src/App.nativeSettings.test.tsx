@@ -371,6 +371,51 @@ describe("native language and cleanup persistence", () => {
       inputDeviceName: "Desk Mic",
     });
     await waitFor(() => expect(microphone).toHaveValue("Desk Mic"));
+
+    fireEvent.change(microphone, {
+      target: { value: "System default microphone" },
+    });
+    await waitFor(() =>
+      expect(nativeMocks.updateSettings).toHaveBeenCalledTimes(2),
+    );
+    expect(nativeMocks.updateSettings.mock.calls[1]?.[0]).toMatchObject({
+      inputDeviceName: null,
+    });
+    await waitFor(() =>
+      expect(microphone).toHaveValue("System default microphone"),
+    );
+  });
+
+  it("ignores a stale microphone list after a newer refresh finishes", async () => {
+    const firstList = deferred<Array<{ name: string; isDefault: boolean }>>();
+    const secondList = deferred<Array<{ name: string; isDefault: boolean }>>();
+    audioMocks.list
+      .mockReturnValueOnce(firstList.promise)
+      .mockReturnValueOnce(secondList.promise);
+    render(<App />);
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(audioMocks.list).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(audioMocks.list).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+
+    await act(async () => {
+      secondList.resolve([{ name: "New Mic", isDefault: true }]);
+      await secondList.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "New Mic" })).toBeVisible(),
+    );
+
+    await act(async () => {
+      firstList.resolve([{ name: "Stale Mic", isDefault: true }]);
+      await firstList.promise;
+    });
+    expect(screen.getByRole("option", { name: "New Mic" })).toBeVisible();
+    expect(screen.queryByRole("option", { name: "Stale Mic" })).toBeNull();
   });
 
   it("persists visibility for the native floating HUD", async () => {
@@ -395,6 +440,9 @@ describe("native language and cleanup persistence", () => {
         screen.getByRole("switch", { name: "Show floating widget" }),
       ).toHaveAttribute("aria-checked", "false"),
     );
+    expect(
+      screen.getByText(/Turn this on for your next dictation/i),
+    ).toBeVisible();
   });
 
   it("uses an acknowledged cloud engine in the next settings write", async () => {
