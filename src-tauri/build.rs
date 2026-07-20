@@ -1,5 +1,10 @@
 fn main() {
     let target_is_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    if target_is_macos {
+        // IOHIDCheckAccess/IOHIDRequestAccess provide the authoritative,
+        // tri-state Input Monitoring enrollment API on macOS 10.15+.
+        println!("cargo:rustc-link-lib=framework=IOKit");
+    }
     if target_is_macos && std::env::var_os("CARGO_FEATURE_MACOS_INPUT_METHOD_PROTOTYPE").is_some() {
         let mut peer_identity = cc::Build::new();
         peer_identity

@@ -38,6 +38,10 @@ const IDLE_GESTURE_POLL: Duration = Duration::from_millis(250);
 const OPTION_WATCHDOG_POLL: Duration = Duration::from_millis(250);
 #[cfg(target_os = "macos")]
 const OPTION_RECOVERY_GRACE: Duration = Duration::from_millis(750);
+#[cfg(target_os = "macos")]
+const OPTION_RETRY_INITIAL: Duration = Duration::from_millis(750);
+#[cfg(target_os = "macos")]
+const OPTION_RETRY_MAX: Duration = Duration::from_secs(30);
 
 #[cfg(target_os = "macos")]
 static OPTION_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
@@ -75,13 +79,72 @@ impl ChordQueueFlags {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InputMonitoringAccess {
+    Granted,
+    Denied,
+    Unknown,
+}
+
+impl InputMonitoringAccess {
+    fn is_granted(self) -> bool {
+        self == Self::Granted
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutStatus {
     pub option_selected: bool,
     pub option_listener_active: bool,
     pub input_monitoring_granted: bool,
+    pub input_monitoring_access: InputMonitoringAccess,
     pub fallback_shortcut: Option<&'static str>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default)]
+struct OptionRetryState {
+    failures: u32,
+    next_attempt_at: Option<Instant>,
+    observed_access: Option<InputMonitoringAccess>,
+}
+
+#[cfg(target_os = "macos")]
+impl OptionRetryState {
+    fn should_attempt(&mut self, now: Instant, access: InputMonitoringAccess) -> bool {
+        if self.observed_access != Some(access) {
+            self.failures = 0;
+            self.next_attempt_at = None;
+            self.observed_access = Some(access);
+        }
+        self.next_attempt_at.is_none_or(|retry_at| now >= retry_at)
+    }
+
+    fn record_failure(&mut self, now: Instant, access: InputMonitoringAccess) {
+        self.observed_access = Some(access);
+        self.next_attempt_at = Some(now + option_retry_delay(self.failures));
+        self.failures = self.failures.saturating_add(1);
+    }
+
+    fn record_success(&mut self, access: InputMonitoringAccess) {
+        self.failures = 0;
+        self.next_attempt_at = None;
+        self.observed_access = Some(access);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn option_retry_delay(failures: u32) -> Duration {
+    let multiplier = 1_u32 << failures.min(16);
+    OPTION_RETRY_INITIAL
+        .saturating_mul(multiplier)
+        .min(OPTION_RETRY_MAX)
 }
 
 #[derive(Default)]
@@ -91,6 +154,8 @@ struct ShortcutController {
     fallback_registered: bool,
     #[cfg(target_os = "macos")]
     option_runtime: Option<OptionRuntime>,
+    #[cfg(target_os = "macos")]
+    option_retry: OptionRetryState,
 }
 
 impl ShortcutController {
@@ -147,6 +212,8 @@ impl ShortcutController {
         self.accelerator = Some(shortcut.to_owned());
         self.option_selected = false;
         self.fallback_registered = false;
+        #[cfg(target_os = "macos")]
+        self.option_retry.clear();
         Ok(())
     }
 
@@ -155,10 +222,9 @@ impl ShortcutController {
         // A recovering worker is not a usable shortcut. Try a fresh listener
         // (or install the fallback if permission was revoked) unless the
         // current listener is actually receiving events.
-        if self.option_selected
-            && self.option_listener_active()
-            && macos_option::listen_access_granted()
-        {
+        let input_monitoring_access = macos_option::input_monitoring_access();
+        if self.option_selected && self.option_listener_active() {
+            self.option_retry.record_success(input_monitoring_access);
             return Ok(());
         }
 
@@ -175,6 +241,8 @@ impl ShortcutController {
                 })();
                 if let Err(error) = cleanup_result {
                     new_runtime.stop();
+                    self.option_retry
+                        .record_failure(Instant::now(), input_monitoring_access);
                     return Err(error);
                 }
 
@@ -185,9 +253,13 @@ impl ShortcutController {
                 self.accelerator = None;
                 self.option_selected = true;
                 self.fallback_registered = false;
+                self.option_retry.record_success(input_monitoring_access);
                 Ok(())
             }
             Err(listener_error) => {
+                let fallback_already_active = self.fallback_registered;
+                self.option_retry
+                    .record_failure(Instant::now(), input_monitoring_access);
                 let shortcuts = app.global_shortcut();
                 let fallback_was_registered = shortcuts.is_registered(OPTION_FALLBACK_SHORTCUT);
                 if !fallback_was_registered {
@@ -214,7 +286,11 @@ impl ShortcutController {
                 if let Some(mut previous) = self.option_runtime.take() {
                     previous.stop();
                 }
-                eprintln!("Option-key dictation is waiting for Input Monitoring: {listener_error}");
+                if !fallback_already_active {
+                    eprintln!(
+                        "Option-key dictation is using its fallback while macOS rejects the passive listener: {listener_error}"
+                    );
+                }
                 self.accelerator = None;
                 self.option_selected = true;
                 self.fallback_registered = true;
@@ -231,16 +307,18 @@ impl ShortcutController {
     }
 
     fn status(&self) -> ShortcutStatus {
+        #[cfg(target_os = "macos")]
+        let input_monitoring_access = macos_option::input_monitoring_access();
+        #[cfg(not(target_os = "macos"))]
+        let input_monitoring_access = InputMonitoringAccess::Unknown;
         ShortcutStatus {
             option_selected: self.option_selected,
             #[cfg(target_os = "macos")]
             option_listener_active: self.option_selected && self.option_listener_active(),
             #[cfg(not(target_os = "macos"))]
             option_listener_active: false,
-            #[cfg(target_os = "macos")]
-            input_monitoring_granted: macos_option::listen_access_granted(),
-            #[cfg(not(target_os = "macos"))]
-            input_monitoring_granted: false,
+            input_monitoring_granted: input_monitoring_access.is_granted(),
+            input_monitoring_access,
             fallback_shortcut: (self.option_selected && self.fallback_registered)
                 .then_some(OPTION_FALLBACK_SHORTCUT),
         }
@@ -338,13 +416,14 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Result<ShortcutStatus, String> 
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     #[cfg(target_os = "macos")]
     {
-        let permission_granted = macos_option::listen_access_granted();
+        let input_monitoring_access = macos_option::input_monitoring_access();
         if option_status_recovery_required(
             controller.option_selected,
             controller.option_listener_active(),
-            controller.fallback_registered,
-            permission_granted,
         ) && !dictation_is_active(app)
+            && controller
+                .option_retry
+                .should_attempt(Instant::now(), input_monitoring_access)
         {
             // This runs only from the dashboard status command, never from the
             // gesture worker being replaced, so stopping an unhealthy runtime
@@ -360,24 +439,23 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Result<ShortcutStatus, String> 
 pub fn request_input_monitoring_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
     #[cfg(target_os = "macos")]
     {
-        // CoreGraphics documents the request API as requesting access "if
-        // absent". Preflight first anyway so normal status recovery never
-        // repeats a potentially prompting call after access is already set.
-        let granted =
-            macos_option::listen_access_granted() || macos_option::request_listen_access();
+        // This is the only path that asks IOHID to enroll the process in the
+        // Input Monitoring privacy service. Status and watchdog checks never
+        // prompt on their own.
+        let input_monitoring_access = macos_option::request_input_monitoring_access();
         let mut controller = shortcut_controller()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if option_activation_required(
             controller.option_selected,
-            controller.option_listener_active() && granted,
+            controller.option_listener_active(),
         ) && !dictation_is_active(app)
         {
             if let Err(error) = controller.activate_option(app) {
                 eprintln!("Option shortcut activation failed after its permission check: {error}");
             }
         }
-        granted
+        input_monitoring_access.is_granted()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -430,15 +508,18 @@ fn run_option_watchdog<R: Runtime>(app: AppHandle<R>) {
     loop {
         thread::sleep(OPTION_WATCHDOG_POLL);
         let recovery_needed = {
-            let controller = shortcut_controller()
+            let mut controller = shortcut_controller()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            option_status_recovery_required(
-                controller.option_selected,
-                controller.option_listener_active(),
-                controller.fallback_registered,
-                macos_option::listen_access_granted(),
-            )
+            let listener_active = controller.option_listener_active();
+            let recovery_needed =
+                option_status_recovery_required(controller.option_selected, listener_active);
+            if controller.option_selected && listener_active {
+                controller
+                    .option_retry
+                    .record_success(macos_option::input_monitoring_access());
+            }
+            recovery_needed
         };
         if !recovery_needed {
             unhealthy_since = None;
@@ -457,15 +538,17 @@ fn run_option_watchdog<R: Runtime>(app: AppHandle<R>) {
         let still_needs_recovery = option_status_recovery_required(
             controller.option_selected,
             controller.option_listener_active(),
-            controller.fallback_registered,
-            macos_option::listen_access_granted(),
         );
-        if still_needs_recovery {
+        let retry_due = still_needs_recovery
+            && controller
+                .option_retry
+                .should_attempt(now, macos_option::input_monitoring_access());
+        if retry_due {
             if let Err(error) = controller.activate_option(&app) {
                 eprintln!("Option shortcut recovery failed: {error}");
             }
+            unhealthy_since = None;
         }
-        unhealthy_since = None;
     }
 }
 
@@ -491,20 +574,11 @@ fn option_activation_required(option_selected: bool, listener_active: bool) -> b
 }
 
 #[cfg(target_os = "macos")]
-fn option_status_recovery_required(
-    option_selected: bool,
-    listener_active: bool,
-    fallback_registered: bool,
-    permission_granted: bool,
-) -> bool {
-    if !option_selected || (listener_active && permission_granted) {
-        return false;
-    }
-
-    // A denied installation with an existing fallback is already usable.
-    // Retry automatically once permission appears, or immediately when an
-    // unhealthy listener has not yet been replaced by the fallback.
-    permission_granted || !fallback_registered
+fn option_status_recovery_required(option_selected: bool, listener_active: bool) -> bool {
+    // IOHID pane enrollment and actual event-tap readiness are intentionally
+    // independent. Accessibility can authorize a passive event tap even when
+    // Input Monitoring is not enrolled, so listener health is authoritative.
+    option_selected && !listener_active
 }
 
 fn unregister_accelerator<R: Runtime>(app: &AppHandle<R>, shortcut: &str) -> Result<(), String> {
@@ -659,8 +733,9 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event_state: ShortcutState) 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        option_activation_required, option_status_recovery_required, ChordQueueFlags, GestureInput,
-        ShortcutController,
+        option_activation_required, option_retry_delay, option_status_recovery_required,
+        ChordQueueFlags, GestureInput, InputMonitoringAccess, OptionRetryState, ShortcutController,
+        ShortcutStatus, OPTION_FALLBACK_SHORTCUT, OPTION_RETRY_INITIAL, OPTION_RETRY_MAX,
     };
 
     #[test]
@@ -676,6 +751,22 @@ mod tests {
     }
 
     #[test]
+    fn input_monitoring_state_extends_the_compatible_status_shape() {
+        let value = serde_json::to_value(ShortcutStatus {
+            option_selected: true,
+            option_listener_active: false,
+            input_monitoring_granted: false,
+            input_monitoring_access: InputMonitoringAccess::Denied,
+            fallback_shortcut: Some(OPTION_FALLBACK_SHORTCUT),
+        })
+        .expect("shortcut status should serialize");
+
+        assert_eq!(value["inputMonitoringGranted"], false);
+        assert_eq!(value["inputMonitoringAccess"], "denied");
+        assert_eq!(value["fallbackShortcut"], "CommandOrControl+Shift+Space");
+    }
+
+    #[test]
     fn inactive_selected_option_backend_is_always_reactivated() {
         // Recovery must not depend on whether a fallback happens to be
         // registered. A revoked listener needs the fallback; a listener whose
@@ -687,18 +778,44 @@ mod tests {
 
     #[test]
     fn revoked_listener_self_heals_to_fallback_then_retries_after_grant() {
-        // The first dashboard status check after revocation must replace the
-        // unhealthy listener with the already-supported fallback.
-        assert!(option_status_recovery_required(true, false, false, false));
-        // Once installed, the fallback is a stable, usable denied state and
-        // status polling does not repeatedly rebuild it or prompt.
-        assert!(!option_status_recovery_required(true, false, true, false));
-        // Returning from System Settings after granting access promotes the
-        // fallback back to the Option listener automatically.
-        assert!(option_status_recovery_required(true, false, true, true));
-        assert!(!option_status_recovery_required(true, true, false, true));
-        // Treat a stale "active" health bit as unusable once access is gone.
-        assert!(option_status_recovery_required(true, true, false, false));
+        // Listener health, rather than the privacy-pane state or presence of a
+        // fallback, determines whether recovery is needed.
+        assert!(option_status_recovery_required(true, false));
+        assert!(!option_status_recovery_required(true, true));
+        assert!(!option_status_recovery_required(false, false));
+    }
+
+    #[test]
+    fn option_retry_backoff_is_capped_and_permission_changes_retry_immediately() {
+        let started_at = std::time::Instant::now();
+        let mut retry = OptionRetryState::default();
+
+        assert!(retry.should_attempt(started_at, InputMonitoringAccess::Denied));
+        retry.record_failure(started_at, InputMonitoringAccess::Denied);
+        assert!(!retry.should_attempt(
+            started_at + OPTION_RETRY_INITIAL - std::time::Duration::from_millis(1),
+            InputMonitoringAccess::Denied
+        ));
+        assert!(retry.should_attempt(
+            started_at + OPTION_RETRY_INITIAL,
+            InputMonitoringAccess::Denied
+        ));
+
+        // A real IOHID state transition bypasses the old state's delay.
+        assert!(retry.should_attempt(
+            started_at + std::time::Duration::from_millis(1),
+            InputMonitoringAccess::Granted
+        ));
+        assert_eq!(option_retry_delay(100), OPTION_RETRY_MAX);
+    }
+
+    #[test]
+    fn a_healthy_listener_clears_prior_retry_failures() {
+        let started_at = std::time::Instant::now();
+        let mut retry = OptionRetryState::default();
+        retry.record_failure(started_at, InputMonitoringAccess::Unknown);
+        retry.record_success(InputMonitoringAccess::Unknown);
+        assert!(retry.should_attempt(started_at, InputMonitoringAccess::Unknown));
     }
 
     #[test]

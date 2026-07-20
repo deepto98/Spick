@@ -15,6 +15,7 @@ describe("native Option shortcut", () => {
       optionSelected: true,
       optionListenerActive: false,
       inputMonitoringGranted: false,
+      inputMonitoringAccess: "denied" as const,
       fallbackShortcut: "CommandOrControl+Shift+Space",
     };
     vi.mocked(invoke).mockResolvedValueOnce(status);

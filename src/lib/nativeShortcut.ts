@@ -4,6 +4,8 @@ export interface NativeShortcutStatus {
   optionSelected: boolean;
   optionListenerActive: boolean;
   inputMonitoringGranted: boolean;
+  /** Present in current native builds; optional keeps older dev binaries readable. */
+  inputMonitoringAccess?: "granted" | "denied" | "unknown";
   fallbackShortcut: string | null;
 }
 

@@ -9,6 +9,7 @@ const unsupportedStatus: NativeShortcutStatus = {
   optionSelected: false,
   optionListenerActive: false,
   inputMonitoringGranted: false,
+  inputMonitoringAccess: "unknown",
   fallbackShortcut: null,
 };
 

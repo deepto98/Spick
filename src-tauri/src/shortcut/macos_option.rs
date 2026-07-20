@@ -1,4 +1,5 @@
 use std::{
+    os::raw::c_int,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         mpsc::{self, SyncSender, TrySendError},
@@ -16,21 +17,25 @@ use core_graphics::event::{
 
 use super::{
     gesture::{GestureEvent, GestureInput},
-    ChordQueueFlags,
+    ChordQueueFlags, InputMonitoringAccess,
 };
 use crate::hud;
 
 const LISTENER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(100);
 const REBUILD_BACKOFF: Duration = Duration::from_millis(100);
+const REBUILD_MAX_BACKOFF: Duration = Duration::from_secs(5);
 const LISTENER_STOPPED: u8 = 0;
 const LISTENER_ACTIVE: u8 = 1;
 const LISTENER_RECOVERING: u8 = 2;
 const KEY_WORDS: usize = 4;
+const IO_HID_REQUEST_TYPE_LISTEN_EVENT: c_int = 1;
+const IO_HID_ACCESS_TYPE_GRANTED: c_int = 0;
+const IO_HID_ACCESS_TYPE_DENIED: c_int = 1;
 
 extern "C" {
-    fn CGPreflightListenEventAccess() -> bool;
-    fn CGRequestListenEventAccess() -> bool;
+    fn IOHIDCheckAccess(request_type: c_int) -> c_int;
+    fn IOHIDRequestAccess(request_type: c_int) -> bool;
 }
 
 pub struct ListenerHandle {
@@ -59,12 +64,26 @@ impl Drop for ListenerHandle {
     }
 }
 
-pub fn listen_access_granted() -> bool {
-    unsafe { CGPreflightListenEventAccess() }
+pub fn input_monitoring_access() -> InputMonitoringAccess {
+    input_monitoring_access_from_raw(unsafe { IOHIDCheckAccess(IO_HID_REQUEST_TYPE_LISTEN_EVENT) })
 }
 
-pub fn request_listen_access() -> bool {
-    unsafe { CGRequestListenEventAccess() }
+pub fn request_input_monitoring_access() -> InputMonitoringAccess {
+    // Unlike the CoreGraphics preflight/request pair, this explicitly enrolls
+    // the process for the Input Monitoring privacy service.
+    if unsafe { IOHIDRequestAccess(IO_HID_REQUEST_TYPE_LISTEN_EVENT) } {
+        InputMonitoringAccess::Granted
+    } else {
+        input_monitoring_access()
+    }
+}
+
+fn input_monitoring_access_from_raw(raw: c_int) -> InputMonitoringAccess {
+    match raw {
+        IO_HID_ACCESS_TYPE_GRANTED => InputMonitoringAccess::Granted,
+        IO_HID_ACCESS_TYPE_DENIED => InputMonitoringAccess::Denied,
+        _ => InputMonitoringAccess::Unknown,
+    }
 }
 
 pub fn start_listener(
@@ -72,10 +91,6 @@ pub fn start_listener(
     overflowed: Arc<AtomicBool>,
     chord_queue: Arc<ChordQueueFlags>,
 ) -> Result<ListenerHandle, String> {
-    if !listen_access_granted() {
-        return Err("Allow Input Monitoring for Spick in System Settings".into());
-    }
-
     let stop = Arc::new(AtomicBool::new(false));
     let health = Arc::new(AtomicU8::new(LISTENER_RECOVERING));
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -123,6 +138,7 @@ fn run_listener(
     ready_sender: SyncSender<Result<(), String>>,
 ) {
     let mut ready_sender = Some(ready_sender);
+    let mut rebuild_failures = 0_u32;
     while !stop.load(Ordering::Acquire) {
         let rebuild = Arc::new(AtomicBool::new(false));
         let pressed_inputs = Arc::new(PressedInputs::default());
@@ -203,7 +219,8 @@ fn run_listener(
                     ));
                     return;
                 }
-                thread::sleep(REBUILD_BACKOFF);
+                sleep_with_stop(&stop, rebuild_backoff(rebuild_failures));
+                rebuild_failures = rebuild_failures.saturating_add(1);
                 continue;
             }
         };
@@ -217,7 +234,8 @@ fn run_listener(
                     ));
                     return;
                 }
-                thread::sleep(REBUILD_BACKOFF);
+                sleep_with_stop(&stop, rebuild_backoff(rebuild_failures));
+                rebuild_failures = rebuild_failures.saturating_add(1);
                 continue;
             }
         };
@@ -227,6 +245,7 @@ fn run_listener(
         run_loop.add_source(&source, default_mode);
         event_tap.enable();
         health.store(LISTENER_ACTIVE, Ordering::Release);
+        rebuild_failures = 0;
         if let Some(ready) = ready_sender.take() {
             let _ = ready.send(Ok(()));
         }
@@ -238,8 +257,26 @@ fn run_listener(
         run_loop.remove_source(&source, default_mode);
         health.store(LISTENER_RECOVERING, Ordering::Release);
         if rebuild.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
-            thread::sleep(REBUILD_BACKOFF);
+            sleep_with_stop(&stop, REBUILD_BACKOFF);
         }
+    }
+}
+
+fn rebuild_backoff(failures: u32) -> Duration {
+    let multiplier = 1_u32 << failures.min(16);
+    REBUILD_BACKOFF
+        .saturating_mul(multiplier)
+        .min(REBUILD_MAX_BACKOFF)
+}
+
+fn sleep_with_stop(stop: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(remaining.min(RUN_LOOP_POLL));
     }
 }
 
@@ -408,6 +445,33 @@ fn has_disallowed_modifier(flags: CGEventFlags) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iohid_access_values_are_mapped_without_guessing_unknown_values() {
+        assert_eq!(
+            input_monitoring_access_from_raw(IO_HID_ACCESS_TYPE_GRANTED),
+            InputMonitoringAccess::Granted
+        );
+        assert_eq!(
+            input_monitoring_access_from_raw(IO_HID_ACCESS_TYPE_DENIED),
+            InputMonitoringAccess::Denied
+        );
+        assert_eq!(
+            input_monitoring_access_from_raw(2),
+            InputMonitoringAccess::Unknown
+        );
+        assert_eq!(
+            input_monitoring_access_from_raw(99),
+            InputMonitoringAccess::Unknown
+        );
+    }
+
+    #[test]
+    fn event_tap_rebuild_backoff_is_capped() {
+        assert_eq!(rebuild_backoff(0), REBUILD_BACKOFF);
+        assert_eq!(rebuild_backoff(1), REBUILD_BACKOFF * 2);
+        assert_eq!(rebuild_backoff(32), REBUILD_MAX_BACKOFF);
+    }
 
     #[test]
     fn option_flag_changes_map_to_down_and_up() {
