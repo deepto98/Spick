@@ -99,7 +99,7 @@ const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
 ))]
-const KEYBOARD_EVENT_CONFIRMATION_BUDGET: Duration = Duration::from_millis(160);
+const INSERTION_CONFIRMATION_BUDGET: Duration = Duration::from_millis(160);
 #[cfg(all(
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
@@ -403,16 +403,16 @@ impl Worker {
         let _ = expected_bundle_identifier;
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
-        ensure_not_secure(&application)
+        ensure_not_secure(&application, deadline)
             .map_err(|error| error.with_compatibility_target_pid(application_pid))?;
         #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
-        ensure_not_secure(&application)?;
+        ensure_not_secure(&application, deadline)?;
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
-        let editable = resolve_editable_target(&focus_anchor)
+        let editable = resolve_editable_target(&focus_anchor, deadline)
             .map_err(|error| error.with_compatibility_target_pid(application_pid))?;
         #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
-        let editable = resolve_editable_target(&focus_anchor)?;
+        let editable = resolve_editable_target(&focus_anchor, deadline)?;
         #[cfg(feature = "macos-input-method-compatibility-harness")]
         if let Some(expected) = expected_selection {
             let has_selection = editable.selection.length > 0;
@@ -470,11 +470,6 @@ impl Worker {
                 #[cfg(feature = "macos-input-method-prototype")]
                 input_method_lease,
                 selection: editable.selection,
-                #[cfg(all(
-                    debug_assertions,
-                    not(feature = "macos-input-method-compatibility-harness")
-                ))]
-                selected_text_settable: editable.selected_text_settable,
                 observer,
             },
         );
@@ -500,7 +495,12 @@ impl Worker {
                 "the captured text field is no longer available",
             )
         })?;
-        revalidate_captured_target(&target, deadline)?;
+        let selected_text_settable = revalidate_captured_target(&target, deadline)?;
+        #[cfg(any(
+            not(debug_assertions),
+            feature = "macos-input-method-compatibility-harness"
+        ))]
+        let _ = selected_text_settable;
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
         {
@@ -530,10 +530,13 @@ impl Worker {
                 });
             }
 
-            if target.selected_text_settable {
-                commit_through_accessibility(&target, transcript, deadline)
-            } else {
-                commit_through_unicode_keyboard_event(&target, transcript, deadline)
+            match development_insertion_path(selected_text_settable) {
+                DevelopmentInsertionPath::ElementAddressed => {
+                    commit_through_accessibility(&target, transcript, deadline)
+                }
+                DevelopmentInsertionPath::PidKeyboardEvent => {
+                    commit_through_unicode_keyboard_event(&target, transcript, deadline)
+                }
             }
         }
 
@@ -552,7 +555,7 @@ impl Worker {
 
         #[cfg(all(not(debug_assertions), not(feature = "macos-input-method-prototype")))]
         {
-            let _ = (transcript, &mut target);
+            let _ = (transcript, &mut target, selected_text_settable);
             Err(TextTargetError::new(
                 TextTargetErrorKind::Unsupported,
                 "Automatic typing is not enabled in this build; the transcript is ready to copy",
@@ -571,18 +574,13 @@ struct CapturedTarget {
     #[cfg(feature = "macos-input-method-prototype")]
     input_method_lease: Option<InputMethodLease>,
     selection: CFRange,
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
-    selected_text_settable: bool,
     observer: ObserverLease,
 }
 
 fn revalidate_captured_target(
     target: &CapturedTarget,
     deadline: Instant,
-) -> Result<(), TextTargetError> {
+) -> Result<bool, TextTargetError> {
     pump_run_loop();
     if target.observer.was_invalidated() {
         return Err(TextTargetError::new(
@@ -598,34 +596,7 @@ fn revalidate_captured_target(
         ));
     }
 
-    let focused = read_focused_context(deadline)?;
-    let current_application = focused.application;
-    if !elements_equal(&current_application, &target.application) || focused.pid != target.pid {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::FocusChanged,
-            "The active app changed, so Spick did not type the transcript",
-        ));
-    }
-    set_element_timeout(&current_application)?;
-    ensure_not_secure(&current_application)?;
-
-    let current_anchor = focused.focus_anchor;
-    if !elements_equal(&current_anchor, &target.focus_anchor)
-        || read_pid(&current_anchor)? != target.pid
-    {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::FocusChanged,
-            "The cursor moved to another field, so Spick did not type the transcript",
-        ));
-    }
-
-    let editable = resolve_editable_target(&current_anchor)?;
-    if !elements_equal(&editable.element, &target.element) {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::FocusChanged,
-            "The editable field changed, so Spick did not type the transcript",
-        ));
-    }
+    let editable = read_current_editable_target(target, deadline)?;
     if !ranges_equal(editable.selection, target.selection) {
         return Err(TextTargetError::new(
             TextTargetErrorKind::SelectionChanged,
@@ -650,7 +621,44 @@ fn revalidate_captured_target(
             ));
         }
     }
-    Ok(())
+    Ok(editable.selected_text_settable)
+}
+
+fn read_current_editable_target(
+    target: &CapturedTarget,
+    deadline: Instant,
+) -> Result<EditableTarget, TextTargetError> {
+    let focused = read_focused_context(deadline)?;
+    let current_application = focused.application;
+    if !elements_equal(&current_application, &target.application) || focused.pid != target.pid {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The active app changed, so Spick did not type the transcript",
+        ));
+    }
+    ensure_not_secure(&current_application, deadline)?;
+    check_deadline(deadline)?;
+
+    let current_anchor = focused.focus_anchor;
+    set_element_timeout(&current_anchor, deadline)?;
+    if !elements_equal(&current_anchor, &target.focus_anchor)
+        || read_pid(&current_anchor)? != target.pid
+    {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The cursor moved to another field, so Spick did not type the transcript",
+        ));
+    }
+
+    let editable = resolve_editable_target(&current_anchor, deadline)?;
+    if !elements_equal(&editable.element, &target.element) {
+        return Err(TextTargetError::new(
+            TextTargetErrorKind::FocusChanged,
+            "The editable field changed, so Spick did not type the transcript",
+        ));
+    }
+    check_deadline(deadline)?;
+    Ok(editable)
 }
 
 #[cfg(all(
@@ -662,14 +670,9 @@ fn commit_through_accessibility(
     transcript: &str,
     deadline: Instant,
 ) -> Result<TextInsertionReceipt, TextTargetError> {
-    if !target.selected_text_settable {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::Unsupported,
-            "This field does not accept direct text insertion; the transcript is ready to copy",
-        ));
-    }
     check_deadline(deadline)?;
     let (inserted_range, expected_caret) = insertion_ranges(target.selection, transcript)?;
+    set_element_timeout(&target.element, deadline)?;
     let attribute = CFString::from_static_str(AX_SELECTED_TEXT);
     let value = CFString::from_str(transcript);
     let value: &CFType = &value;
@@ -681,37 +684,49 @@ fn commit_through_accessibility(
         ));
     }
 
-    // AX setters are synchronous from the caller's perspective, but give the
-    // target's Accessibility bridge one run-loop turn before asking it to read
-    // the exact UTF-16 range back.
-    pump_run_loop();
-    let readback = read_string_for_range(&target.element, inserted_range).map_err(|_| {
-        TextTargetError::new(
-            TextTargetErrorKind::Indeterminate,
-            "The field accepted a write but could not confirm its contents; check it before copying",
-        )
-    })?;
-    if readback.as_deref() != Some(transcript) {
-        return Err(TextTargetError::new(
-            TextTargetErrorKind::Indeterminate,
-            "The field accepted a write but its contents did not match; check it before copying",
-        ));
-    }
-    let caret_repositioned = read_optional_range(&target.element, AX_SELECTED_TEXT_RANGE)
-        .map(|selection| selection.is_some_and(|selection| ranges_equal(selection, expected_caret)))
-        .unwrap_or(false);
+    confirm_element_addressed_write(
+        &target.element,
+        inserted_range,
+        expected_caret,
+        transcript,
+        deadline,
+    )
+}
 
-    Ok(TextInsertionReceipt {
-        target_app: None,
-        caret_repositioned,
-    })
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevelopmentInsertionPath {
+    ElementAddressed,
+    PidKeyboardEvent,
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn development_insertion_path(selected_text_settable: bool) -> DevelopmentInsertionPath {
+    if selected_text_settable {
+        DevelopmentInsertionPath::ElementAddressed
+    } else {
+        DevelopmentInsertionPath::PidKeyboardEvent
+    }
 }
 
 /// Development fallback for controls (including Notes versions) that expose a
-/// readable selection but no `AXSelectedText` setter. The event is posted only
-/// to the captured PID after exact app, element, and selection revalidation.
-/// An unmapped virtual key is deliberate: a client that ignores the Unicode
-/// payload should insert nothing rather than a layout-dependent character.
+/// readable selection but no `AXSelectedText` setter. PID delivery cannot bind
+/// a keyboard event atomically to one Accessibility element, so this remains a
+/// debug-only compatibility path. It narrows the unavoidable dispatch micro-race
+/// with a second exact revalidation immediately before posting, never retries a
+/// posted event, and treats any post-dispatch target shift as indeterminate.
 #[cfg(all(
     debug_assertions,
     not(feature = "macos-input-method-compatibility-harness")
@@ -744,42 +759,213 @@ fn commit_through_unicode_keyboard_event(
             )
         })?;
     key_down.set_string(transcript);
+
+    // Build everything first, then minimize the gap between the last exact
+    // target snapshot and the asynchronous PID-scoped post.
+    if revalidate_captured_target(target, deadline)? {
+        return commit_through_accessibility(target, transcript, deadline);
+    }
     key_down.post_to_pid(target.pid);
     key_up.post_to_pid(target.pid);
 
-    // CGEventPostToPid is asynchronous and has no delivery result. Treat the
-    // readable selection that qualified this target as a bounded acknowledgement.
-    // Exact range readback, where implemented, adds a content check.
-    let confirmation_deadline = deadline.min(Instant::now() + KEYBOARD_EVENT_CONFIRMATION_BUDGET);
+    // CGEventPostToPid is asynchronous and has no delivery result. Never post
+    // another event after this point. Re-read the exact app, focus anchor,
+    // editable element, selection, and (where available) inserted contents.
+    let confirmation_deadline = deadline.min(Instant::now() + INSERTION_CONFIRMATION_BUDGET);
     loop {
         pump_run_loop();
-        match read_optional_range(&target.element, AX_SELECTED_TEXT_RANGE) {
-            Ok(Some(selection)) if ranges_equal(selection, expected_caret) => {
-                if let Some(readback) = read_string_for_range(&target.element, inserted_range)? {
-                    if readback != transcript {
-                        return Err(TextTargetError::new(
-                            TextTargetErrorKind::Indeterminate,
-                            "The field moved its caret but did not confirm the inserted text; check it before copying",
-                        ));
+        let editable = match read_current_editable_target(target, confirmation_deadline) {
+            Ok(editable) => editable,
+            Err(error)
+                if insertion_confirmation_error_is_retryable(error.kind)
+                    && Instant::now() < confirmation_deadline =>
+            {
+                sleep_for_retry(confirmation_deadline);
+                continue;
+            }
+            Err(_) => return Err(indeterminate_keyboard_delivery_error()),
+        };
+        match keyboard_selection_state(editable.selection, target.selection, expected_caret) {
+            KeyboardSelectionState::Confirmed => {
+                set_element_timeout(&target.element, confirmation_deadline)
+                    .map_err(|_| indeterminate_keyboard_delivery_error())?;
+                match read_string_for_range(&target.element, inserted_range) {
+                    Ok(readback)
+                        if matches!(
+                            insertion_readback_state(readback.as_deref(), transcript),
+                            InsertionReadbackState::Confirmed | InsertionReadbackState::Unavailable
+                        ) =>
+                    {
+                        return Ok(TextInsertionReceipt {
+                            target_app: None,
+                            caret_repositioned: true,
+                        });
                     }
+                    Ok(_) => {}
+                    Err(error) if insertion_confirmation_error_is_retryable(error.kind) => {}
+                    Err(_) => return Err(indeterminate_keyboard_delivery_error()),
                 }
+            }
+            KeyboardSelectionState::Pending => {}
+            KeyboardSelectionState::Shifted => {
+                return Err(indeterminate_keyboard_delivery_error());
+            }
+        }
+        if Instant::now() >= confirmation_deadline {
+            return Err(indeterminate_keyboard_delivery_error());
+        }
+        sleep_for_retry(confirmation_deadline);
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn confirm_element_addressed_write(
+    element: &AXUIElement,
+    inserted_range: CFRange,
+    expected_caret: CFRange,
+    transcript: &str,
+    deadline: Instant,
+) -> Result<TextInsertionReceipt, TextTargetError> {
+    let confirmation_deadline = deadline.min(Instant::now() + INSERTION_CONFIRMATION_BUDGET);
+    loop {
+        pump_run_loop();
+        set_element_timeout(element, confirmation_deadline)
+            .map_err(|_| indeterminate_element_write_error())?;
+        let caret_repositioned = read_optional_range(element, AX_SELECTED_TEXT_RANGE)
+            .ok()
+            .flatten()
+            .is_some_and(|selection| ranges_equal(selection, expected_caret));
+        set_element_timeout(element, confirmation_deadline)
+            .map_err(|_| indeterminate_element_write_error())?;
+        match read_string_for_range(element, inserted_range) {
+            Ok(readback)
+                if insertion_readback_state(readback.as_deref(), transcript)
+                    == InsertionReadbackState::Confirmed =>
+            {
+                return Ok(TextInsertionReceipt {
+                    target_app: None,
+                    caret_repositioned,
+                });
+            }
+            Ok(readback)
+                if caret_repositioned
+                    && insertion_readback_state(readback.as_deref(), transcript)
+                        == InsertionReadbackState::Unavailable =>
+            {
                 return Ok(TextInsertionReceipt {
                     target_app: None,
                     caret_repositioned: true,
                 });
             }
             Ok(_) => {}
-            Err(error) if focused_context_error_is_transient(error.kind) => {}
-            Err(error) => return Err(error),
+            Err(error) if insertion_confirmation_error_is_retryable(error.kind) => {}
+            Err(_) => return Err(indeterminate_element_write_error()),
         }
         if Instant::now() >= confirmation_deadline {
-            return Err(TextTargetError::new(
-                TextTargetErrorKind::Indeterminate,
-                "macOS sent the text event but the field did not confirm its new caret; check it before copying",
-            ));
+            return Err(indeterminate_element_write_error());
         }
-        thread::sleep(FOCUSED_CONTEXT_RETRY_DELAY);
+        sleep_for_retry(confirmation_deadline);
     }
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn insertion_confirmation_error_is_retryable(kind: TextTargetErrorKind) -> bool {
+    focused_context_error_is_transient(kind)
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InsertionReadbackState {
+    Confirmed,
+    Unavailable,
+    Mismatch,
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn insertion_readback_state(readback: Option<&str>, transcript: &str) -> InsertionReadbackState {
+    match readback {
+        Some(value) if value == transcript => InsertionReadbackState::Confirmed,
+        Some(_) => InsertionReadbackState::Mismatch,
+        None => InsertionReadbackState::Unavailable,
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardSelectionState {
+    Pending,
+    Confirmed,
+    Shifted,
+}
+
+#[cfg(any(
+    test,
+    all(
+        debug_assertions,
+        not(feature = "macos-input-method-compatibility-harness")
+    )
+))]
+fn keyboard_selection_state(
+    current: CFRange,
+    original: CFRange,
+    expected: CFRange,
+) -> KeyboardSelectionState {
+    if ranges_equal(current, expected) {
+        KeyboardSelectionState::Confirmed
+    } else if ranges_equal(current, original) {
+        KeyboardSelectionState::Pending
+    } else {
+        KeyboardSelectionState::Shifted
+    }
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn indeterminate_element_write_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Indeterminate,
+        "The field accepted a write but could not confirm its contents; check it before copying",
+    )
+}
+
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn indeterminate_keyboard_delivery_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::Indeterminate,
+        "macOS sent the text event but could not confirm the exact field and contents; check it before copying",
+    )
 }
 
 #[cfg(any(
@@ -1643,10 +1829,6 @@ fn notification_registration_is_best_effort_success(result: AXError) -> bool {
 struct EditableTarget {
     element: CFRetained<AXUIElement>,
     selection: CFRange,
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
     selected_text_settable: bool,
 }
 
@@ -1701,29 +1883,36 @@ fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetE
     let retry_deadline = deadline.min(Instant::now() + FOCUSED_CONTEXT_RETRY_BUDGET);
 
     loop {
-        check_deadline(deadline)?;
-        match read_focused_context_once() {
-            Ok(context) => return Ok(context),
+        check_deadline(retry_deadline)?;
+        match read_focused_context_once(retry_deadline) {
+            Ok(context) => {
+                check_deadline(retry_deadline)?;
+                return Ok(context);
+            }
             Err(error) if focused_context_error_is_transient(error.kind) => {
                 if Instant::now() >= retry_deadline {
                     return Err(error);
                 }
-                thread::sleep(FOCUSED_CONTEXT_RETRY_DELAY);
+                sleep_for_retry(retry_deadline);
             }
             Err(error) => return Err(error),
         }
     }
 }
 
-fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
+fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTargetError> {
+    check_deadline(deadline)?;
     let system = unsafe { AXUIElement::new_system_wide() };
     let mut system_anchor = None;
-    let application = match read_optional_focus_element(&system, AX_FOCUSED_APPLICATION)? {
+    let application = match read_optional_focus_element(&system, AX_FOCUSED_APPLICATION, deadline)?
+    {
         Some(application) => application,
         None => match frontmost_application_pid() {
             Some(pid) => unsafe { AXUIElement::new_application(pid) },
             None => {
-                system_anchor = read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT)?;
+                check_deadline(deadline)?;
+                system_anchor =
+                    read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?;
                 let anchor = system_anchor.as_ref().ok_or_else(|| {
                     TextTargetError::new(
                         TextTargetErrorKind::NoFocusedTarget,
@@ -1731,23 +1920,30 @@ fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
                     )
                 })?;
                 let pid = read_pid(anchor)?;
+                check_deadline(deadline)?;
                 unsafe { AXUIElement::new_application(pid) }
             }
         },
     };
-    set_element_timeout(&application)?;
+    check_deadline(deadline)?;
+    set_element_timeout(&application, deadline)?;
     let pid = read_pid(&application)?;
-    let mut application_anchor = read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT)?;
+    check_deadline(deadline)?;
+    let mut application_anchor =
+        read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     if application_anchor.is_none() {
         enable_manual_accessibility_best_effort(&application);
-        application_anchor = read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT)?;
+        check_deadline(deadline)?;
+        set_element_timeout(&application, deadline)?;
+        application_anchor =
+            read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     }
     let focus_anchor = match application_anchor {
         Some(anchor) => anchor,
         None => {
             let fallback = match system_anchor {
                 Some(anchor) => Some(anchor),
-                None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT)?,
+                None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?,
             };
             fallback.ok_or_else(|| {
                 TextTargetError::new(
@@ -1757,12 +1953,14 @@ fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
             })?
         }
     };
+    set_element_timeout(&focus_anchor, deadline)?;
     if read_pid(&focus_anchor)? != pid {
         return Err(TextTargetError::new(
             TextTargetErrorKind::NoFocusedTarget,
             "macOS reported an inconsistent focused field",
         ));
     }
+    check_deadline(deadline)?;
 
     Ok(FocusedContext {
         application,
@@ -1774,8 +1972,12 @@ fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
 fn read_optional_focus_element(
     element: &AXUIElement,
     attribute: &'static str,
+    deadline: Instant,
 ) -> Result<Option<CFRetained<AXUIElement>>, TextTargetError> {
-    match read_optional_element(element, attribute) {
+    check_deadline(deadline)?;
+    let result = read_optional_element(element, attribute);
+    check_deadline(deadline)?;
+    match result {
         Err(error) if focused_context_error_is_transient(error.kind) => Ok(None),
         result => result,
     }
@@ -1806,11 +2008,16 @@ fn focused_context_error_is_transient(kind: TextTargetErrorKind) -> bool {
     )
 }
 
-fn resolve_editable_target(focus_anchor: &AXUIElement) -> Result<EditableTarget, TextTargetError> {
+fn resolve_editable_target(
+    focus_anchor: &AXUIElement,
+    deadline: Instant,
+) -> Result<EditableTarget, TextTargetError> {
     let mut current = retain_element(focus_anchor);
     for depth in 0..MAX_PARENT_DEPTH {
-        set_element_timeout(&current)?;
-        ensure_not_secure(&current)?;
+        check_deadline(deadline)?;
+        ensure_not_secure(&current, deadline)?;
+        check_deadline(deadline)?;
+        set_element_timeout(&current, deadline)?;
         if read_optional_bool(&current, AX_ENABLED)?.is_some_and(|enabled| !enabled) {
             return Err(TextTargetError::new(
                 TextTargetErrorKind::NotEditable,
@@ -1818,15 +2025,19 @@ fn resolve_editable_target(focus_anchor: &AXUIElement) -> Result<EditableTarget,
             ));
         }
 
-        if let Some(candidate) = editable_snapshot(&current)? {
+        if let Some(candidate) = editable_snapshot(&current, deadline)? {
+            check_deadline(deadline)?;
             return Ok(candidate);
         }
+        check_deadline(deadline)?;
         if depth + 1 == MAX_PARENT_DEPTH {
             break;
         }
+        set_element_timeout(&current, deadline)?;
         let Some(parent) = read_optional_element(&current, AX_PARENT)? else {
             break;
         };
+        check_deadline(deadline)?;
         current = parent;
     }
 
@@ -1836,17 +2047,27 @@ fn resolve_editable_target(focus_anchor: &AXUIElement) -> Result<EditableTarget,
     ))
 }
 
-fn editable_snapshot(element: &AXUIElement) -> Result<Option<EditableTarget>, TextTargetError> {
+fn editable_snapshot(
+    element: &AXUIElement,
+    deadline: Instant,
+) -> Result<Option<EditableTarget>, TextTargetError> {
+    set_element_timeout(element, deadline)?;
     let role = read_optional_string(element, AX_ROLE)?;
+    check_deadline(deadline)?;
+    set_element_timeout(element, deadline)?;
     let selected_text_settable = is_settable(element, AX_SELECTED_TEXT)?;
+    check_deadline(deadline)?;
     if !has_editable_text_capability(role.as_deref(), selected_text_settable) {
         return Ok(None);
     }
+    set_element_timeout(element, deadline)?;
     let Some(selection) = read_optional_range(element, AX_SELECTED_TEXT_RANGE)? else {
         return Ok(None);
     };
+    check_deadline(deadline)?;
     validate_range_shape(selection)?;
 
+    set_element_timeout(element, deadline)?;
     if let Some(ranges) = read_optional_array(element, AX_SELECTED_TEXT_RANGES)? {
         if ranges.len() > 1 {
             return Err(TextTargetError::new(
@@ -1855,14 +2076,11 @@ fn editable_snapshot(element: &AXUIElement) -> Result<Option<EditableTarget>, Te
             ));
         }
     }
+    check_deadline(deadline)?;
 
     Ok(Some(EditableTarget {
         element: retain_element(element),
         selection,
-        #[cfg(all(
-            debug_assertions,
-            not(feature = "macos-input-method-compatibility-harness")
-        ))]
         selected_text_settable,
     }))
 }
@@ -1875,9 +2093,13 @@ fn has_editable_text_capability(role: Option<&str>, selected_text_settable: bool
     is_editable_text_role(role) || selected_text_settable
 }
 
-fn ensure_not_secure(element: &AXUIElement) -> Result<(), TextTargetError> {
+fn ensure_not_secure(element: &AXUIElement, deadline: Instant) -> Result<(), TextTargetError> {
+    set_element_timeout(element, deadline)?;
     let subrole = read_optional_string(element, AX_SUBROLE)?;
+    check_deadline(deadline)?;
+    set_element_timeout(element, deadline)?;
     let contains_protected_content = read_optional_bool(element, AX_CONTAINS_PROTECTED_CONTENT)?;
+    check_deadline(deadline)?;
     if has_secure_marker(subrole.as_deref(), contains_protected_content) {
         return Err(TextTargetError::new(
             TextTargetErrorKind::SecureField,
@@ -1891,13 +2113,20 @@ fn has_secure_marker(subrole: Option<&str>, contains_protected_content: Option<b
     subrole == Some(AX_SECURE_TEXT_FIELD) || contains_protected_content == Some(true)
 }
 
-fn set_element_timeout(element: &AXUIElement) -> Result<(), TextTargetError> {
-    let result = unsafe { element.set_messaging_timeout(APPLICATION_TIMEOUT_SECONDS) };
+fn set_element_timeout(element: &AXUIElement, deadline: Instant) -> Result<(), TextTargetError> {
+    check_deadline(deadline)?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let timeout = bounded_messaging_timeout_seconds(remaining).ok_or_else(deadline_error)?;
+    let result = unsafe { element.set_messaging_timeout(timeout) };
     if result == AXError::Success {
-        Ok(())
+        check_deadline(deadline)
     } else {
         Err(map_ax_error(result, "set an Accessibility timeout"))
     }
+}
+
+fn bounded_messaging_timeout_seconds(remaining: Duration) -> Option<f32> {
+    (!remaining.is_zero()).then(|| remaining.as_secs_f32().min(APPLICATION_TIMEOUT_SECONDS))
 }
 
 fn read_pid(element: &AXUIElement) -> Result<pid_t, TextTargetError> {
@@ -2097,10 +2326,21 @@ fn check_deadline(deadline: Instant) -> Result<(), TextTargetError> {
     if Instant::now() <= deadline {
         Ok(())
     } else {
-        Err(TextTargetError::new(
-            TextTargetErrorKind::TimedOut,
-            "The focused app took too long to answer, so Spick did not type",
-        ))
+        Err(deadline_error())
+    }
+}
+
+fn deadline_error() -> TextTargetError {
+    TextTargetError::new(
+        TextTargetErrorKind::TimedOut,
+        "The focused app took too long to answer, so Spick did not type",
+    )
+}
+
+fn sleep_for_retry(deadline: Instant) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        thread::sleep(remaining.min(FOCUSED_CONTEXT_RETRY_DELAY));
     }
 }
 
@@ -2212,6 +2452,79 @@ mod tests {
         assert!(has_editable_text_capability(Some("AXWebArea"), true));
         assert!(!has_editable_text_capability(Some("AXStaticText"), false));
         assert!(!has_editable_text_capability(None, false));
+    }
+
+    #[test]
+    fn development_insertion_uses_the_current_setter_capability() {
+        assert_eq!(
+            development_insertion_path(true),
+            DevelopmentInsertionPath::ElementAddressed
+        );
+        assert_eq!(
+            development_insertion_path(false),
+            DevelopmentInsertionPath::PidKeyboardEvent
+        );
+    }
+
+    #[test]
+    fn unavailable_readback_is_not_treated_as_a_content_mismatch() {
+        assert_eq!(
+            insertion_readback_state(Some("hello"), "hello"),
+            InsertionReadbackState::Confirmed
+        );
+        assert_eq!(
+            insertion_readback_state(None, "hello"),
+            InsertionReadbackState::Unavailable
+        );
+        assert_eq!(
+            insertion_readback_state(Some("goodbye"), "hello"),
+            InsertionReadbackState::Mismatch
+        );
+    }
+
+    #[test]
+    fn keyboard_confirmation_distinguishes_pending_and_shifted_selections() {
+        let original = range(4, 2);
+        let expected = range(9, 0);
+        assert_eq!(
+            keyboard_selection_state(original, original, expected),
+            KeyboardSelectionState::Pending
+        );
+        assert_eq!(
+            keyboard_selection_state(expected, original, expected),
+            KeyboardSelectionState::Confirmed
+        );
+        assert_eq!(
+            keyboard_selection_state(range(5, 0), original, expected),
+            KeyboardSelectionState::Shifted
+        );
+    }
+
+    #[test]
+    fn insertion_confirmation_retries_only_transient_ax_failures() {
+        assert!(insertion_confirmation_error_is_retryable(
+            TextTargetErrorKind::TimedOut
+        ));
+        assert!(insertion_confirmation_error_is_retryable(
+            TextTargetErrorKind::TargetGone
+        ));
+        assert!(!insertion_confirmation_error_is_retryable(
+            TextTargetErrorKind::Unsupported
+        ));
+        assert!(!insertion_confirmation_error_is_retryable(
+            TextTargetErrorKind::SecureField
+        ));
+    }
+
+    #[test]
+    fn accessibility_timeout_is_clamped_to_the_remaining_budget() {
+        assert_eq!(bounded_messaging_timeout_seconds(Duration::ZERO), None);
+        assert_eq!(
+            bounded_messaging_timeout_seconds(Duration::from_millis(500)),
+            Some(APPLICATION_TIMEOUT_SECONDS)
+        );
+        let short = bounded_messaging_timeout_seconds(Duration::from_millis(40)).unwrap();
+        assert!((short - 0.04).abs() < f32::EPSILON * 8.0);
     }
 
     #[test]
