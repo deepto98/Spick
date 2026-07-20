@@ -118,6 +118,11 @@ function languageName(languageTag: string) {
   }
 }
 
+function isKnownLanguageTag(languageTag: string) {
+  const baseLanguage = languageTag.trim().split("-", 1)[0]?.toLowerCase();
+  return Boolean(baseLanguage && baseLanguage !== "und");
+}
+
 function deliveryFromHistory(
   item: TranscriptHistoryItem,
 ): NativeDeliveryOutcome {
@@ -209,7 +214,9 @@ export function TodayView({
     dashboard?.previousPeriod?.words ?? null,
   );
   const languages = (dashboard?.languages ?? []).filter(
-    (item) => item.sessions > 0 || item.words > 0,
+    (item) =>
+      isKnownLanguageTag(item.languageTag) &&
+      (item.sessions > 0 || item.words > 0),
   );
   const transcriptRows = useMemo<TranscriptRow[]>(() => {
     const persisted = history.map((item) => ({
@@ -693,10 +700,10 @@ function LanguagePanel({
       <header className="panel__header">
         <div>
           <h2>Languages</h2>
-          <p>Words in the current period</p>
+          <p>Word mix in the current period</p>
         </div>
         <span className="auto-badge">
-          <i /> Detected
+          <i /> Used
         </span>
       </header>
       {languages.length > 0 ? (
@@ -704,12 +711,12 @@ function LanguagePanel({
           <div className="language-donut-wrap">
             <div
               className="language-donut"
-              aria-label={`${languages.length} languages detected`}
+              aria-label={`${languages.length} ${languages.length === 1 ? "language" : "languages"} used`}
               style={{ background: donutBackground }}
             >
               <div>
                 <strong>{languages.length}</strong>
-                <span>languages</span>
+                <span>{languages.length === 1 ? "language" : "languages"}</span>
               </div>
             </div>
           </div>
@@ -737,7 +744,7 @@ function LanguagePanel({
       ) : (
         <DataEmpty
           title={loading ? "Checking languages…" : "No languages yet"}
-          detail="Detected languages appear after a completed dictation."
+          detail="Languages used in completed dictations appear here."
         />
       )}
     </section>

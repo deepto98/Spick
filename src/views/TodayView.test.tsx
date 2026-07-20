@@ -169,6 +169,45 @@ describe("local usage and transcript history", () => {
     expect(screen.queryByText(/sample data/i)).not.toBeInTheDocument();
   });
 
+  it("does not count an unknown language tag as a language", () => {
+    render(
+      <TodayView
+        {...baseProps}
+        dashboard={{
+          ...dashboard,
+          languages: [
+            {
+              ...emptyMetrics,
+              languageTag: "und",
+              sessions: 3,
+              words: 300,
+            },
+            {
+              ...emptyMetrics,
+              languageTag: "en",
+              sessions: 1,
+              words: 20,
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("1 language used")).toBeVisible();
+    expect(screen.getByText("English")).toBeVisible();
+    expect(screen.queryByText("UND")).not.toBeInTheDocument();
+    expect(screen.queryByText(/unknown language/i)).not.toBeInTheDocument();
+  });
+
+  it("describes the language mix without assuming auto-detection", () => {
+    render(<TodayView {...baseProps} />);
+
+    expect(screen.getByText("Word mix in the current period")).toBeVisible();
+    expect(screen.getByText("Used")).toBeVisible();
+    expect(screen.getByLabelText("2 languages used")).toBeVisible();
+    expect(screen.queryByText(/detected/i)).not.toBeInTheDocument();
+  });
+
   it("uses a neutral idle recorder status without claiming a mic connection", () => {
     render(<TodayView {...baseProps} delivery={null} lastTranscript={null} />);
 

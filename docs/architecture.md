@@ -32,7 +32,7 @@ The interface does not directly capture audio, call speech providers, persist AP
 
 ### Rust application core
 
-Rust coordinates shortcut sessions, microphone capture, voice activity detection, transcription, cleanup, language routing, model management, statistics, and text insertion. It also owns sensitive native integrations and the provider boundary.
+Rust coordinates shortcut sessions, microphone capture, batch transcription, cleanup, language routing, model management, statistics, and text insertion. It also owns sensitive native integrations and the provider boundary.
 
 The core is divided by responsibility rather than provider. Transcription and cleanup are separate engine categories, allowing combinations such as local transcription with local cleanup, local transcription with cloud cleanup, or cloud transcription with deterministic cleanup.
 
@@ -57,9 +57,9 @@ One push-to-talk session follows this sequence:
 1. On shortcut press, capture the focused application/control identity and reject unsupported or secure targets before starting microphone capture.
 2. Show the widget in its opening-microphone state without changing focus.
 3. Enter the listening state only after the selected native microphone stream reports that it started successfully.
-4. Apply voice activity detection and stream audio to the selected transcription engine when that engine supports streaming.
-5. Publish partial transcripts for feedback without inserting unstable text into the target control.
-6. On shortcut release, finalize transcription and apply the selected language policy.
+4. Capture audio into a bounded in-memory buffer until the shortcut stops or the session is cancelled. The current development pipeline does not run voice activity detection or send partial audio to a streaming recognizer.
+5. On shortcut release, finalize the recording and send that completed recording to the selected batch transcription adapter. The current adapters return one final result; no partial transcript feed is connected.
+6. Transcribe using the Auto or Fixed language choice captured when the session began.
 7. Apply the cleanup choice captured when the session began. The current opt-in local cleaner removes a reviewed language-specific list of standalone hesitation sounds while protecting quoted and explicitly referenced uses; choosing as-transcribed output leaves the recognizer result untouched.
 8. Atomically claim the session for delivery, then confirm that the same target, focus, and selection are still valid and non-secure and that no observed change invalidated the target.
 9. Insert the final text at the original caret or replace the original selection. Never retry automatically after a write may have occurred.
@@ -89,7 +89,7 @@ Cloud fallback is never implicit in local-only mode. Its permission is captured 
 
 ### Capability-aware adapters
 
-Every adapter reports capabilities instead of being forced into a false common denominator. The core uses these declarations to validate settings and choose a valid pipeline.
+Every adapter reports capabilities instead of being forced into a false common denominator. The core uses these declarations to validate settings and choose a valid pipeline. These declarations are capability contracts, not a claim that every path is connected: the current local and cloud adapters use completed-recording batch transcription and publish only a final result.
 
 Relevant capabilities include:
 
@@ -104,21 +104,24 @@ Relevant capabilities include:
 - audio formats and session limits; and
 - offline availability.
 
-Provider results are normalized into shared transcript segments with timing, language, confidence when supplied, and final/partial status. Missing provider metadata remains unknown rather than being invented.
+Provider results are normalized into shared transcript segments with timing, language, confidence when supplied, and final/partial status. The shared type can represent future partial results, but the current adapters produce final results only. Missing provider metadata remains unknown rather than being invented.
 
 ## Language policy
 
 Spick keeps four concepts separate: spoken language, writing system, locale, and output language. This prevents transcription choices from being conflated with translation or formatting choices.
 
-The supported policies are:
+The current Settings and onboarding interfaces expose and connect two policies:
 
 - **Auto:** detect the dominant language for the current dictation session.
 - **Fixed:** pass one selected language to engines that accept a language hint.
+
+The settings schema and adapter contracts also define three future policy shapes:
+
 - **Preferred:** constrain selection to a user-maintained set when the engine supports that behavior.
 - **Mixed:** evaluate language at voice-activity phrase boundaries and preserve code-switched spans where the selected engine can do so reliably.
 - **Translate:** transcribe the source and produce a chosen output language as a separate, explicit step.
 
-Mixed-language routing uses stable phrase boundaries and confidence data when available. It does not promise word-level switching when an engine only identifies a dominant language. Cleanup instructions preserve language and script unless translation or transliteration was explicitly selected.
+Preferred, Mixed, and Translate are not selectable or connected product modes in the current development build. Future Mixed-language routing will need stable phrase boundaries and confidence data when available; no voice-activity phrase router is connected today. Cleanup preserves the language and script produced by the recognizer because translation and transliteration are not connected.
 
 ## Text-insertion seams
 
