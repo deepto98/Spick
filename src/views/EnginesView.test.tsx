@@ -294,6 +294,8 @@ describe("EnginesView cloud providers", () => {
 
     expect(screen.getByText("Local first · fallback on")).toBeVisible();
     expect(screen.queryByText("Stays on this Mac")).toBeNull();
-    expect(screen.getByText(/first configured cloud provider/i)).toBeVisible();
+    expect(
+      screen.getByText(/first configured, language-compatible cloud provider/i),
+    ).toBeVisible();
   });
 });

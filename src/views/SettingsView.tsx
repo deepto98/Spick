@@ -520,7 +520,7 @@ export function SettingsView({
                   disabled={settingsSaving}
                   onChange={(value) => update("language", value)}
                   options={[...SPEECH_LANGUAGE_OPTIONS]}
-                  hint="Auto picks one language per recording. English-only models pin this setting to English."
+                  hint="Auto works with the widest range of models. Fixed choices are checked against the model or provider; xAI only accepts its shorter formatting-language list."
                 />
                 <div className="cleanup-setting">
                   <span className="field__label">Cleanup style</span>
@@ -596,7 +596,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<Cloud size={17} />}
                   title="Allow cloud fallback"
-                  description="If local transcription cannot finish, send that recording to the first configured provider in this order: OpenAI, xAI, then Gemini. Audio leaves this Mac only when fallback runs."
+                  description="If local transcription cannot finish, send that recording to the first configured provider that supports its language: OpenAI, xAI, then Gemini. Audio leaves this Mac only when fallback runs. Changes apply to your next recording."
                   control={
                     <Toggle
                       label="Allow cloud fallback"

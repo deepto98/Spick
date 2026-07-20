@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Eraser,
-  Globe2,
   Info,
   Keyboard,
   Languages,
@@ -21,7 +20,7 @@ import type { AppSettings } from "../types";
 import { DictationHud } from "./DictationHud";
 import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
 import { captureMacShortcut, matchesMacShortcut } from "../lib/shortcutCapture";
-import { ShortcutKeys, SpickLogo } from "./Ui";
+import { SelectField, ShortcutKeys, SpickLogo } from "./Ui";
 
 interface OnboardingProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
@@ -473,44 +472,24 @@ export function Onboarding({
             )}
             <div className="personalize-grid">
               <div className="setup-field-group">
-                <span className="setup-field-group__label">
-                  Speech language
-                </span>
-                <div className="language-choice-grid">
-                  {SPEECH_LANGUAGE_OPTIONS.map((language) => (
-                    <button
-                      type="button"
-                      key={language}
-                      className={settings.language === language ? "active" : ""}
-                      disabled={settingsSaving || !settingsReady}
-                      onClick={() =>
-                        onSettingsChange({ ...settings, language })
-                      }
-                    >
-                      <span>
-                        {language === "Auto-detect" ? (
-                          <Globe2 size={18} />
-                        ) : (
-                          language.slice(0, 2).toUpperCase()
-                        )}
-                      </span>
-                      <strong>{language}</strong>
-                      {settings.language === language && (
-                        <CheckCircle2 size={16} />
-                      )}
-                    </button>
-                  ))}
-                </div>
-                <span className="setup-field-group__hint">
-                  <Globe2 size={13} />
-                  {!settingsReady
-                    ? settingsError
-                      ? "Saved choices aren’t available yet."
-                      : "Loading your saved choices…"
-                    : settingsSaving
-                      ? "Saving this choice…"
-                      : "Auto lets the model choose one language for each recording."}
-                </span>
+                <SelectField
+                  label="Speech language"
+                  value={settings.language}
+                  options={[...SPEECH_LANGUAGE_OPTIONS]}
+                  disabled={settingsSaving || !settingsReady}
+                  onChange={(language) =>
+                    onSettingsChange({ ...settings, language })
+                  }
+                  hint={
+                    !settingsReady
+                      ? settingsError
+                        ? "Saved choices aren’t available yet."
+                        : "Loading your saved choices…"
+                      : settingsSaving
+                        ? "Saving this choice…"
+                        : "Auto travels best between models. Fixed choices are checked before recording; xAI has a shorter formatting-language list."
+                  }
+                />
               </div>
               <div className="setup-field-group">
                 <span className="setup-field-group__label">Cleanup</span>

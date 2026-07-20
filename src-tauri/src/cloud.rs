@@ -260,12 +260,18 @@ impl CloudRuntime {
         })
     }
 
-    pub(crate) fn first_configured(&self) -> Result<Option<CloudProviderId>, EngineError> {
+    pub(crate) fn first_configured_compatible(
+        &self,
+        language_policy: &LanguagePolicy,
+    ) -> Result<Option<CloudProviderId>, EngineError> {
         let _configuration = self
             .configuration
             .lock()
             .map_err(|_| EngineError::Backend("Cloud credential access is unavailable.".into()))?;
         for provider in CloudProviderId::ORDERED {
+            if validate_provider_language_policy(provider, language_policy).is_err() {
+                continue;
+            }
             let secret = self.credential(provider).map_err(EngineError::Backend)?;
             if is_configured_secret(secret.as_ref()) {
                 return Ok(Some(provider));
@@ -458,9 +464,9 @@ fn prepare_openai_request(
     wav: &[u8],
     request: &TranscriptionRequest<'_>,
 ) -> Result<PreparedRequest, EngineError> {
-    let mut fields = vec![("model", "gpt-4o-transcribe".to_string())];
+    let mut fields = vec![("model", Zeroizing::new("gpt-4o-transcribe".to_string()))];
     if let Some(language) = fixed_language(request.language_policy) {
-        fields.push(("language", base_language(language).to_string()));
+        fields.push(("language", Zeroizing::new(provider_language_code(language))));
     }
     if let Some(prompt) = vocabulary_prompt(request.vocabulary, MAX_PROMPT_BYTES) {
         fields.push(("prompt", prompt));
@@ -475,7 +481,7 @@ fn prepare_openai_request(
         endpoint: OPENAI_ENDPOINT,
         content_type,
         authentication: Authentication::Bearer,
-        body: Zeroizing::new(body),
+        body,
     })
 }
 
@@ -489,12 +495,12 @@ fn prepare_xai_request(
         .map(base_language)
         .filter(|language| xai_formatting_language(language))
     {
-        fields.push(("format", "true".to_string()));
-        fields.push(("language", language.to_string()));
+        fields.push(("format", Zeroizing::new("true".to_string())));
+        fields.push(("language", Zeroizing::new(provider_language_code(language))));
     }
     fields.push((
         "filler_words",
-        if clean { "false" } else { "true" }.to_string(),
+        Zeroizing::new(if clean { "false" } else { "true" }.to_string()),
     ));
     fields.extend(
         request
@@ -516,7 +522,7 @@ fn prepare_xai_request(
         endpoint: XAI_ENDPOINT,
         content_type,
         authentication: Authentication::Bearer,
-        body: Zeroizing::new(body),
+        body,
     })
 }
 
@@ -525,27 +531,27 @@ fn prepare_gemini_request(
     request: &TranscriptionRequest<'_>,
     clean: bool,
 ) -> Result<PreparedRequest, EngineError> {
-    let prompt = Zeroizing::new(gemini_prompt(
-        request.language_policy,
-        request.vocabulary,
-        clean,
-    ));
+    let prompt = gemini_prompt(request.language_policy, request.vocabulary, clean);
     let encoded_audio = Zeroizing::new(BASE64.encode(wav));
     // Interactions stores requests by default. `store: false` is a deliberate
     // privacy boundary, not an optional optimization.
-    let body = serde_json::to_vec(&GeminiRequestBody {
-        model: "gemini-3.5-flash",
-        store: false,
-        input: [
-            GeminiInput::Text {
-                text: prompt.as_str(),
-            },
-            GeminiInput::Audio {
-                data: encoded_audio.as_str(),
-                mime_type: "audio/wav",
-            },
-        ],
-    })
+    let mut body = Zeroizing::new(Vec::new());
+    serde_json::to_writer(
+        &mut *body,
+        &GeminiRequestBody {
+            model: "gemini-3.5-flash",
+            store: false,
+            input: [
+                GeminiInput::Text {
+                    text: prompt.as_str(),
+                },
+                GeminiInput::Audio {
+                    data: encoded_audio.as_str(),
+                    mime_type: "audio/wav",
+                },
+            ],
+        },
+    )
     .map_err(|_| EngineError::Backend("Could not prepare the Gemini request.".into()))?;
     // Google's 20 MB limit covers the complete encoded request, including
     // base64 expansion and prompt JSON.
@@ -554,7 +560,7 @@ fn prepare_gemini_request(
         endpoint: GEMINI_ENDPOINT,
         content_type: "application/json".into(),
         authentication: Authentication::GoogleApiKey,
-        body: Zeroizing::new(body),
+        body,
     })
 }
 
@@ -802,11 +808,11 @@ fn pcm16_wav(audio: AudioInput<'_>) -> Result<Vec<u8>, EngineError> {
 }
 
 fn multipart_body(
-    fields: &[(&'static str, String)],
+    fields: &[(&'static str, Zeroizing<String>)],
     file: &[u8],
-) -> Result<(String, Vec<u8>), EngineError> {
+) -> Result<(String, Zeroizing<Vec<u8>>), EngineError> {
     let boundary = safe_multipart_boundary(fields, file);
-    let mut body = Vec::new();
+    let mut body = Zeroizing::new(Vec::new());
     for (name, value) in fields {
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
@@ -825,7 +831,7 @@ fn multipart_body(
     Ok((format!("multipart/form-data; boundary={boundary}"), body))
 }
 
-fn safe_multipart_boundary(fields: &[(&'static str, String)], file: &[u8]) -> String {
+fn safe_multipart_boundary(fields: &[(&'static str, Zeroizing<String>)], file: &[u8]) -> String {
     loop {
         let boundary = format!("spick-{}", uuid::Uuid::new_v4().simple());
         let bytes = boundary.as_bytes();
@@ -857,8 +863,12 @@ fn base_language(language: &str) -> &str {
     language.split_once('-').map_or(language, |(base, _)| base)
 }
 
-fn vocabulary_prompt(vocabulary: &[&str], max_bytes: usize) -> Option<String> {
-    let mut prompt = String::from("Vocabulary: ");
+fn provider_language_code(language: &str) -> String {
+    base_language(language).to_ascii_lowercase()
+}
+
+fn vocabulary_prompt(vocabulary: &[&str], max_bytes: usize) -> Option<Zeroizing<String>> {
+    let mut prompt = Zeroizing::new(String::from("Vocabulary: "));
     let initial = prompt.len();
     for term in vocabulary
         .iter()
@@ -875,29 +885,34 @@ fn vocabulary_prompt(vocabulary: &[&str], max_bytes: usize) -> Option<String> {
     (prompt.len() > initial).then_some(prompt)
 }
 
-fn bounded_term(term: &str, max_chars: usize) -> Option<String> {
+fn bounded_term(term: &str, max_chars: usize) -> Option<Zeroizing<String>> {
     let term = term.trim();
     if term.is_empty() {
         return None;
     }
-    Some(term.chars().take(max_chars).collect())
+    Some(Zeroizing::new(term.chars().take(max_chars).collect()))
 }
 
-fn gemini_prompt(policy: &LanguagePolicy, vocabulary: &[&str], clean: bool) -> String {
-    let language = fixed_language(policy)
-        .map(|language| format!(" The spoken language is {language}."))
-        .unwrap_or_default();
-    let vocabulary = vocabulary_prompt(vocabulary, MAX_PROMPT_BYTES)
-        .map(|terms| format!(" Use these spelling hints when they are spoken: {terms}."))
-        .unwrap_or_default();
+fn gemini_prompt(policy: &LanguagePolicy, vocabulary: &[&str], clean: bool) -> Zeroizing<String> {
     let style = if clean {
         "Remove hesitation fillers and repair obvious punctuation without changing meaning, language, or script."
     } else {
         "Preserve the speaker's language, script, punctuation, and filler words."
     };
-    format!(
-        "Transcribe this recording faithfully. {style} Return only the transcript, with no commentary.{language}{vocabulary}"
-    )
+    let mut prompt = Zeroizing::new(String::from("Transcribe this recording faithfully. "));
+    prompt.push_str(style);
+    prompt.push_str(" Return only the transcript, with no commentary.");
+    if let Some(language) = fixed_language(policy) {
+        prompt.push_str(" The spoken language is ");
+        prompt.push_str(language);
+        prompt.push('.');
+    }
+    if let Some(vocabulary) = vocabulary_prompt(vocabulary, MAX_PROMPT_BYTES) {
+        prompt.push_str(" Use these spelling hints when they are spoken: ");
+        prompt.push_str(vocabulary.as_str());
+        prompt.push('.');
+    }
+    prompt
 }
 
 fn xai_formatting_language(language: &str) -> bool {
@@ -1226,7 +1241,12 @@ mod tests {
         let runtime = CloudRuntime::with_credentials(credentials);
 
         assert!(!runtime.statuses(&AppSettings::default()).unwrap()[0].configured);
-        assert_eq!(runtime.first_configured().unwrap(), None);
+        assert_eq!(
+            runtime
+                .first_configured_compatible(&LanguagePolicy::Auto)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -1328,7 +1348,7 @@ mod tests {
     fn openai_request_uses_fixed_endpoint_model_language_and_prompt() {
         let samples = [0.0_f32, 0.25];
         let policy = LanguagePolicy::Fixed {
-            language: "hi-IN".into(),
+            language: "HI-IN".into(),
         };
         let vocabulary = ["Spick", "Deepto"];
         let wav = pcm16_wav(request(&samples, &policy, &vocabulary).audio).unwrap();
@@ -1347,7 +1367,7 @@ mod tests {
     fn xai_request_has_no_model_field_and_puts_file_last() {
         let samples = [0.0_f32, -0.5, 0.5];
         let policy = LanguagePolicy::Fixed {
-            language: "en-US".into(),
+            language: "EN-US".into(),
         };
         let long_term = "a".repeat(MAX_XAI_KEYTERM_CHARS + 10);
         let vocabulary = [long_term.as_str(), "Spick"];
@@ -1443,7 +1463,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_chooses_only_the_first_configured_provider() {
+    fn fallback_chooses_only_the_first_configured_compatible_provider() {
         let credentials = Arc::new(MemoryCredentials::default());
         credentials
             .set(CloudProviderId::Gemini, "gemini-secret")
@@ -1451,8 +1471,19 @@ mod tests {
         credentials.set(CloudProviderId::XAi, "xai-secret").unwrap();
         let runtime = CloudRuntime::with_credentials(credentials);
         assert_eq!(
-            runtime.first_configured().unwrap(),
+            runtime
+                .first_configured_compatible(&LanguagePolicy::Auto)
+                .unwrap(),
             Some(CloudProviderId::XAi)
+        );
+        assert_eq!(
+            runtime
+                .first_configured_compatible(&LanguagePolicy::Fixed {
+                    language: "bn-IN".into(),
+                })
+                .unwrap(),
+            Some(CloudProviderId::Gemini),
+            "an incompatible configured provider must be skipped before any upload"
         );
     }
 }

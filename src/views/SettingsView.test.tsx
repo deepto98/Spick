@@ -52,6 +52,13 @@ describe("cleanup settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Language & cleanup" }));
 
     expect(
+      screen.getByRole("option", { name: "Japanese" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Yoruba" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/fixed choices are checked against/i),
+    ).toHaveTextContent(/xAI.*formatting-language list/i);
+    expect(
       screen.getByRole("button", { name: /As transcribed/i }),
     ).toBeInTheDocument();
     expect(
@@ -291,8 +298,8 @@ describe("privacy and local data", () => {
       screen.getByText(/Turning this off leaves aggregate usage totals/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/first configured provider in this order/i),
-    ).toHaveTextContent(/OpenAI, xAI, then Gemini/);
+      screen.getByText(/first configured provider that supports its language/i),
+    ).toHaveTextContent(/OpenAI, xAI, then Gemini.*next recording/i);
     expect(
       screen.getByText(/another SQLite reader is still open/),
     ).toHaveTextContent(/Quit and reopen Spick/i);

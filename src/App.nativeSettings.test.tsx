@@ -599,7 +599,10 @@ describe("native language and cleanup persistence", () => {
     expect(
       screen.getByRole("button", { name: /Trim obvious fillers/i }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^EN English$/ }));
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Speech language" }),
+      { target: { value: "English" } },
+    );
 
     await waitFor(() =>
       expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
@@ -615,9 +618,9 @@ describe("native language and cleanup persistence", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
-    expect(screen.getByRole("button", { name: /^EN English$/ })).toHaveClass(
-      "active",
-    );
+    expect(
+      screen.getByRole("combobox", { name: "Speech language" }),
+    ).toHaveValue("English");
   });
 
   it("uses the saved custom shortcut when setup is opened again", async () => {

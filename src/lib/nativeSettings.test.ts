@@ -6,6 +6,7 @@ import {
   languagePolicyForName,
   languagePolicyName,
   shortcutDisplayName,
+  SPEECH_LANGUAGE_OPTIONS,
 } from "./nativeSettings";
 
 describe("native language settings", () => {
@@ -15,7 +16,37 @@ describe("native language settings", () => {
       mode: "fixed",
       language: "hi",
     });
+    expect(languagePolicyForName("Japanese")).toEqual({
+      mode: "fixed",
+      language: "ja",
+    });
+    expect(languagePolicyForName("Tagalog")).toEqual({
+      mode: "fixed",
+      language: "fil",
+    });
+    expect(languagePolicyForName("Yoruba")).toEqual({
+      mode: "fixed",
+      language: "yo",
+    });
     expect(languagePolicyForName("Hinglish")).toBeNull();
+  });
+
+  it("offers Auto plus the full multilingual whisper.cpp language set", () => {
+    expect(SPEECH_LANGUAGE_OPTIONS).toHaveLength(100);
+    expect(SPEECH_LANGUAGE_OPTIONS[0]).toBe("Auto-detect");
+    expect(SPEECH_LANGUAGE_OPTIONS).toEqual(
+      expect.arrayContaining([
+        "Arabic",
+        "Chinese",
+        "Japanese",
+        "Tamil",
+        "Ukrainian",
+        "Yoruba",
+      ]),
+    );
+    expect(new Set(SPEECH_LANGUAGE_OPTIONS).size).toBe(
+      SPEECH_LANGUAGE_OPTIONS.length,
+    );
   });
 
   it("renders effective fixed and detected policies without guessing", () => {
@@ -26,6 +57,12 @@ describe("native language settings", () => {
       "BN",
     );
     expect(languagePolicyBadge({ mode: "auto" })).toBe("AUTO");
+    expect(languagePolicyName({ mode: "fixed", language: "jv-ID" })).toBe(
+      "Javanese",
+    );
+    expect(languagePolicyName({ mode: "fixed", language: "tl-PH" })).toBe(
+      "Tagalog",
+    );
   });
 });
 

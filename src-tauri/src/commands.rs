@@ -1286,7 +1286,10 @@ fn transcribe_capture(
     if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
-    let Some(provider) = state.cloud.first_configured()? else {
+    let Some(provider) = state
+        .cloud
+        .first_configured_compatible(&session.language_policy)?
+    else {
         return Err(local_error);
     };
     // One fallback attempt means one upload. A provider failure is surfaced;

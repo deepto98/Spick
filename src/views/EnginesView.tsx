@@ -317,7 +317,7 @@ export function EnginesView({
               <strong>This model runs on this Mac</strong>
               <span>
                 {cloudFallbackEnabled
-                  ? "Cloud fallback is on. If local transcription cannot finish, that recording can be sent to your first configured cloud provider."
+                  ? "Cloud fallback is on. If local transcription cannot finish, that recording can be sent to your first configured, language-compatible cloud provider."
                   : "With cloud fallback off, recordings go from memory to whisper.cpp and are released when the session ends."}
               </span>
             </div>

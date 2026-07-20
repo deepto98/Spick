@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { AudioWaveform, ChevronDown } from "lucide-react";
 
 export function SpickLogo({ compact = false }: { compact?: boolean }) {
@@ -85,13 +85,20 @@ export function SelectField({
   hint,
   disabled = false,
 }: SelectFieldProps) {
+  const selectId = useId();
+  const hintId = hint ? `${selectId}-hint` : undefined;
+
   return (
-    <label className="field">
-      <span className="field__label">{label}</span>
+    <div className="field">
+      <label className="field__label" htmlFor={selectId}>
+        {label}
+      </label>
       <span className="select-wrap">
         <select
+          id={selectId}
           value={value}
           disabled={disabled}
+          aria-describedby={hintId}
           onChange={(event) => onChange(event.currentTarget.value)}
         >
           {options.map((option) => (
@@ -102,8 +109,12 @@ export function SelectField({
         </select>
         <ChevronDown size={15} aria-hidden="true" />
       </span>
-      {hint && <span className="field__hint">{hint}</span>}
-    </label>
+      {hint && (
+        <span className="field__hint" id={hintId}>
+          {hint}
+        </span>
+      )}
+    </div>
   );
 }
 
