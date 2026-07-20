@@ -5,6 +5,10 @@ export function getHudSettings() {
   return invoke<NativeHudSettings>("get_hud_settings");
 }
 
+export function markHudRendererReady() {
+  return invoke<void>("mark_hud_renderer_ready");
+}
+
 export function setHudPresentation(
   presentation: NativeHudSettings["presentation"],
 ) {

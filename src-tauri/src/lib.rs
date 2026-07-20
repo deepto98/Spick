@@ -123,6 +123,9 @@ pub fn run() {
             // the settings window unusable. Both can be corrected after launch.
             match hud::create(app.handle(), &settings.hud) {
                 Ok(()) if settings.hud.visible => {
+                    // `show` records the desired visibility now, but the native
+                    // window remains hidden until its renderer acknowledges that
+                    // the persisted presentation has been committed.
                     if let Err(error) = hud::show(app.handle(), &settings.hud, false) {
                         eprintln!("could not show the saved floating widget: {error}");
                     }
@@ -162,6 +165,7 @@ pub fn run() {
             commands::get_shortcut_status,
             commands::request_input_monitoring_permission,
             commands::get_hud_settings,
+            commands::mark_hud_renderer_ready,
             commands::set_hud_presentation,
             commands::start_hud_drag,
             commands::get_last_transcript,

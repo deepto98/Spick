@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::Mutex};
 #[cfg(target_os = "macos")]
 use std::{
     sync::{
@@ -23,13 +23,49 @@ use tauri_nspanel::{
 use crate::domain::{HudCoordinates, HudPosition, HudPresentation, HudSettings};
 
 pub const HUD_WINDOW_LABEL: &str = "hud";
-const EXPANDED_HUD_WIDTH: f64 = 360.0;
-const EXPANDED_HUD_HEIGHT: f64 = 104.0;
-const COMPACT_HUD_WIDTH: f64 = 56.0;
-const COMPACT_HUD_HEIGHT: f64 = 116.0;
+// These frames closely hug the largest rendered content. Compact keeps only a
+// three-pixel transparent buffer for antialiasing instead of a broad invisible
+// hit target over the app beneath it.
+const EXPANDED_HUD_WIDTH: f64 = 336.0;
+const EXPANDED_HUD_HEIGHT: f64 = 96.0;
+const COMPACT_HUD_WIDTH: f64 = 48.0;
+const COMPACT_HUD_HEIGHT: f64 = 110.0;
 const HUD_MARGIN: f64 = 24.0;
 #[cfg(target_os = "macos")]
 const PANEL_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "macos")]
+const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: usize = 1;
+
+#[derive(Debug, Default)]
+struct HudLifecycleState {
+    renderer_ready: bool,
+    show_requested: bool,
+    target_is_live: bool,
+}
+
+impl HudLifecycleState {
+    fn request_show(&mut self, target_is_live: bool) -> bool {
+        self.show_requested = true;
+        self.target_is_live = target_is_live;
+        self.renderer_ready
+    }
+
+    fn request_hide(&mut self) {
+        self.show_requested = false;
+        self.target_is_live = false;
+    }
+
+    fn mark_renderer_ready(&mut self) -> Option<bool> {
+        self.renderer_ready = true;
+        self.show_requested.then_some(self.target_is_live)
+    }
+}
+
+static HUD_LIFECYCLE: Mutex<HudLifecycleState> = Mutex::new(HudLifecycleState {
+    renderer_ready: false,
+    show_requested: false,
+    target_is_live: false,
+});
 
 #[cfg(target_os = "macos")]
 static NATIVE_PANEL_READY: AtomicBool = AtomicBool::new(false);
@@ -191,10 +227,39 @@ where
     Ok(true)
 }
 
+fn reset_renderer_gate() -> Result<(), String> {
+    let mut lifecycle = HUD_LIFECYCLE
+        .lock()
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?;
+    *lifecycle = HudLifecycleState::default();
+    Ok(())
+}
+
+fn request_show_after_renderer_ready(target_is_live: bool) -> Result<bool, String> {
+    HUD_LIFECYCLE
+        .lock()
+        .map(|mut lifecycle| lifecycle.request_show(target_is_live))
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())
+}
+
+fn request_hide() -> Result<(), String> {
+    let mut lifecycle = HUD_LIFECYCLE
+        .lock()
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?;
+    lifecycle.request_hide();
+    Ok(())
+}
+
 pub fn create<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<(), String> {
     if app.get_webview_window(HUD_WINDOW_LABEL).is_some() {
         return apply(app, settings);
     }
+
+    // The native window may finish building before its React surface has read
+    // the persisted presentation. Keep it hidden until that surface explicitly
+    // confirms hydration, otherwise a compact native frame briefly contains
+    // the expanded widget (or remains clipped if IPC initialization fails).
+    reset_renderer_gate()?;
 
     let (width, height) = logical_dimensions(settings.presentation);
     let window = WebviewWindowBuilder::new(
@@ -230,7 +295,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<
     #[cfg(target_os = "macos")]
     if let Err(error) = install_native_panel(&window) {
         // A normal Tauri window is not guaranteed to remain nonactivating when
-        // clicked. Fail closed until a caller explicitly shows an idle HUD.
+        // clicked. Keep this fallback display-only for the process lifetime.
         NATIVE_PANEL_READY.store(false, AtomicOrdering::Release);
         NATIVE_PANEL_WINDOW_NUMBER.store(0, AtomicOrdering::Release);
         HUD_TARGET_PROTECTED.store(true, AtomicOrdering::Release);
@@ -301,6 +366,18 @@ pub fn show<R: Runtime>(
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
 
+    if !request_show_after_renderer_ready(target_is_live)? {
+        return Ok(());
+    }
+
+    show_ready_window(app, window, target_is_live)
+}
+
+fn show_ready_window<R: Runtime>(
+    app: &AppHandle<R>,
+    window: WebviewWindow<R>,
+    target_is_live: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let shown_as_panel = with_native_panel_on_main_thread(app, "show", move |panel| {
@@ -322,13 +399,13 @@ pub fn show<R: Runtime>(
             return Ok(());
         }
 
-        // A normal NSWindow may activate Spick when clicked even when it cannot
-        // become key. Protect a captured target by making the fallback HUD
-        // pointer-through for the entire target lifetime.
+        // A normal NSWindow may activate Spick before a target can be captured,
+        // including from the idle widget. A failed NSPanel conversion therefore
+        // degrades to a display-only, shortcut-driven HUD for its entire life.
         window
-            .set_ignore_cursor_events(target_is_live)
+            .set_ignore_cursor_events(true)
             .map_err(|error| format!("could not protect the fallback HUD target: {error}"))?;
-        HUD_TARGET_PROTECTED.store(target_is_live, AtomicOrdering::Release);
+        HUD_TARGET_PROTECTED.store(true, AtomicOrdering::Release);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -339,6 +416,23 @@ pub fn show<R: Runtime>(
         .map_err(|error| format!("could not show dictation HUD: {error}"))
 }
 
+/// Releases the startup visibility gate after the HUD renderer has committed
+/// its persisted presentation. Repeated calls are harmless and can retry a
+/// transient native presentation failure.
+pub fn mark_renderer_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let pending_target = HUD_LIFECYCLE
+        .lock()
+        .map_err(|_| "dictation HUD lifecycle is unavailable".to_string())?
+        .mark_renderer_ready();
+    let Some(target_is_live) = pending_target else {
+        return Ok(());
+    };
+    let window = app
+        .get_webview_window(HUD_WINDOW_LABEL)
+        .ok_or_else(|| "dictation HUD is not available".to_string())?;
+    show_ready_window(app, window, target_is_live)
+}
+
 pub fn is_visible<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     app.get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?
@@ -347,6 +441,7 @@ pub fn is_visible<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
 }
 
 pub fn hide<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    request_hide()?;
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
@@ -370,20 +465,19 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        // Restore idle interaction only after the fallback is no longer
-        // visible, leaving no click window in which the captured app can lose
-        // focus.
+        // A fallback NSWindow is never interactive: even an idle click could
+        // activate Spick before the intended external target is captured.
         window
-            .set_ignore_cursor_events(false)
+            .set_ignore_cursor_events(true)
             .map_err(|error| format!("could not restore fallback HUD interaction: {error}"))?;
-        HUD_TARGET_PROTECTED.store(false, AtomicOrdering::Release);
+        HUD_TARGET_PROTECTED.store(true, AtomicOrdering::Release);
     }
 
     Ok(())
 }
 
-/// Updates fallback click-through behavior when a captured insertion target is
-/// acquired or released. A real nonactivating panel remains interactive.
+/// Keeps an unsafe fallback click-through when target ownership changes. A real
+/// nonactivating panel remains interactive because it cannot steal activation.
 pub fn protect_target<R: Runtime>(app: &AppHandle<R>, protect: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -402,9 +496,9 @@ pub fn protect_target<R: Runtime>(app: &AppHandle<R>, protect: bool) -> Result<(
             .get_webview_window(HUD_WINDOW_LABEL)
             .ok_or_else(|| "dictation HUD is not available".to_string())?;
         window
-            .set_ignore_cursor_events(protect)
+            .set_ignore_cursor_events(true)
             .map_err(|error| format!("could not update fallback HUD target protection: {error}"))?;
-        HUD_TARGET_PROTECTED.store(protect, AtomicOrdering::Release);
+        HUD_TARGET_PROTECTED.store(true, AtomicOrdering::Release);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -445,6 +539,16 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
                         "macOS did not provide the mouse event needed to move the HUD".into(),
                     );
                 }
+                let event_type: usize = tauri_nspanel::objc2::msg_send![event, type];
+                let event_window_number: isize =
+                    tauri_nspanel::objc2::msg_send![event, windowNumber];
+                let panel_window_number: isize =
+                    tauri_nspanel::objc2::msg_send![panel.as_panel(), windowNumber];
+                if !is_native_drag_event(event_type, event_window_number, panel_window_number) {
+                    return Err(
+                        "macOS did not report a left-button press on the HUD for this drag".into(),
+                    );
+                }
                 let _: () = tauri_nspanel::objc2::msg_send![
                     panel.as_panel(),
                     performWindowDragWithEvent: event
@@ -461,6 +565,17 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
         .start_dragging()
         .map_err(|error| format!("could not move dictation HUD: {error}"))?;
     Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn is_native_drag_event(
+    event_type: usize,
+    event_window_number: isize,
+    panel_window_number: isize,
+) -> bool {
+    event_type == NS_EVENT_TYPE_LEFT_MOUSE_DOWN
+        && panel_window_number > 0
+        && event_window_number == panel_window_number
 }
 
 /// Returns the HUD's current physical top-left coordinate for persistence.
@@ -693,6 +808,35 @@ mod tests {
     }
 
     #[test]
+    fn renderer_gate_queues_the_latest_show_until_hydration() {
+        let mut lifecycle = HudLifecycleState::default();
+
+        assert!(!lifecycle.request_show(true));
+        assert!(!lifecycle.request_show(false));
+        assert_eq!(lifecycle.mark_renderer_ready(), Some(false));
+        assert!(lifecycle.request_show(true));
+    }
+
+    #[test]
+    fn hiding_before_hydration_cancels_the_queued_show() {
+        let mut lifecycle = HudLifecycleState::default();
+
+        assert!(!lifecycle.request_show(true));
+        lifecycle.request_hide();
+
+        assert_eq!(lifecycle.mark_renderer_ready(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_drag_requires_a_left_mouse_down_from_the_panel() {
+        assert!(is_native_drag_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN, 42, 42));
+        assert!(!is_native_drag_event(2, 42, 42));
+        assert!(!is_native_drag_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN, 41, 42));
+        assert!(!is_native_drag_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN, 0, 0));
+    }
+
+    #[test]
     fn computes_bottom_center_inside_the_work_area() {
         assert_eq!(
             preset_coordinates(
@@ -700,7 +844,7 @@ mod tests {
                 HudPresentation::Expanded,
                 HudPosition::BottomCenter,
             ),
-            (540, 772)
+            (552, 780)
         );
     }
 
@@ -712,7 +856,7 @@ mod tests {
                 HudPresentation::Expanded,
                 HudPosition::BottomRight,
             ),
-            (-384, 952)
+            (-360, 960)
         );
     }
 
@@ -724,7 +868,7 @@ mod tests {
                 HudPresentation::Expanded,
                 HudPosition::BottomRight,
             ),
-            (5952, 1904)
+            (6000, 1920)
         );
     }
 
@@ -736,7 +880,7 @@ mod tests {
                 HudPresentation::Compact,
                 HudPosition::BottomRight,
             ),
-            (1360, 760)
+            (1368, 766)
         );
     }
 
@@ -782,7 +926,7 @@ mod tests {
                 HudPresentation::Expanded,
                 &screens,
             ),
-            Some(HudCoordinates { x: -360, y: 976 })
+            Some(HudCoordinates { x: -336, y: 984 })
         );
     }
 
@@ -795,7 +939,7 @@ mod tests {
                 HudPresentation::Compact,
                 &screens,
             ),
-            Some(HudCoordinates { x: 2912, y: 1732 })
+            Some(HudCoordinates { x: 2928, y: 1744 })
         );
     }
 
@@ -811,7 +955,7 @@ mod tests {
                 HudPresentation::Expanded,
                 &screens,
             ),
-            Some(HudCoordinates { x: 1080, y: 300 })
+            Some(HudCoordinates { x: 1104, y: 300 })
         );
     }
 
@@ -835,11 +979,11 @@ mod tests {
     fn invalid_scale_factors_use_one_for_safe_geometry() {
         assert_eq!(
             physical_dimensions(HudPresentation::Compact, f64::NAN),
-            (56, 116)
+            (48, 110)
         );
         assert_eq!(
             physical_dimensions(HudPresentation::Expanded, 0.0),
-            (360, 104)
+            (336, 96)
         );
     }
 }

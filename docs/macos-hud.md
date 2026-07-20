@@ -13,9 +13,10 @@ community `tauri-nspanel` crate on macOS, pinned to commit
 `a3122e894383aa068ec5365a42994e3ac94ba1b6`. It is deliberately a target-only
 Git dependency rather than a floating branch.
 
-At startup, `hud.rs` creates one hidden, undecorated Tauri webview window,
-converts it once to `SpickHudPanel`, and then shows it at the saved position
-when the floating-widget preference is enabled. The panel is configured as:
+At startup, `hud.rs` creates one hidden, undecorated Tauri webview window and
+converts it once to `SpickHudPanel`. The renderer first commits the saved
+expanded or compact presentation, then acknowledges readiness before the native
+window can appear at its saved position. The panel is configured as:
 
 - borderless plus `NonactivatingPanel`;
 - unable to become key or main;
@@ -36,11 +37,10 @@ window subclass and are outside Spick's supported use.
 ## Failure behavior
 
 Panel conversion is an enhancement, not permission to risk the captured target.
-If conversion is unavailable, the normal HUD becomes pointer-through while a
-live insertion target exists. It may still animate, resize, and follow its saved
-position, but it cannot be clicked or dragged until the target is committed,
-discarded, or the HUD is hidden. Idle and transcript-copy states restore mouse
-interaction.
+If conversion is unavailable, the normal HUD stays pointer-through for the
+process lifetime. It may still animate, resize, and follow its saved position,
+but interaction remains shortcut-only because even an idle click on a normal
+window could activate Spick before the intended text target is captured.
 
 ## Upgrade and manual checks
 

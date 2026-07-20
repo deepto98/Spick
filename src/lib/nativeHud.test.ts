@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { getHudSettings, setHudPresentation, startHudDrag } from "./nativeHud";
+import {
+  getHudSettings,
+  markHudRendererReady,
+  setHudPresentation,
+  startHudDrag,
+} from "./nativeHud";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -29,5 +34,13 @@ describe("native HUD controls", () => {
     await startHudDrag();
 
     expect(invoke).toHaveBeenCalledWith("start_hud_drag");
+  });
+
+  it("releases the native startup gate after renderer hydration", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await markHudRendererReady();
+
+    expect(invoke).toHaveBeenCalledWith("mark_hud_renderer_ready");
   });
 });

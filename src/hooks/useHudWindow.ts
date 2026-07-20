@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   getHudSettings,
+  markHudRendererReady,
   setHudPresentation,
   startHudDrag,
 } from "../lib/nativeHud";
@@ -10,6 +17,8 @@ export function useHudWindow(enabled: boolean) {
   const [settings, setSettings] = useState<NativeHudSettings | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const rendererReadySent = useRef(false);
+  const rendererReadyAttempt = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -26,6 +35,45 @@ export function useHudWindow(enabled: boolean) {
       disposed = true;
     };
   }, [enabled]);
+
+  const hydrated = settings !== null;
+  useLayoutEffect(() => {
+    if (!enabled || !hydrated || rendererReadySent.current) return;
+
+    // Layout effects run after React has committed the persisted compact or
+    // expanded surface, but before the browser paints it. The native panel
+    // stays hidden until this explicit acknowledgement reaches Rust.
+    const generation = ++rendererReadyAttempt.current;
+    let retryTimer: number | null = null;
+
+    const acknowledge = (attempt: number) => {
+      void markHudRendererReady()
+        .then(() => {
+          if (rendererReadyAttempt.current !== generation) return;
+          rendererReadySent.current = true;
+          setError(null);
+        })
+        .catch((reason) => {
+          if (rendererReadyAttempt.current !== generation) return;
+          if (attempt < 2) {
+            retryTimer = window.setTimeout(
+              () => acknowledge(attempt + 1),
+              100 * 2 ** attempt,
+            );
+            return;
+          }
+          setError(`Couldn’t show the HUD: ${String(reason)}`);
+        });
+    };
+    acknowledge(0);
+
+    return () => {
+      if (rendererReadyAttempt.current === generation) {
+        rendererReadyAttempt.current += 1;
+      }
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [enabled, hydrated]);
 
   const togglePresentation = useCallback(async () => {
     if (!enabled || pending) return;

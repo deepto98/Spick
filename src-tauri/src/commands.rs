@@ -410,6 +410,12 @@ pub fn get_hud_settings(
 }
 
 #[tauri::command]
+pub fn mark_hud_renderer_ready(window: WebviewWindow) -> Result<(), String> {
+    require_hud_window(&window)?;
+    hud::mark_renderer_ready(window.app_handle())
+}
+
+#[tauri::command]
 pub fn set_hud_presentation(
     window: WebviewWindow,
     app: AppHandle,
