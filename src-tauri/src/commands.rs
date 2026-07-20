@@ -244,6 +244,14 @@ pub fn update_settings(
         current.clone()
     };
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
+    let hud_visibility_change = hud_visibility_update(previous.hud.visible, settings.hud.visible);
+    // A disable failure must leave the dashboard on its last acknowledged
+    // value. Snapshot actual window visibility before any settings or shortcut
+    // state changes so a partially completed hide can be restored precisely.
+    let hud_was_visible = match hud_visibility_change {
+        HudVisibilityUpdate::DisableNow => hud::is_visible(&app)?,
+        HudVisibilityUpdate::Unchanged | HudVisibilityUpdate::EnableNextSession => false,
+    };
 
     if shortcut_changed {
         if !platform::current_platform_capabilities().supports_global_shortcut {
@@ -277,11 +285,20 @@ pub fn update_settings(
 
     match commit {
         Ok(next) => {
-            if previous.hud.visible && !next.hud.visible {
-                if let Err(error) = hud::hide(&app) {
-                    eprintln!("floating HUD was disabled but could not be hidden: {error}");
-                }
-            }
+            reconcile_committed_hud_visibility(
+                hud_visibility_change,
+                || hud::hide(&app),
+                || {
+                    rollback_failed_hud_disable(
+                        &app,
+                        state.inner(),
+                        &previous,
+                        &next,
+                        shortcut_changed,
+                        hud_was_visible,
+                    )
+                },
+            )?;
             Ok(next)
         }
         Err(error) => {
@@ -786,6 +803,106 @@ fn policy_for_model_activation(
     } else {
         current.clone()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HudVisibilityUpdate {
+    Unchanged,
+    DisableNow,
+    /// Enabling is a preference for the next session. Showing during an
+    /// existing session would create a new focus/target race mid-dictation.
+    EnableNextSession,
+}
+
+fn hud_visibility_update(previous: bool, next: bool) -> HudVisibilityUpdate {
+    match (previous, next) {
+        (true, false) => HudVisibilityUpdate::DisableNow,
+        (false, true) => HudVisibilityUpdate::EnableNextSession,
+        _ => HudVisibilityUpdate::Unchanged,
+    }
+}
+
+fn reconcile_committed_hud_visibility<FHide, FRollback>(
+    update: HudVisibilityUpdate,
+    hide: FHide,
+    rollback: FRollback,
+) -> Result<(), String>
+where
+    FHide: FnOnce() -> Result<(), String>,
+    FRollback: FnOnce() -> Result<(), String>,
+{
+    if update != HudVisibilityUpdate::DisableNow {
+        return Ok(());
+    }
+
+    let Err(hide_error) = hide() else {
+        return Ok(());
+    };
+    match rollback() {
+        Ok(()) => Err(format!(
+            "floating HUD settings were not changed because the HUD could not be hidden: {hide_error}"
+        )),
+        Err(rollback_error) => Err(format!(
+            "the HUD could not be hidden: {hide_error}; settings rollback also failed: {rollback_error}"
+        )),
+    }
+}
+
+fn rollback_failed_hud_disable<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    previous: &AppSettings,
+    attempted: &AppSettings,
+    shortcut_changed: bool,
+    hud_was_visible: bool,
+) -> Result<(), String> {
+    let mut rollback_errors = Vec::new();
+
+    if let Err(error) = restore_settings_snapshot(state, previous) {
+        rollback_errors.push(format!("settings: {error}"));
+    }
+    if shortcut_changed {
+        if let Err(error) = shortcut::replace(
+            app,
+            &attempted.push_to_talk_shortcut,
+            &previous.push_to_talk_shortcut,
+        ) {
+            rollback_errors.push(format!("shortcut: {error}"));
+        }
+    }
+    if hud_was_visible {
+        let target_is_live = state
+            .hud_target_protection
+            .lock()
+            .map(|protection| protection.has_owner())
+            .map_err(|_| "HUD target protection is unavailable".to_string());
+        match target_is_live
+            .and_then(|target_is_live| hud::show(app, &previous.hud, target_is_live))
+        {
+            Ok(()) => {}
+            Err(error) => rollback_errors.push(format!("HUD visibility: {error}")),
+        }
+    }
+
+    if rollback_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(rollback_errors.join("; "))
+    }
+}
+
+fn restore_settings_snapshot(state: &AppState, settings: &AppSettings) -> Result<(), String> {
+    let _model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
+    let mut current = state
+        .settings
+        .write()
+        .map_err(|_| "settings lock is poisoned".to_string())?;
+    state.persist_settings(settings)?;
+    *current = settings.clone();
+    Ok(())
 }
 
 /// Rebases a dashboard settings edit onto native-owned HUD state.
@@ -1952,6 +2069,104 @@ mod tests {
         assert!(!rebased.hud.visible);
         assert_eq!(rebased.hud.presentation, current.hud.presentation);
         assert_eq!(rebased.hud.custom_position, current.hud.custom_position);
+    }
+
+    #[test]
+    fn hud_enablement_is_deferred_to_the_next_session() {
+        assert_eq!(
+            hud_visibility_update(false, true),
+            HudVisibilityUpdate::EnableNextSession
+        );
+
+        let mut hide_called = false;
+        let mut rollback_called = false;
+        reconcile_committed_hud_visibility(
+            HudVisibilityUpdate::EnableNextSession,
+            || {
+                hide_called = true;
+                Ok(())
+            },
+            || {
+                rollback_called = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!hide_called);
+        assert!(!rollback_called);
+    }
+
+    #[test]
+    fn hud_hide_failure_is_not_acknowledged_and_triggers_rollback() {
+        let mut rollback_called = false;
+        let error = reconcile_committed_hud_visibility(
+            HudVisibilityUpdate::DisableNow,
+            || Err("native hide failed".into()),
+            || {
+                rollback_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(rollback_called);
+        assert!(error.contains("settings were not changed"));
+        assert!(error.contains("native hide failed"));
+    }
+
+    #[test]
+    fn successful_hud_hide_keeps_the_committed_settings() {
+        let mut rollback_called = false;
+        reconcile_committed_hud_visibility(
+            HudVisibilityUpdate::DisableNow,
+            || Ok(()),
+            || {
+                rollback_called = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!rollback_called);
+    }
+
+    #[test]
+    fn hud_hide_rollback_restores_memory_and_persisted_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings_path = directory.path().join("settings.json");
+        let state = AppState::load(settings_path.clone()).unwrap();
+        let previous = state.settings_snapshot().unwrap();
+        let mut attempted = previous.clone();
+        attempted.hud.visible = false;
+        attempted.save_transcript_history = !previous.save_transcript_history;
+
+        state.persist_settings(&attempted).unwrap();
+        *state.settings.write().unwrap() = attempted;
+        restore_settings_snapshot(&state, &previous).unwrap();
+
+        assert_eq!(state.settings_snapshot().unwrap(), previous);
+        assert_eq!(
+            AppState::load(settings_path)
+                .unwrap()
+                .settings_snapshot()
+                .unwrap(),
+            previous
+        );
+    }
+
+    #[test]
+    fn hud_hide_error_reports_a_failed_settings_rollback() {
+        let error = reconcile_committed_hud_visibility(
+            HudVisibilityUpdate::DisableNow,
+            || Err("native hide failed".into()),
+            || Err("disk is read-only".into()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("native hide failed"));
+        assert!(error.contains("settings rollback also failed"));
+        assert!(error.contains("disk is read-only"));
     }
 
     #[test]

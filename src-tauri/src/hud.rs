@@ -339,6 +339,13 @@ pub fn show<R: Runtime>(
         .map_err(|error| format!("could not show dictation HUD: {error}"))
 }
 
+pub fn is_visible<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+    app.get_webview_window(HUD_WINDOW_LABEL)
+        .ok_or_else(|| "dictation HUD is not available".to_string())?
+        .is_visible()
+        .map_err(|error| format!("could not read dictation HUD visibility: {error}"))
+}
+
 pub fn hide<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
