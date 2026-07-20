@@ -9,7 +9,7 @@ edition = "2021"
 default = []
 # The helper is buildable and testable, but release enablement still requires
 # a measured application matrix.
-macos-input-method-prototype = ["dep:objc2", "dep:objc2-app-kit"]
+macos-input-method-prototype = ["dep:objc2"]
 # Never ship this feature. It permits same-user, ad-hoc development bundles
 # after the secure signed-peer check fails.
 macos-input-method-unsafe-dev-peers = ["macos-input-method-prototype"]
@@ -59,7 +59,7 @@ libc = "0.2"
 # Objective-C class at runtime; upgrades require focused macOS regression tests.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 objc2 = { version = "0.6.4", optional = true }
-objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "AXError", "AXUIElement", "AXValue", "HIServices"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString"] }
 objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }

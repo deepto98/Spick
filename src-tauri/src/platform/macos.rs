@@ -43,6 +43,7 @@ use super::{
 use libc::pid_t;
 #[cfg(feature = "macos-input-method-prototype")]
 use objc2_app_kit::NSRunningApplication;
+use objc2_app_kit::NSWorkspace;
 use objc2_application_services::{
     kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
     AXObserver, AXUIElement, AXValue, AXValueType,
@@ -60,10 +61,6 @@ const AX_ROLE: &str = "AXRole";
 const AX_SUBROLE: &str = "AXSubrole";
 const AX_CONTAINS_PROTECTED_CONTENT: &str = "AXContainsProtectedContent";
 const AX_ENABLED: &str = "AXEnabled";
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
 const AX_SELECTED_TEXT: &str = "AXSelectedText";
 const AX_SELECTED_TEXT_RANGE: &str = "AXSelectedTextRange";
 const AX_SELECTED_TEXT_RANGES: &str = "AXSelectedTextRanges";
@@ -80,13 +77,14 @@ const AX_FOCUSED_UI_ELEMENT_CHANGED: &str = "AXFocusedUIElementChanged";
 const AX_SELECTED_TEXT_CHANGED: &str = "AXSelectedTextChanged";
 const AX_VALUE_CHANGED: &str = "AXValueChanged";
 const AX_UI_ELEMENT_DESTROYED: &str = "AXUIElementDestroyed";
+const AX_MANUAL_ACCESSIBILITY: &str = "AXManualAccessibility";
 
 const OWNER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_800);
 const CAPTURE_DEADLINE: Duration = Duration::from_millis(700);
 const COMMIT_DEADLINE: Duration = Duration::from_millis(950);
 const APPLICATION_TIMEOUT_SECONDS: f32 = 0.25;
 const MAX_PARENT_DEPTH: usize = 12;
-const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(90);
+const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(600);
 const FOCUSED_CONTEXT_RETRY_DELAY: Duration = Duration::from_millis(12);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
 #[cfg(feature = "macos-input-method-prototype")]
@@ -1526,11 +1524,23 @@ fn register_notification(
 ) -> Result<(), TextTargetError> {
     let notification = CFString::from_static_str(notification);
     let result = unsafe { observer.add_notification(element, &notification, context) };
-    if result == AXError::Success {
+    if notification_registration_is_best_effort_success(result) {
         Ok(())
     } else {
         Err(map_ax_error(result, "watch the focused text field"))
     }
+}
+
+fn notification_registration_is_best_effort_success(result: AXError) -> bool {
+    matches!(
+        result,
+        AXError::Success
+            | AXError::NotificationAlreadyRegistered
+            | AXError::NotificationUnsupported
+            | AXError::AttributeUnsupported
+            | AXError::NoValue
+            | AXError::NotImplemented
+    )
 }
 
 struct EditableTarget {
@@ -1610,30 +1620,45 @@ fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetE
 
 fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
     let system = unsafe { AXUIElement::new_system_wide() };
-    let system_anchor = read_optional_element(&system, AX_FOCUSED_UI_ELEMENT)?;
-    let application = match read_optional_element(&system, AX_FOCUSED_APPLICATION)? {
+    let mut system_anchor = None;
+    let application = match read_optional_focus_element(&system, AX_FOCUSED_APPLICATION)? {
         Some(application) => application,
-        None => {
-            let anchor = system_anchor.as_ref().ok_or_else(|| {
-                TextTargetError::new(
-                    TextTargetErrorKind::NoFocusedTarget,
-                    "macOS did not report a focused application or text field",
-                )
-            })?;
-            let pid = read_pid(anchor)?;
-            unsafe { AXUIElement::new_application(pid) }
-        }
+        None => match frontmost_application_pid() {
+            Some(pid) => unsafe { AXUIElement::new_application(pid) },
+            None => {
+                system_anchor = read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT)?;
+                let anchor = system_anchor.as_ref().ok_or_else(|| {
+                    TextTargetError::new(
+                        TextTargetErrorKind::NoFocusedTarget,
+                        "macOS did not report a focused application or text field",
+                    )
+                })?;
+                let pid = read_pid(anchor)?;
+                unsafe { AXUIElement::new_application(pid) }
+            }
+        },
     };
     set_element_timeout(&application)?;
     let pid = read_pid(&application)?;
-    let focus_anchor = match read_optional_element(&application, AX_FOCUSED_UI_ELEMENT)? {
+    let mut application_anchor = read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT)?;
+    if application_anchor.is_none() {
+        enable_manual_accessibility_best_effort(&application);
+        application_anchor = read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT)?;
+    }
+    let focus_anchor = match application_anchor {
         Some(anchor) => anchor,
-        None => system_anchor.ok_or_else(|| {
-            TextTargetError::new(
-                TextTargetErrorKind::NoFocusedTarget,
-                "macOS did not report a focused text field",
-            )
-        })?,
+        None => {
+            let fallback = match system_anchor {
+                Some(anchor) => Some(anchor),
+                None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT)?,
+            };
+            fallback.ok_or_else(|| {
+                TextTargetError::new(
+                    TextTargetErrorKind::NoFocusedTarget,
+                    "macOS did not report a focused text field",
+                )
+            })?
+        }
     };
     if read_pid(&focus_anchor)? != pid {
         return Err(TextTargetError::new(
@@ -1647,6 +1672,32 @@ fn read_focused_context_once() -> Result<FocusedContext, TextTargetError> {
         focus_anchor,
         pid,
     })
+}
+
+fn read_optional_focus_element(
+    element: &AXUIElement,
+    attribute: &'static str,
+) -> Result<Option<CFRetained<AXUIElement>>, TextTargetError> {
+    match read_optional_element(element, attribute) {
+        Err(error) if focused_context_error_is_transient(error.kind) => Ok(None),
+        result => result,
+    }
+}
+
+fn frontmost_application_pid() -> Option<pid_t> {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let application = workspace.frontmostApplication()?;
+    let pid = application.processIdentifier();
+    (pid > 0).then_some(pid)
+}
+
+fn enable_manual_accessibility_best_effort(application: &AXUIElement) {
+    let Some(enabled) = (unsafe { kCFBooleanTrue }) else {
+        return;
+    };
+    let attribute = CFString::from_static_str(AX_MANUAL_ACCESSIBILITY);
+    let enabled: &CFType = enabled;
+    let _ = unsafe { application.set_attribute_value(&attribute, enabled) };
 }
 
 fn focused_context_error_is_transient(kind: TextTargetErrorKind) -> bool {
@@ -1690,10 +1741,8 @@ fn resolve_editable_target(focus_anchor: &AXUIElement) -> Result<EditableTarget,
 
 fn editable_snapshot(element: &AXUIElement) -> Result<Option<EditableTarget>, TextTargetError> {
     let role = read_optional_string(element, AX_ROLE)?;
-    if !is_editable_text_role(role.as_deref()) {
-        return Ok(None);
-    }
-    if !is_settable(element, AX_SELECTED_TEXT_RANGE)? {
+    let selected_text_settable = is_settable(element, AX_SELECTED_TEXT)?;
+    if !has_editable_text_capability(role.as_deref(), selected_text_settable) {
         return Ok(None);
     }
     let Some(selection) = read_optional_range(element, AX_SELECTED_TEXT_RANGE)? else {
@@ -1717,12 +1766,16 @@ fn editable_snapshot(element: &AXUIElement) -> Result<Option<EditableTarget>, Te
             debug_assertions,
             not(feature = "macos-input-method-compatibility-harness")
         ))]
-        selected_text_settable: is_settable(element, AX_SELECTED_TEXT)?,
+        selected_text_settable,
     }))
 }
 
 fn is_editable_text_role(role: Option<&str>) -> bool {
     matches!(role, Some(AX_TEXT_FIELD_ROLE | AX_TEXT_AREA_ROLE))
+}
+
+fn has_editable_text_capability(role: Option<&str>, selected_text_settable: bool) -> bool {
+    is_editable_text_role(role) || selected_text_settable
 }
 
 fn ensure_not_secure(element: &AXUIElement) -> Result<(), TextTargetError> {
@@ -2050,6 +2103,38 @@ mod tests {
         assert!(is_editable_text_role(Some(AX_TEXT_AREA_ROLE)));
         assert!(!is_editable_text_role(Some("AXStaticText")));
         assert!(!is_editable_text_role(None));
+    }
+
+    #[test]
+    fn editable_capability_accepts_standard_roles_or_a_proven_text_setter() {
+        assert!(has_editable_text_capability(
+            Some(AX_TEXT_FIELD_ROLE),
+            false
+        ));
+        assert!(has_editable_text_capability(Some(AX_TEXT_AREA_ROLE), false));
+        assert!(has_editable_text_capability(Some("AXWebArea"), true));
+        assert!(!has_editable_text_capability(Some("AXStaticText"), false));
+        assert!(!has_editable_text_capability(None, false));
+    }
+
+    #[test]
+    fn unsupported_observer_notifications_do_not_block_capture() {
+        for result in [
+            AXError::Success,
+            AXError::NotificationAlreadyRegistered,
+            AXError::NotificationUnsupported,
+            AXError::AttributeUnsupported,
+            AXError::NoValue,
+            AXError::NotImplemented,
+        ] {
+            assert!(notification_registration_is_best_effort_success(result));
+        }
+        assert!(!notification_registration_is_best_effort_success(
+            AXError::APIDisabled
+        ));
+        assert!(!notification_registration_is_best_effort_success(
+            AXError::CannotComplete
+        ));
     }
 
     #[test]
