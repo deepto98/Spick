@@ -19,7 +19,8 @@ export interface WhisperModelManifest {
   quantization: string | { other: string };
   downloadBytes: number;
   sha256: string;
-  sourceUrl: string;
+  origin: "curated" | "imported";
+  sourceUrl?: string;
 }
 
 export interface LocalModelSummary {
@@ -38,6 +39,10 @@ export interface ModelDownloadProgress {
 
 export function listLocalModels() {
   return invoke<LocalModelSummary[]>("list_local_models");
+}
+
+export function importLocalModel() {
+  return invoke<LocalModelSummary | null>("import_local_model");
 }
 
 export function installLocalModel(modelId: string) {
@@ -65,8 +70,12 @@ export function subscribeToModelDownload(
 }
 
 export function modelStatus(summary: LocalModelSummary): EngineStatus {
+  // Selection and file health are separate facts. Keep the selected model
+  // visibly in use even when it needs repair so the UI never offers an action
+  // the native layer must reject, such as removing the active model.
+  if (summary.active) return "active";
   if (summary.state === "installed") {
-    return summary.active ? "active" : "ready";
+    return "ready";
   }
   if (summary.state === "needsVerification") return "ready";
   if (summary.state === "invalid") return "invalid";

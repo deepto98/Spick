@@ -13,6 +13,7 @@ import type {
 } from "./lib/nativeSettings";
 import type { NativeDictationTranscript } from "./lib/nativeDictation";
 import type { CloudProviderStatus } from "./lib/nativeCloud";
+import type { LocalModelSummary } from "./lib/nativeModels";
 import App from "./App";
 
 const nativeMocks = vi.hoisted(() => ({
@@ -34,7 +35,9 @@ const cloudMocks = vi.hoisted(() => ({
 }));
 
 const modelMocks = vi.hoisted(() => ({
+  importModel: vi.fn(),
   list: vi.fn(),
+  remove: vi.fn(),
 }));
 
 const audioMocks = vi.hoisted(() => ({
@@ -145,10 +148,11 @@ vi.mock("./lib/nativeModels", () => ({
   activateLocalModel: vi.fn(),
   cancelLocalModelInstall: vi.fn(),
   formatModelBytes: vi.fn(() => "0 MB"),
+  importLocalModel: modelMocks.importModel,
   installLocalModel: vi.fn(),
   listLocalModels: modelMocks.list,
   modelStatus: vi.fn(() => "available"),
-  removeLocalModel: vi.fn(),
+  removeLocalModel: modelMocks.remove,
   subscribeToModelDownload: vi.fn(async () => () => undefined),
 }));
 
@@ -245,6 +249,10 @@ describe("native language and cleanup persistence", () => {
     cloudMocks.removeCredential.mockReset();
     modelMocks.list.mockReset();
     modelMocks.list.mockResolvedValue([]);
+    modelMocks.importModel.mockReset();
+    modelMocks.importModel.mockResolvedValue(null);
+    modelMocks.remove.mockReset();
+    modelMocks.remove.mockResolvedValue(undefined);
     audioMocks.list.mockReset();
     audioMocks.list.mockResolvedValue([]);
     nativeMocks.getSettings.mockResolvedValue(baseSettings);
@@ -252,6 +260,57 @@ describe("native language and cleanup persistence", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("keeps a partial imported-model removal warning after refreshing", async () => {
+    const imported: LocalModelSummary = {
+      active: false,
+      installedBytes: 123,
+      state: "notInstalled",
+      manifest: {
+        id: `whisper-imported-${"a".repeat(64)}`,
+        displayName: "Imported Small Q5_1 · aaaaaaaa",
+        fileName: `whisper-imported-${"a".repeat(64)}.bin`,
+        family: "small",
+        languages: "multilingual",
+        quantization: "q5_1",
+        downloadBytes: 123,
+        sha256: "a".repeat(64),
+        origin: "imported",
+      },
+    };
+    modelMocks.list.mockResolvedValue([imported]);
+    modelMocks.remove.mockRejectedValueOnce(
+      new Error("model was removed, but some local files remain"),
+    );
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Engines" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove model" }),
+    );
+
+    await waitFor(() => expect(modelMocks.list).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/some local files remain/i)).toBeInTheDocument();
+  });
+
+  it("refreshes without hiding an import error after a possible native commit", async () => {
+    modelMocks.importModel.mockRejectedValueOnce(
+      new Error("verification cache was unavailable"),
+    );
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Engines" }));
+    const importButton = await screen.findByRole("button", {
+      name: "Import model",
+    });
+    await waitFor(() => expect(importButton).toBeEnabled());
+    fireEvent.click(importButton);
+
+    await waitFor(() => expect(modelMocks.list).toHaveBeenCalledTimes(2));
+    expect(
+      screen.getByText(/verification cache was unavailable/i),
+    ).toBeInTheDocument();
   });
 
   it("renders a native-backed choice only after the save acknowledges it", async () => {

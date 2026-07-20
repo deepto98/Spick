@@ -12,7 +12,10 @@ use whisper_rs::{
 };
 
 use super::{
-    models::{ModelLanguageSet, WhisperModelManifest},
+    models::{
+        ModelLanguageSet, WhisperModelFamily, WhisperModelManifest, WhisperModelOrigin,
+        WhisperQuantization,
+    },
     providers::{
         private, TranscriptionEngine, WhisperCppAdapter, WhisperCppDecoder, WhisperDecodeRequest,
     },
@@ -21,6 +24,87 @@ use super::{
 
 static INSTALL_LOG_HOOKS: Once = Once::new();
 const MAX_PROMPT_TOKENS: usize = 224;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhisperModelInspection {
+    pub family: WhisperModelFamily,
+    pub languages: ModelLanguageSet,
+    pub quantization: WhisperQuantization,
+}
+
+/// Loads a user-selected model with the exact whisper.cpp build used for
+/// transcription and derives metadata from the loaded context rather than its
+/// filename. This is intentionally separate from the runtime cache so an
+/// import cannot evict the active model before the user selects it.
+pub fn inspect_whisper_model(path: &Path) -> Result<WhisperModelInspection, EngineError> {
+    INSTALL_LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
+    let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
+        .map_err(|error| {
+            EngineError::Backend(format!(
+                "whisper.cpp could not load the selected GGML model: {error}"
+            ))
+        })?;
+
+    inspect_loaded_context(&context)
+}
+
+fn inspect_loaded_context(context: &WhisperContext) -> Result<WhisperModelInspection, EngineError> {
+    let family = match context.model_type_readable_str().map_err(|error| {
+        EngineError::Backend(format!("whisper.cpp could not identify the model: {error}"))
+    })? {
+        "tiny" => WhisperModelFamily::Tiny,
+        "base" => WhisperModelFamily::Base,
+        "small" => WhisperModelFamily::Small,
+        "medium" => WhisperModelFamily::Medium,
+        // The v3 tokenizer is identifiable from the vocabulary size, but the
+        // legacy GGML header does not carry enough provenance to distinguish
+        // large-v3 from a derived Turbo checkpoint. Never claim Turbo here.
+        "large" if context.model_n_vocab() >= 51_866 => WhisperModelFamily::LargeV3,
+        "large" => WhisperModelFamily::Large,
+        _ => {
+            return Err(EngineError::InvalidRequest(
+                "the selected file is not a supported Whisper model family".into(),
+            ))
+        }
+    };
+    let languages = if context.is_multilingual() {
+        ModelLanguageSet::Multilingual
+    } else {
+        ModelLanguageSet::EnglishOnly
+    };
+    let quantization = match context.model_ftype() {
+        0 => WhisperQuantization::F32,
+        1 => WhisperQuantization::F16,
+        2 => WhisperQuantization::Q4_0,
+        3 => WhisperQuantization::Q4_1,
+        7 => WhisperQuantization::Q8_0,
+        8 => WhisperQuantization::Q5_0,
+        9 => WhisperQuantization::Q5_1,
+        value => WhisperQuantization::Other(format!("ftype-{value}")),
+    };
+
+    Ok(WhisperModelInspection {
+        family,
+        languages,
+        quantization,
+    })
+}
+
+fn validate_imported_context_metadata(
+    model: &WhisperModelManifest,
+    inspection: &WhisperModelInspection,
+) -> Result<(), EngineError> {
+    if inspection.family != model.family
+        || inspection.languages != model.languages
+        || inspection.quantization != model.quantization
+    {
+        return Err(EngineError::Backend(format!(
+            "{} does not match its imported model metadata; import the original model again",
+            model.display_name
+        )));
+    }
+    Ok(())
+}
 
 /// Owns the in-process whisper.cpp context cache.
 ///
@@ -101,12 +185,17 @@ impl WhisperCppRuntime {
                     EngineError::Backend(format!("could not load {}: {error}", model.display_name))
                 })?;
 
-        let expects_multilingual = model.languages == ModelLanguageSet::Multilingual;
-        if context.is_multilingual() != expects_multilingual {
-            return Err(EngineError::Backend(format!(
-                "{} does not match its language metadata",
-                model.display_name
-            )));
+        if model.origin == WhisperModelOrigin::Imported {
+            let inspection = inspect_loaded_context(&context)?;
+            validate_imported_context_metadata(model, &inspection)?;
+        } else {
+            let expects_multilingual = model.languages == ModelLanguageSet::Multilingual;
+            if context.is_multilingual() != expects_multilingual {
+                return Err(EngineError::Backend(format!(
+                    "{} does not match its language metadata",
+                    model.display_name
+                )));
+            }
         }
 
         let context = Arc::new(context);
@@ -296,6 +385,27 @@ mod tests {
     #[test]
     fn decoder_threads_are_bounded() {
         assert!((1..=8).contains(&decoder_thread_count()));
+    }
+
+    #[test]
+    fn imported_context_metadata_rejects_a_tampered_manifest() {
+        let mut model = curated_whisper_models()[0].as_ref().clone();
+        model.origin = WhisperModelOrigin::Imported;
+        model.source_url = None;
+        model.license = None;
+        let matching = WhisperModelInspection {
+            family: model.family,
+            languages: model.languages,
+            quantization: model.quantization.clone(),
+        };
+        validate_imported_context_metadata(&model, &matching).unwrap();
+
+        let mut tampered = matching;
+        tampered.family = WhisperModelFamily::LargeV3;
+        assert!(validate_imported_context_metadata(&model, &tampered)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
     }
 
     #[test]

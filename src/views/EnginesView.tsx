@@ -7,6 +7,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileUp,
   FlaskConical,
   Gauge,
   Globe2,
@@ -32,6 +33,7 @@ interface EnginesViewProps {
   native: boolean;
   cancellingModelIds: ReadonlySet<string>;
   pendingModelId: string | null;
+  importPending: boolean;
   localLoading: boolean;
   error?: string;
   cloudProviders: CloudProviderStatus[];
@@ -42,6 +44,7 @@ interface EnginesViewProps {
   onActivate: (id: string) => void;
   onCancelInstall: (id: string) => void;
   onInstall: (id: string) => void;
+  onImport: () => void;
   onRemove: (id: string) => void;
   onLocalRefresh: () => void;
   onCloudRefresh: () => void;
@@ -109,6 +112,7 @@ export function EnginesView({
   native,
   cancellingModelIds,
   pendingModelId,
+  importPending,
   localLoading,
   error,
   cloudProviders,
@@ -119,6 +123,7 @@ export function EnginesView({
   onActivate,
   onCancelInstall,
   onInstall,
+  onImport,
   onRemove,
   onLocalRefresh,
   onCloudRefresh,
@@ -267,7 +272,7 @@ export function EnginesView({
           <div className="section-heading">
             <div>
               <h2>Local models</h2>
-              <p>Every download is checked before Spick can load it.</p>
+              <p>Downloaded and imported models are checked before use.</p>
             </div>
             <div className="section-heading__actions">
               <span>
@@ -280,8 +285,26 @@ export function EnginesView({
                 <button
                   type="button"
                   className="button button--secondary"
+                  onClick={onImport}
+                  disabled={
+                    localLoading ||
+                    importPending ||
+                    pendingModelId !== null ||
+                    cloudPending !== null
+                  }
+                >
+                  <FileUp size={14} />
+                  {importPending ? "Importing…" : "Import model"}
+                </button>
+              )}
+              {native && (
+                <button
+                  type="button"
+                  className="button button--secondary"
                   onClick={onLocalRefresh}
-                  disabled={localLoading || pendingModelId !== null}
+                  disabled={
+                    localLoading || importPending || pendingModelId !== null
+                  }
                 >
                   <RefreshCw size={14} />
                   {localLoading ? "Refreshing…" : "Refresh"}
@@ -289,6 +312,20 @@ export function EnginesView({
               )}
             </div>
           </div>
+
+          {native && (
+            <div className="engine-note">
+              <FileUp size={17} />
+              <div>
+                <strong>Bringing your own model?</strong>
+                <span>
+                  Choose a whisper.cpp GGML .bin file you trust. Spick checks
+                  compatibility and a local content hash, not its safety or
+                  license. GGUF and general LLM files don’t work here.
+                </span>
+              </div>
+            </div>
+          )}
 
           {visibleEngines.length > 0 ? (
             <div className="engine-list" aria-busy={localLoading}>
@@ -299,6 +336,7 @@ export function EnginesView({
                   download={downloads[engine.id]}
                   actionsDisabled={
                     localLoading ||
+                    importPending ||
                     pendingModelId !== null ||
                     cloudPending !== null
                   }
@@ -689,7 +727,7 @@ function EngineCard({
           </span>
           {engine.size && (
             <span>
-              <HardDrive size={13} /> Download {engine.size}
+              <HardDrive size={13} /> Model {engine.size}
             </span>
           )}
           <span>
@@ -740,7 +778,8 @@ function EngineCard({
                 : "Use model"}
           </button>
         )}
-        {(engine.status === "available" || engine.status === "invalid") &&
+        {engine.origin !== "imported" &&
+          (engine.status === "available" || engine.status === "invalid") &&
           (pending ? (
             <button
               type="button"
@@ -776,6 +815,20 @@ function EngineCard({
             <Trash2 size={16} />
           </button>
         )}
+        {(engine.status === "available" || engine.status === "invalid") &&
+          engine.origin === "imported" && (
+            <button
+              type="button"
+              className="button button--secondary button--danger"
+              onClick={onRemove}
+              disabled={actionsDisabled}
+            >
+              <Trash2 size={15} />
+              {engine.status === "invalid"
+                ? "Remove broken model"
+                : "Remove model"}
+            </button>
+          )}
       </div>
     </article>
   );

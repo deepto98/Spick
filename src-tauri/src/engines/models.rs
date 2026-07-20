@@ -1,8 +1,8 @@
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WhisperModelFamily {
     Tiny,
@@ -11,6 +11,9 @@ pub enum WhisperModelFamily {
     Medium,
     LargeV1,
     LargeV2,
+    /// A loadable large-family model whose v1/v2 revision cannot be derived
+    /// from the legacy GGML header.
+    Large,
     LargeV3,
     LargeV3Turbo,
 }
@@ -24,7 +27,7 @@ impl WhisperModelFamily {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WhisperQuantization {
     F16,
@@ -39,14 +42,14 @@ pub enum WhisperQuantization {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelLanguageSet {
     Multilingual,
     EnglishOnly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLicense {
     pub spdx_id: String,
@@ -55,7 +58,14 @@ pub struct ModelLicense {
     pub attribution: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperModelOrigin {
+    Curated,
+    Imported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WhisperModelManifest {
     pub id: String,
@@ -66,8 +76,11 @@ pub struct WhisperModelManifest {
     pub quantization: WhisperQuantization,
     pub download_bytes: u64,
     pub sha256: String,
-    pub source_url: String,
-    pub license: ModelLicense,
+    pub origin: WhisperModelOrigin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<ModelLicense>,
 }
 
 // P2 manifest hardening before arbitrary community catalogs are enabled:
@@ -110,15 +123,32 @@ impl WhisperModelManifest {
         {
             return Err("model SHA-256 must be 64 lowercase hexadecimal characters");
         }
-        if !self.source_url.starts_with("https://") {
-            return Err("model source must use HTTPS");
-        }
-        if self.license.spdx_id.trim().is_empty()
-            || self.license.name.trim().is_empty()
-            || !self.license.url.starts_with("https://")
-            || self.license.attribution.trim().is_empty()
-        {
-            return Err("model license metadata is incomplete");
+        match self.origin {
+            WhisperModelOrigin::Curated => {
+                let source_url = self
+                    .source_url
+                    .as_deref()
+                    .ok_or("curated models require a source URL")?;
+                if !source_url.starts_with("https://") {
+                    return Err("model source must use HTTPS");
+                }
+                let license = self
+                    .license
+                    .as_ref()
+                    .ok_or("curated models require license metadata")?;
+                if license.spdx_id.trim().is_empty()
+                    || license.name.trim().is_empty()
+                    || !license.url.starts_with("https://")
+                    || license.attribution.trim().is_empty()
+                {
+                    return Err("model license metadata is incomplete");
+                }
+            }
+            WhisperModelOrigin::Imported => {
+                if self.source_url.is_some() || self.license.is_some() {
+                    return Err("imported models must not invent source or license metadata");
+                }
+            }
         }
 
         let dot_en = self.file_name.contains(".en.") || self.file_name.contains(".en-");
@@ -162,11 +192,12 @@ fn model(spec: CuratedModelSpec) -> Arc<WhisperModelManifest> {
         quantization: spec.quantization,
         download_bytes: spec.download_bytes,
         sha256: spec.sha256.into(),
-        source_url: format!(
+        origin: WhisperModelOrigin::Curated,
+        source_url: Some(format!(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/{SOURCE_REVISION}/{}",
             spec.file_name
-        ),
-        license: whisper_license(),
+        )),
+        license: Some(whisper_license()),
     })
 }
 
@@ -255,7 +286,10 @@ mod tests {
                 "duplicate model file {}",
                 model.file_name
             );
-            assert!(model.source_url.contains(SOURCE_REVISION));
+            assert!(model
+                .source_url
+                .as_deref()
+                .is_some_and(|url| url.contains(SOURCE_REVISION)));
         }
     }
 

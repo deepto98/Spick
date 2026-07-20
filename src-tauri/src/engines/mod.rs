@@ -21,7 +21,7 @@ pub use capabilities::{
 pub use languages::{normalize_whisper_language_tag, whisper_language_codes};
 pub use models::{
     curated_whisper_models, resolve_curated_whisper_model, ModelLanguageSet, ModelLicense,
-    WhisperModelFamily, WhisperModelManifest, WhisperQuantization,
+    WhisperModelFamily, WhisperModelManifest, WhisperModelOrigin, WhisperQuantization,
 };
 pub use providers::{
     validate_whisper_model_policy, CleanupEngine, CloudSpeechAdapter, CloudSpeechClient,
@@ -33,4 +33,4 @@ pub use types::{
     AudioInput, CleanupRequest, CleanupResult, DictationTranscript, EngineError, TranscriptResult,
     TranscriptSegment, TranscriptionRequest,
 };
-pub use whisper_cpp::WhisperCppRuntime;
+pub use whisper_cpp::{inspect_whisper_model, WhisperCppRuntime, WhisperModelInspection};

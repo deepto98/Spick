@@ -20,7 +20,9 @@ export interface Engine {
   languageSupport: string;
   size?: string;
   performance: string;
+  usable?: boolean;
   recommended?: boolean;
+  origin?: "curated" | "imported";
 }
 
 export interface AppSettings {

@@ -22,6 +22,7 @@ const localEngine: Engine = {
   languageSupport: "Multilingual model",
   size: "190 MB",
   performance: "Ready on this Mac",
+  origin: "curated",
 };
 
 const cloudProviders: CloudProviderStatus[] = [
@@ -80,6 +81,7 @@ function props(
     native: true,
     cancellingModelIds: new Set<string>(),
     pendingModelId: null,
+    importPending: false,
     localLoading: false,
     cloudProviders,
     cloudLoading: false,
@@ -88,6 +90,7 @@ function props(
     onActivate: vi.fn(),
     onCancelInstall: vi.fn(),
     onInstall: vi.fn(),
+    onImport: vi.fn(),
     onRemove: vi.fn(),
     onLocalRefresh: vi.fn(),
     onCloudRefresh: vi.fn(),
@@ -328,5 +331,49 @@ describe("EnginesView cloud providers", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onLocalRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("imports from the native picker and removes an invalid imported model", () => {
+    const onImport = vi.fn();
+    const onRemove = vi.fn();
+    const imported = {
+      ...localEngine,
+      id: "whisper-imported-digest",
+      name: "My meeting model",
+      origin: "imported" as const,
+      provider: "whisper.cpp · imported",
+      status: "invalid" as const,
+    };
+    const missingImported = {
+      ...imported,
+      id: "whisper-imported-missing",
+      name: "Missing imported model",
+      status: "available" as const,
+    };
+    render(
+      <EnginesView
+        {...props({
+          engines: [imported, missingImported],
+          onImport,
+          onRemove,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Import model" }));
+    expect(onImport).toHaveBeenCalledOnce();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove broken model" }),
+    );
+    expect(onRemove).toHaveBeenCalledWith(imported.id);
+    fireEvent.click(screen.getByRole("button", { name: "Remove model" }));
+    expect(onRemove).toHaveBeenCalledWith(missingImported.id);
+    expect(
+      screen.queryByRole("button", { name: /Download again/i }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Download$/i })).toBeNull();
+    expect(screen.getByText(/GGML \.bin file you trust/i)).toBeVisible();
+    expect(screen.getByText(/not its safety or license/i)).toBeVisible();
+    expect(screen.getByText(/GGUF and general LLM files/i)).toBeVisible();
   });
 });

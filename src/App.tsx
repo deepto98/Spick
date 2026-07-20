@@ -21,6 +21,7 @@ import {
   activateLocalModel,
   cancelLocalModelInstall,
   formatModelBytes,
+  importLocalModel,
   installLocalModel,
   listLocalModels,
   modelStatus,
@@ -77,6 +78,7 @@ function App() {
   const [modelActionPending, setModelActionPending] = useState<string | null>(
     null,
   );
+  const [modelImportPending, setModelImportPending] = useState(false);
   const [cancellingModels, setCancellingModels] = useState<ReadonlySet<string>>(
     new Set(),
   );
@@ -234,9 +236,15 @@ function App() {
         return {
           id: model.manifest.id,
           name: model.manifest.displayName,
-          provider: "whisper.cpp",
+          provider:
+            model.manifest.origin === "imported"
+              ? "whisper.cpp · imported"
+              : "whisper.cpp",
           description:
-            template?.description ?? "A verified local whisper.cpp model.",
+            template?.description ??
+            (model.manifest.origin === "imported"
+              ? "Imported from a file you selected on this Mac."
+              : "A verified local whisper.cpp model."),
           kind: "local",
           status: modelStatus(model),
           languageSupport:
@@ -247,12 +255,20 @@ function App() {
           performance:
             model.state === "installed"
               ? "Ready on this Mac"
-              : "Speed varies by Mac",
+              : model.state === "needsVerification"
+                ? "Checks before the next use"
+                : model.state === "invalid"
+                  ? "Model file needs repair"
+                  : model.manifest.origin === "imported"
+                    ? "Model file is missing"
+                    : "Not downloaded yet",
+          usable:
+            model.state === "installed" || model.state === "needsVerification",
           recommended: model.manifest.id === "whisper-small-multilingual-q5-1",
+          origin: model.manifest.origin,
         };
       });
       setEngines(local);
-      setModelError(null);
     } finally {
       setLocalModelsLoading(false);
     }
@@ -530,8 +546,7 @@ function App() {
   const selectedEngineReady = nativeSettings
     ? nativeSettings.transcriptionEngine.location === "cloud"
       ? selectedCloudProvider?.configured === true
-      : selectedLocalEngine?.status === "active" ||
-        selectedLocalEngine?.status === "ready"
+      : selectedLocalEngine?.usable === true
     : false;
   const transcriptionSource: TranscriptionSource = !dictation.native
     ? "preview"
@@ -577,6 +592,40 @@ function App() {
     );
   };
 
+  const importEngine = () => {
+    if (!dictation.native || modelImportPending) return;
+    setModelImportPending(true);
+    setModelError(null);
+    void (async () => {
+      let imported;
+      try {
+        imported = await importLocalModel();
+      } catch (reason) {
+        const importError = `Couldn’t import that model: ${String(reason)}`;
+        setModelError(importError);
+        try {
+          // Import is content-addressed and registry persistence is its commit
+          // point. Refresh even after an error in case only later bookkeeping
+          // failed and the model is already present.
+          await refreshLocalEngines();
+        } catch (refreshReason) {
+          setModelError(
+            `${importError} The list also didn’t refresh: ${String(refreshReason)}`,
+          );
+        }
+        return;
+      }
+      if (!imported) return;
+      try {
+        await refreshLocalEngines();
+      } catch (reason) {
+        setModelError(
+          `Model imported, but the list didn’t refresh: ${String(reason)}`,
+        );
+      }
+    })().finally(() => setModelImportPending(false));
+  };
+
   const cancelEngineInstall = (id: string) => {
     cancelledModelDownloads.current.add(id);
     setCancellingModels((current) => new Set(current).add(id));
@@ -604,12 +653,28 @@ function App() {
     if (dictation.native) {
       setModelActionPending(id);
       setModelError(null);
-      void removeLocalModel(id)
-        .then(refreshLocalEngines)
-        .catch((reason) =>
-          setModelError(`Couldn’t remove that model: ${reason}`),
-        )
-        .finally(() => setModelActionPending(null));
+      void (async () => {
+        try {
+          await removeLocalModel(id);
+        } catch (reason) {
+          setModelError(`Model removal needs attention: ${String(reason)}`);
+          try {
+            await refreshLocalEngines();
+          } catch (refreshReason) {
+            setModelError(
+              `Model removal needs attention: ${String(reason)} The list also didn’t refresh: ${String(refreshReason)}`,
+            );
+          }
+          return;
+        }
+        try {
+          await refreshLocalEngines();
+        } catch (reason) {
+          setModelError(
+            `Model removed, but the list didn’t refresh: ${String(reason)}`,
+          );
+        }
+      })().finally(() => setModelActionPending(null));
       return;
     }
     setEngines((current) =>
@@ -769,6 +834,7 @@ function App() {
               native={dictation.native}
               cancellingModelIds={cancellingModels}
               pendingModelId={modelActionPending}
+              importPending={modelImportPending}
               localLoading={localModelsLoading}
               error={modelError ?? undefined}
               cloudProviders={cloudProviders.providers}
@@ -779,6 +845,7 @@ function App() {
               onActivate={activateEngine}
               onCancelInstall={cancelEngineInstall}
               onInstall={installEngine}
+              onImport={importEngine}
               onRemove={removeEngine}
               onLocalRefresh={retryLocalModels}
               onCloudRefresh={() => void cloudProviders.refresh()}

@@ -56,6 +56,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_nspanel::init());
 
     let app = builder
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -158,6 +159,7 @@ pub fn run() {
             commands::start_hud_drag,
             commands::get_last_transcript,
             commands::list_local_models,
+            commands::import_local_model,
             commands::install_local_model,
             commands::cancel_local_model_install,
             commands::activate_local_model,
@@ -224,9 +226,7 @@ fn preload_active_model<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             {
                 return;
             }
-            let Some(model) =
-                engines::resolve_curated_whisper_model(&settings.transcription_engine.model)
-            else {
+            let Some(model) = state.models.resolve(&settings.transcription_engine.model) else {
                 return;
             };
             let should_load = state

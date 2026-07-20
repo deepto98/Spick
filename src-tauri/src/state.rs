@@ -126,7 +126,7 @@ impl AppState {
             settings: RwLock::new(settings),
             session: Mutex::new(SessionController::default()),
             audio: Mutex::new(AudioCaptureController::default()),
-            models: Arc::new(ModelStore::new(models_path)),
+            models: Arc::new(ModelStore::new(models_path)?),
             whisper: WhisperCppRuntime::default(),
             local_data: LocalDataStore::open(database_path),
             text_targets: TextTargetController::default(),

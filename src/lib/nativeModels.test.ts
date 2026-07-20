@@ -22,17 +22,19 @@ function summary(
       quantization: "f16",
       downloadBytes: 77_691_713,
       sha256: "0".repeat(64),
+      origin: "curated",
       sourceUrl: "https://example.com/model.bin",
     },
   };
 }
 
 describe("native local models", () => {
-  it("only labels an installed selected model as active", () => {
+  it("keeps the selected model active independently of file health", () => {
     expect(modelStatus(summary("installed", true))).toBe("active");
     expect(modelStatus(summary("installed"))).toBe("ready");
-    expect(modelStatus(summary("needsVerification", true))).toBe("ready");
-    expect(modelStatus(summary("notInstalled", true))).toBe("available");
+    expect(modelStatus(summary("needsVerification", true))).toBe("active");
+    expect(modelStatus(summary("notInstalled", true))).toBe("active");
+    expect(modelStatus(summary("invalid", true))).toBe("active");
     expect(modelStatus(summary("invalid"))).toBe("invalid");
   });
 

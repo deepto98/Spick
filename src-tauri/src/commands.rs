@@ -8,6 +8,7 @@ use std::{
 };
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::{
     audio::{
@@ -21,8 +22,8 @@ use crate::{
         HudSettings, LanguagePolicy, SessionState, SessionTrigger,
     },
     engines::{
-        resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput, CleanupEngine,
-        CleanupRequest, DictationTranscript, EngineError, ModelLanguageSet, RuleBasedCleanupEngine,
+        validate_whisper_model_policy, AudioInput, CleanupEngine, CleanupRequest,
+        DictationTranscript, EngineError, ModelLanguageSet, RuleBasedCleanupEngine,
         TranscriptResult, TranscriptionRequest,
     },
     hud,
@@ -37,6 +38,9 @@ use crate::{
     shortcut,
     state::{AppState, HudTargetProtectionLease},
 };
+
+#[cfg(test)]
+use crate::engines::resolve_curated_whisper_model;
 
 pub const DICTATION_STATE_EVENT: &str = "dictation://state";
 pub const DICTATION_TRANSCRIPT_EVENT: &str = "dictation://transcript";
@@ -240,7 +244,7 @@ pub fn update_settings(
         if settings.transcription_engine != current.transcription_engine {
             return Err("choose transcription models from Engines".into());
         }
-        validate_selected_transcription(&settings)?;
+        validate_selected_transcription(&state.models, &settings)?;
         current.clone()
     };
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
@@ -277,7 +281,7 @@ pub fn update_settings(
             .write()
             .map_err(|_| "settings lock is poisoned".to_string())?;
         let next = rebase_settings_update(&previous, &settings, &current)?;
-        validate_selected_transcription(&next)?;
+        validate_selected_transcription(&state.models, &next)?;
         state.persist_settings(&next)?;
         *current = next.clone();
         Ok::<AppSettings, String>(next)
@@ -454,6 +458,34 @@ pub fn list_local_models(
 }
 
 #[tauri::command]
+pub async fn import_local_model(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Option<LocalModelSummary>, String> {
+    require_main_window(&window)?;
+    let selected = window
+        .dialog()
+        .file()
+        .set_title("Import a whisper.cpp model")
+        .add_filter("whisper.cpp GGML model", &["bin"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = match selected {
+        FilePath::Path(path) => path,
+        FilePath::Url(_) => {
+            return Err("choose a model stored as a local file".into());
+        }
+    };
+    let models = Arc::clone(&app.state::<AppState>().models);
+    tauri::async_runtime::spawn_blocking(move || models.import_from_path(&path))
+        .await
+        .map_err(|error| format!("local model import worker failed: {error}"))?
+        .map(Some)
+}
+
+#[tauri::command]
 pub async fn install_local_model(
     window: WebviewWindow,
     app: AppHandle,
@@ -492,7 +524,10 @@ pub async fn activate_local_model(
     model_id: String,
 ) -> Result<AppSettings, String> {
     require_main_window(&window)?;
-    let model = resolve_curated_whisper_model(&model_id)
+    let model = app
+        .state::<AppState>()
+        .models
+        .resolve(&model_id)
         .ok_or_else(|| format!("unknown local model: {model_id}"))?;
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -521,7 +556,10 @@ pub async fn remove_local_model(
     model_id: String,
 ) -> Result<(), String> {
     require_main_window(&window)?;
-    let model = resolve_curated_whisper_model(&model_id)
+    let model = app
+        .state::<AppState>()
+        .models
+        .resolve(&model_id)
         .ok_or_else(|| format!("unknown local model: {model_id}"))?;
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -531,7 +569,9 @@ pub async fn remove_local_model(
             .lock()
             .map_err(|_| "model configuration is unavailable".to_string())?;
         let settings = state.settings_snapshot()?;
-        let active_id = resolve_curated_whisper_model(&settings.transcription_engine.model)
+        let active_id = state
+            .models
+            .resolve(&settings.transcription_engine.model)
             .map(|active| active.id.clone());
         if active_id.as_deref() == Some(model.id.as_str()) {
             return Err("choose another local model before removing the active one".into());
@@ -542,7 +582,7 @@ pub async fn remove_local_model(
             .lock()
             .map_err(|_| "dictation session lock is poisoned".to_string())?
             .snapshot();
-        if session_uses_model(&in_use, &model.id) {
+        if session_uses_model(&state.models, &in_use, &model.id) {
             return Err("wait for the current dictation before removing this model".into());
         }
 
@@ -786,7 +826,7 @@ where
     updated.transcription_engine =
         EngineConfig::local(EngineProvider::WhisperCpp, model.id.clone());
     updated.validate()?;
-    validate_selected_transcription(&updated)?;
+    validate_selected_transcription(&state.models, &updated)?;
     state.persist_settings(&updated)?;
     *current = updated.clone();
     Ok(updated)
@@ -928,7 +968,10 @@ fn rebase_settings_update(
     Ok(next)
 }
 
-fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String> {
+fn validate_selected_transcription(
+    models: &crate::model_store::ModelStore,
+    settings: &AppSettings,
+) -> Result<(), String> {
     if let Some(provider) = provider_for_engine(&settings.transcription_engine) {
         return validate_provider_language_policy(provider, &settings.language_policy);
     }
@@ -941,8 +984,9 @@ fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String>
         return Ok(());
     }
 
-    let model =
-        resolve_curated_whisper_model(&settings.transcription_engine.model).ok_or_else(|| {
+    let model = models
+        .resolve(&settings.transcription_engine.model)
+        .ok_or_else(|| {
             format!(
                 "unknown local model: {}",
                 settings.transcription_engine.model
@@ -957,12 +1001,17 @@ fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String>
     })
 }
 
-fn session_uses_model(event: &DictationStateEvent, model_id: &str) -> bool {
+fn session_uses_model(
+    models: &crate::model_store::ModelStore,
+    event: &DictationStateEvent,
+    model_id: &str,
+) -> bool {
     matches!(
         event.state,
         SessionState::Listening | SessionState::Processing | SessionState::Inserting
     ) && event.session.as_ref().is_some_and(|session| {
-        resolve_curated_whisper_model(&session.transcription_engine.model)
+        models
+            .resolve(&session.transcription_engine.model)
             .is_some_and(|model| model.id == model_id)
     })
 }
@@ -1419,14 +1468,15 @@ fn transcribe_capture(
     }
 
     let local = (|| {
-        let model = resolve_curated_whisper_model(&session.transcription_engine.model).ok_or_else(
-            || {
+        let model = state
+            .models
+            .resolve(&session.transcription_engine.model)
+            .ok_or_else(|| {
                 EngineError::InvalidRequest(format!(
                     "unknown local model: {}",
                     session.transcription_engine.model
                 ))
-            },
-        )?;
+            })?;
         let model_path = state
             .models
             .verified_model_path_cancellable(&model.id, cancellation.as_ref())
@@ -2383,17 +2433,25 @@ mod tests {
 
     #[test]
     fn in_flight_session_keeps_its_snapshotted_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
         let mut active = event("session-a", SessionState::Processing, 2);
         active.session.as_mut().unwrap().transcription_engine =
             EngineConfig::local(EngineProvider::WhisperCpp, "whisper-tiny-multilingual-f16");
 
-        assert!(session_uses_model(&active, "whisper-tiny-multilingual-f16"));
+        assert!(session_uses_model(
+            &state.models,
+            &active,
+            "whisper-tiny-multilingual-f16"
+        ));
         assert!(!session_uses_model(
+            &state.models,
             &active,
             "whisper-small-multilingual-q5-1"
         ));
         active.state = SessionState::Completed;
         assert!(!session_uses_model(
+            &state.models,
             &active,
             "whisper-tiny-multilingual-f16"
         ));
@@ -2415,6 +2473,8 @@ mod tests {
 
     #[test]
     fn settings_validation_enforces_the_selected_cloud_provider_language_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
         let bengali = LanguagePolicy::Fixed {
             language: "bn-IN".into(),
         };
@@ -2427,7 +2487,7 @@ mod tests {
             },
             ..AppSettings::default()
         };
-        assert!(validate_selected_transcription(&openai).is_ok());
+        assert!(validate_selected_transcription(&state.models, &openai).is_ok());
 
         let xai = AppSettings {
             language_policy: bengali.clone(),
@@ -2438,7 +2498,7 @@ mod tests {
             },
             ..AppSettings::default()
         };
-        assert!(validate_selected_transcription(&xai).is_err());
+        assert!(validate_selected_transcription(&state.models, &xai).is_err());
 
         let unknown = AppSettings {
             language_policy: bengali,
@@ -2449,7 +2509,7 @@ mod tests {
             },
             ..AppSettings::default()
         };
-        assert!(validate_selected_transcription(&unknown).is_err());
+        assert!(validate_selected_transcription(&state.models, &unknown).is_err());
     }
 
     #[test]
