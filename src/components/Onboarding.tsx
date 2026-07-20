@@ -543,7 +543,7 @@ export function Onboarding({
                     <div>
                       <strong>Trim obvious fillers</strong>
                       <small>
-                        English “um,” “uh,” and “erm” when pause-marked
+                        Local list · only when punctuation marks a pause
                       </small>
                     </div>
                     {settings.cleanupLevel === "Clean" && (
@@ -624,7 +624,7 @@ export function Onboarding({
                   <strong>Cleanup</strong>
                   <small>
                     {settings.cleanupLevel === "Clean"
-                      ? "Trim obvious English fillers"
+                      ? "Trim reviewed pause-marked fillers"
                       : "As transcribed"}
                   </small>
                 </div>
@@ -668,7 +668,7 @@ function onboardingSourceCopy(
       return {
         demo: `Cloud transcription${engineName ? ` · ${engineName}` : ""}`,
         cleanup:
-          "Audio leaves this Mac for transcription. Filler cleanup, when on, runs here after the text returns.",
+          "Audio leaves this Mac for transcription. Cleanup follows the selected provider; Spick’s local cleaner, when used, runs after the text returns.",
         footer: "Cloud transcription · careful field handoff",
       };
     case "localWithCloudFallback":
@@ -682,7 +682,7 @@ function onboardingSourceCopy(
       return {
         demo: "Local transcription · audio stays on this Mac",
         cleanup:
-          "Both cleanup modes run on this Mac. Bare words and other languages are left alone.",
+          "Both modes run on this Mac. Clean uses a short language-specific list; quoted uses and bare words stay untouched, with no sentence rewriting.",
         footer: "Local transcription · careful field handoff",
       };
     case "loading":

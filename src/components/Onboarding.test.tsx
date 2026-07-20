@@ -183,4 +183,42 @@ describe("onboarding shortcut practice", () => {
       screen.getByText(/Audio leaves this Mac for transcription/i),
     ).toBeVisible();
   });
+
+  it("describes the local cleaner without promising sentence rewriting", () => {
+    render(
+      <Onboarding
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        settings={{ ...optionSettings, cleanupLevel: "Clean" }}
+        settingsReady
+        settingsSaving={false}
+        transcriptionSource="local"
+        engineName="Whisper Small"
+        engineReady
+        onRequestAccessibility={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRetrySettings={vi.fn()}
+        onSettingsChange={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(
+      screen.getByText("Local list · only when punctuation marks a pause"),
+    ).toBeVisible();
+    expect(screen.getByText(/short language-specific list/i)).toBeVisible();
+    expect(screen.getByText(/no sentence rewriting/i)).toBeVisible();
+  });
 });

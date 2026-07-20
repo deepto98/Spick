@@ -223,11 +223,14 @@ describe("cleanup settings", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "English only for now. Bare words and other languages stay as transcribed.",
+        /When local cleanup runs, its on-device list covers English, Spanish, French, German, Hindi, Italian, Russian, Japanese, and Chinese\./,
       ),
     ).toBeInTheDocument();
+    expect(screen.getByText(/does not rewrite sentences/i)).toBeVisible();
     expect(screen.queryByText("Polished")).not.toBeInTheDocument();
-    expect(screen.queryByText(/repeats|rewrite/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/removes repeats|rewrites your words/i),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /As transcribed/i }));
     expect(onChange).toHaveBeenCalledWith({

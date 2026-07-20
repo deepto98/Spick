@@ -601,7 +601,7 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<Languages size={18} />}
                 title="Language & cleanup"
-                description="Choose what you’re speaking. Spick can also trim a few obvious English fillers."
+                description="Choose what you’re speaking. Local cleanup can trim a short list of pause-marked hesitation sounds."
               />
               <section className="settings-card settings-card--form">
                 <SelectField
@@ -633,15 +633,17 @@ export function SettingsView({
                         <small>
                           {level === "Verbatim"
                             ? "Leave the transcript alone"
-                            : "Remove pause-marked “um”, “uh”, and “erm”"}
+                            : "Remove reviewed sounds when punctuation marks a pause"}
                         </small>
                         {settings.cleanupLevel === level && <Check size={14} />}
                       </button>
                     ))}
                   </div>
                   <p className="cleanup-note">
-                    English only for now. Bare words and other languages stay as
-                    transcribed.
+                    When local cleanup runs, its on-device list covers English,
+                    Spanish, French, German, Hindi, Italian, Russian, Japanese,
+                    and Chinese. Quoted uses, bare words, and unreviewed
+                    languages stay untouched; it does not rewrite sentences.
                   </p>
                 </div>
               </section>

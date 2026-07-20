@@ -437,13 +437,12 @@ where
     }
 }
 
-/// Fast, private cleanup used as the no-model baseline. For English
-/// transcripts, it removes pause-punctuated filler tokens outside quoted or
-/// explicitly referenced text and normalizes whitespace. Ambiguous bare words,
-/// unknown languages, and non-English transcripts pass through until stronger
-/// language-specific policies are modeled.
+/// Fast, private cleanup used as the no-model baseline. It removes only a
+/// small, language-specific set of pause-punctuated hesitation sounds outside
+/// quoted or explicitly referenced text, then normalizes whitespace. Ambiguous
+/// bare words and languages without a reviewed policy pass through unchanged.
 pub struct RuleBasedCleanupEngine {
-    fillers: Vec<String>,
+    english_fillers: Vec<String>,
     descriptor: EngineDescriptor,
 }
 
@@ -462,39 +461,49 @@ impl RuleBasedCleanupEngine {
         S: Into<String>,
     {
         Self {
-            fillers: fillers
+            english_fillers: fillers
                 .into_iter()
                 .map(Into::into)
-                .map(|filler| filler.trim().to_ascii_lowercase())
+                .map(|filler| filler.trim().to_lowercase())
                 .filter(|filler| !filler.is_empty())
                 .collect(),
             descriptor: EngineDescriptor::builtin_cleanup(),
         }
     }
 
-    fn is_filler(&self, token: &str) -> bool {
+    fn is_filler(&self, language: CleanupLanguage, token: &str) -> bool {
         let trimmed = token.trim_matches(is_spoken_filler_punctuation);
         // A bare word is ambiguous: it may be a variable, acronym, or term of
         // art. Pause punctuation is the minimum evidence this deliberately
         // conservative cleaner requires before removing it.
-        if trimmed == token {
+        if trimmed == token || trimmed.is_empty() {
             return false;
         }
-        let normalized = trimmed.to_ascii_lowercase();
-        self.fillers.iter().any(|filler| filler == &normalized)
+        let normalized = trimmed.to_lowercase();
+        match language {
+            CleanupLanguage::English => self
+                .english_fillers
+                .iter()
+                .any(|filler| filler == &normalized),
+            _ => language.fillers().contains(&normalized.as_str()),
+        }
     }
 
-    fn is_explicit_reference(&self, tokens: &[&str], index: usize) -> bool {
+    fn is_explicit_reference(
+        &self,
+        language: CleanupLanguage,
+        tokens: &[&str],
+        index: usize,
+    ) -> bool {
         let token = tokens[index];
         let normalized = normalized_token(token);
         let letters = token
             .chars()
-            .filter(|character| character.is_ascii_alphabetic())
+            .filter(|character| character.is_alphabetic())
             .collect::<String>();
-        if letters.len() > 1
-            && letters
-                .chars()
-                .all(|character| character.is_ascii_uppercase())
+        if letters.chars().count() > 1
+            && letters.chars().any(char::is_uppercase)
+            && letters.chars().all(|character| !character.is_lowercase())
         {
             return true;
         }
@@ -565,6 +574,10 @@ impl RuleBasedCleanupEngine {
             return true;
         }
 
+        if language.reference_words().contains(&previous.as_str()) {
+            return true;
+        }
+
         // A bare filler after a determiner is likely being used as a noun
         // ("an um"), while punctuation such as "a, um," still marks a pause.
         matches!(previous.as_str(), "a" | "an" | "the") && token.eq_ignore_ascii_case(&normalized)
@@ -585,24 +598,27 @@ impl CleanupEngine for RuleBasedCleanupEngine {
         }
 
         let original = request.transcript.text.as_str();
-        if !request
+        let Some(language) = request
             .transcript
             .detected_language
             .as_deref()
-            .is_some_and(is_english_language)
-        {
+            .and_then(CleanupLanguage::from_detected_tag)
+        else {
             return Ok(CleanupResult {
                 text: original.into(),
                 changed: false,
             });
-        }
+        };
 
         let tokens = original.split_whitespace().collect::<Vec<_>>();
         let mut quotes = QuoteState::default();
         let mut cleaned_tokens = Vec::with_capacity(tokens.len());
         for (index, token) in tokens.iter().enumerate() {
             let quoted = quotes.observe(token);
-            if self.is_filler(token) && !quoted && !self.is_explicit_reference(&tokens, index) {
+            if self.is_filler(language, token)
+                && !quoted
+                && !self.is_explicit_reference(language, &tokens, index)
+            {
                 if comma_repair_is_safe(&cleaned_tokens) {
                     repair_punctuation_after_removed_filler(&mut cleaned_tokens, token);
                 } else {
@@ -621,8 +637,94 @@ impl CleanupEngine for RuleBasedCleanupEngine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupLanguage {
+    English,
+    Spanish,
+    French,
+    German,
+    Hindi,
+    Italian,
+    Russian,
+    Japanese,
+    Chinese,
+}
+
+impl CleanupLanguage {
+    fn from_detected_tag(tag: &str) -> Option<Self> {
+        let primary = tag.trim().split('-').next()?;
+        if primary.eq_ignore_ascii_case("en") {
+            Some(Self::English)
+        } else if primary.eq_ignore_ascii_case("es") {
+            Some(Self::Spanish)
+        } else if primary.eq_ignore_ascii_case("fr") {
+            Some(Self::French)
+        } else if primary.eq_ignore_ascii_case("de") {
+            Some(Self::German)
+        } else if primary.eq_ignore_ascii_case("hi") {
+            Some(Self::Hindi)
+        } else if primary.eq_ignore_ascii_case("it") {
+            Some(Self::Italian)
+        } else if primary.eq_ignore_ascii_case("ru") {
+            Some(Self::Russian)
+        } else if primary.eq_ignore_ascii_case("ja") {
+            Some(Self::Japanese)
+        } else if primary.eq_ignore_ascii_case("zh") {
+            Some(Self::Chinese)
+        } else {
+            None
+        }
+    }
+
+    fn fillers(self) -> &'static [&'static str] {
+        match self {
+            Self::English => &[],
+            Self::Spanish => &["eh"],
+            Self::French => &["euh"],
+            Self::German => &["äh", "ähm"],
+            Self::Hindi => &["उम्", "उम्म"],
+            Self::Italian => &["ehm"],
+            Self::Russian => &["эээ"],
+            Self::Japanese => &["えー"],
+            Self::Chinese => &["呃"],
+        }
+    }
+
+    fn reference_words(self) -> &'static [&'static str] {
+        match self {
+            Self::English => &[],
+            Self::Spanish => &["palabra", "término", "frase", "decir", "escribe", "nombre"],
+            Self::French => &["mot", "terme", "phrase", "dire", "écrire", "nom"],
+            Self::German => &["wort", "begriff", "phrase", "sagen", "schreiben", "name"],
+            Self::Hindi => &["शब्द", "वाक्यांश", "कहना", "लिखना", "नाम"],
+            Self::Italian => &["parola", "termine", "frase", "dire", "scrivere", "nome"],
+            Self::Russian => &["слово", "термин", "фраза", "сказать", "написать", "имя"],
+            Self::Japanese => &["言葉", "単語", "用語", "言う", "書く", "名前"],
+            Self::Chinese => &["词", "术语", "说", "写", "名字"],
+        }
+    }
+}
+
 fn is_spoken_filler_punctuation(character: char) -> bool {
-    matches!(character, ',' | '.' | '!' | '?' | '…')
+    matches!(
+        character,
+        ',' | '.'
+            | '!'
+            | '?'
+            | ';'
+            | ':'
+            | '…'
+            | '，'
+            | '。'
+            | '！'
+            | '？'
+            | '；'
+            | '：'
+            | '、'
+            | '।'
+            | '¿'
+            | '¡'
+    )
 }
 
 fn comma_repair_is_safe(cleaned_tokens: &[String]) -> bool {
@@ -678,8 +780,8 @@ fn repair_punctuation_after_removed_filler(cleaned_tokens: &mut Vec<String>, rem
     let terminal = removed
         .chars()
         .rev()
-        .find(|character| !matches!(character, ','))
-        .filter(|character| matches!(character, '.' | '!' | '?' | '…'));
+        .find(|character| !matches!(character, ',' | ';' | ':' | '，' | '；' | '：' | '、'))
+        .filter(|character| matches!(character, '.' | '!' | '?' | '…' | '。' | '！' | '？' | '।'));
     if let (Some(terminal), Some(previous)) = (terminal, cleaned_tokens.last_mut()) {
         // When the filler ended a sentence, its terminal mark supersedes even
         // a comma that was otherwise valid before an introductory filler.
@@ -687,7 +789,7 @@ fn repair_punctuation_after_removed_filler(cleaned_tokens: &mut Vec<String>, rem
         if previous.ends_with(',') {
             previous.pop();
         }
-        if !previous.ends_with(['.', '!', '?', '…']) {
+        if !previous.ends_with(['.', '!', '?', '…', '。', '！', '？', '।']) {
             previous.push(terminal);
         }
     }
@@ -697,7 +799,7 @@ fn introductory_comma_belongs_to_previous(cleaned_tokens: &[String]) -> bool {
     let starts_sentence = cleaned_tokens.len() == 1
         || cleaned_tokens
             .get(cleaned_tokens.len().saturating_sub(2))
-            .is_some_and(|before| before.ends_with(['.', '!', '?', '…']));
+            .is_some_and(|before| before.ends_with(['.', '!', '?', '…', '。', '！', '？', '।']));
     starts_sentence
         && cleaned_tokens.last().is_some_and(|previous| {
             matches!(
@@ -721,15 +823,10 @@ fn introductory_comma_belongs_to_previous(cleaned_tokens: &[String]) -> bool {
 
 fn normalized_token(token: &str) -> String {
     token
-        .trim_matches(|character: char| character.is_ascii_punctuation())
-        .to_ascii_lowercase()
-}
-
-fn is_english_language(language: &str) -> bool {
-    language
-        .split('-')
-        .next()
-        .is_some_and(|language| language.eq_ignore_ascii_case("en"))
+        .trim_matches(|character: char| {
+            character.is_ascii_punctuation() || is_spoken_filler_punctuation(character)
+        })
+        .to_lowercase()
 }
 
 #[derive(Default)]
@@ -1169,13 +1266,77 @@ mod tests {
     }
 
     #[test]
-    fn rule_cleanup_leaves_unknown_and_non_english_text_untouched() {
+    fn rule_cleanup_uses_reviewed_fillers_for_each_detected_language() {
+        let engine = RuleBasedCleanupEngine::default();
+        for (language, original, expected) in [
+            ("es", "Necesito eh, revisarlo.", "Necesito revisarlo."),
+            ("fr-FR", "Je dois euh, vérifier.", "Je dois vérifier."),
+            ("de", "Ich muss Ähm, prüfen.", "Ich muss prüfen."),
+            ("hi", "मुझे उम्म, यह देखना है।", "मुझे यह देखना है।"),
+            ("it", "Devo ehm, controllare.", "Devo controllare."),
+            ("ru", "Нужно эээ, проверить.", "Нужно проверить."),
+            (
+                "ja",
+                "確認します えー、 もう一度。",
+                "確認します もう一度。",
+            ),
+            ("zh-Hans", "我想 呃， 再看看。", "我想 再看看。"),
+        ] {
+            let transcript = transcript_in(language, original);
+            let result = engine
+                .cleanup(CleanupRequest {
+                    transcript: &transcript,
+                    output_language: None,
+                })
+                .unwrap();
+
+            assert_eq!(result.text, expected, "language {language}");
+            assert!(result.changed, "language {language}");
+        }
+    }
+
+    #[test]
+    fn rule_cleanup_keeps_multilingual_quotes_references_and_bare_words() {
+        let engine = RuleBasedCleanupEngine::default();
+        let original = "Di \"eh,\", conserva la palabra eh, y deja eh sin puntuación.";
+        let transcript = transcript_in("es", original);
+
+        let result = engine
+            .cleanup(CleanupRequest {
+                transcript: &transcript,
+                output_language: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.text, original);
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn rule_cleanup_is_language_tagged_instead_of_using_a_global_word_list() {
+        let engine = RuleBasedCleanupEngine::default();
+        let spanish = transcript_in("es", "Keep um, exactly.");
+        let english = transcript_in("en", "Keep euh, exactly.");
+
+        for transcript in [&spanish, &english] {
+            let result = engine
+                .cleanup(CleanupRequest {
+                    transcript,
+                    output_language: None,
+                })
+                .unwrap();
+            assert_eq!(result.text, transcript.text);
+            assert!(!result.changed);
+        }
+    }
+
+    #[test]
+    fn rule_cleanup_leaves_unknown_and_unreviewed_languages_untouched() {
         let engine = RuleBasedCleanupEngine::default();
         let unknown = TranscriptResult::final_text("Um,  leave this exactly.");
-        let mut hindi = TranscriptResult::final_text("Um,  यह रहने दो.");
-        hindi.detected_language = Some("hi".into());
+        let swahili = transcript_in("sw", "Um,  acha hivi.");
 
-        for transcript in [&unknown, &hindi] {
+        for transcript in [&unknown, &swahili] {
             let result = engine
                 .cleanup(CleanupRequest {
                     transcript,
@@ -1188,8 +1349,12 @@ mod tests {
     }
 
     fn english_transcript(text: &str) -> TranscriptResult {
+        transcript_in("en", text)
+    }
+
+    fn transcript_in(language: &str, text: &str) -> TranscriptResult {
         let mut transcript = TranscriptResult::final_text(text);
-        transcript.detected_language = Some("en".into());
+        transcript.detected_language = Some(language.into());
         transcript
     }
 }
