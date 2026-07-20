@@ -5,11 +5,12 @@ import { DictationHud } from "./components/DictationHud";
 import { Onboarding } from "./components/Onboarding";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { initialEngines, initialVocabulary } from "./data/mockData";
+import { initialEngines } from "./data/mockData";
 import { useAudioLevel } from "./hooks/useAudioLevel";
 import { useAccessibilityPermission } from "./hooks/useAccessibilityPermission";
 import { useDictationController } from "./hooks/useDictationController";
 import { useHudWindow } from "./hooks/useHudWindow";
+import { useLocalData } from "./hooks/useLocalData";
 import { useShortcutStatus } from "./hooks/useShortcutStatus";
 import {
   activateLocalModel,
@@ -34,7 +35,8 @@ import {
   type NativeAppSettings,
   type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
-import type { AppSettings, Engine, ViewId, VocabularyEntry } from "./types";
+import type { ClearLocalDataScope } from "./lib/nativeLocalData";
+import type { AppSettings, Engine, ViewId } from "./types";
 import { EnginesView } from "./views/EnginesView";
 import { SettingsView } from "./views/SettingsView";
 import { TodayView } from "./views/TodayView";
@@ -77,16 +79,22 @@ function App() {
   const settingsIntentRef = useRef<{
     languagePolicy: NativeLanguagePolicy;
     cleanupLevel: AppSettings["cleanupLevel"];
+    allowCloudFallback: boolean;
+    saveTranscriptHistory: boolean;
   }>({
     languagePolicy: { mode: "auto" },
     cleanupLevel: defaultSettings.cleanupLevel,
+    allowCloudFallback: defaultSettings.cloudFallback,
+    saveTranscriptHistory: defaultSettings.keepHistory,
   });
   const settingsSaveRevision = useRef(0);
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
-  const [vocabulary, setVocabulary] =
-    useState<VocabularyEntry[]>(initialVocabulary);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const dictation = useDictationController(!hudOnly);
+  const localData = useLocalData(dictation.native && !hudOnly);
+  const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
+    string | null
+  >(null);
   const accessibility = useAccessibilityPermission(
     dictation.native && !hudOnly,
   );
@@ -108,6 +116,8 @@ function App() {
         settingsIntentRef.current = {
           languagePolicy: saved.languagePolicy,
           cleanupLevel,
+          allowCloudFallback: saved.allowCloudFallback,
+          saveTranscriptHistory: saved.saveTranscriptHistory,
         };
       }
       setNativeSettings(saved);
@@ -252,7 +262,14 @@ function App() {
 
     const languageChanged = next.language !== settings.language;
     const cleanupChanged = next.cleanupLevel !== settings.cleanupLevel;
-    if (!languageChanged && !cleanupChanged) {
+    const cloudFallbackChanged = next.cloudFallback !== settings.cloudFallback;
+    const transcriptHistoryChanged = next.keepHistory !== settings.keepHistory;
+    if (
+      !languageChanged &&
+      !cleanupChanged &&
+      !cloudFallbackChanged &&
+      !transcriptHistoryChanged
+    ) {
       setSettings(next);
       return;
     }
@@ -264,6 +281,12 @@ function App() {
     const desiredCleanupLevel = cleanupChanged
       ? next.cleanupLevel
       : intent.cleanupLevel;
+    const allowCloudFallback = cloudFallbackChanged
+      ? next.cloudFallback
+      : intent.allowCloudFallback;
+    const saveTranscriptHistory = transcriptHistoryChanged
+      ? next.keepHistory
+      : intent.saveTranscriptHistory;
     if (!languagePolicy || !nativeSettingsRef.current) {
       setSettingsError("That setting isn’t connected to dictation yet.");
       return;
@@ -276,10 +299,14 @@ function App() {
       ...next,
       language: current.language,
       cleanupLevel: current.cleanupLevel,
+      cloudFallback: current.cloudFallback,
+      keepHistory: current.keepHistory,
     }));
     settingsIntentRef.current = {
       languagePolicy,
       cleanupLevel: desiredCleanupLevel,
+      allowCloudFallback,
+      saveTranscriptHistory,
     };
 
     const requestRevision = ++settingsSaveRevision.current;
@@ -294,6 +321,8 @@ function App() {
           ...current,
           languagePolicy,
           cleanupEngine,
+          allowCloudFallback,
+          saveTranscriptHistory,
         });
         acceptNativeSettings(
           saved,
@@ -455,6 +484,14 @@ function App() {
     setOnboardingComplete(false);
   };
 
+  const clearSavedLocalData = async (scope: ClearLocalDataScope) => {
+    const result = await localData.clearData(scope);
+    if (result?.clearedLatestSessionId) {
+      setHiddenEphemeralSessionId(result.clearedLatestSessionId);
+    }
+    return result;
+  };
+
   if (hudOnly) {
     return (
       <div className="hud-window-surface">
@@ -543,8 +580,23 @@ function App() {
               dictationError={dictation.error ?? undefined}
               delivery={dictation.delivery}
               lastTranscript={dictation.lastTranscript}
+              hiddenEphemeralSessionId={hiddenEphemeralSessionId}
               language={hudLanguage}
               native={dictation.native}
+              dashboard={localData.dashboard}
+              dashboardLoading={localData.dashboardLoading}
+              dashboardError={localData.dashboardError}
+              subscriptionError={localData.subscriptionError}
+              history={localData.history}
+              historyLoading={localData.historyLoading}
+              historyLoadingMore={localData.historyLoadingMore}
+              historyError={localData.historyError}
+              hasOlderHistory={localData.historyNextCursor !== null}
+              saveTranscriptHistory={settings.keepHistory}
+              onRefreshLocalData={() =>
+                void localData.refreshDashboardAndHistory()
+              }
+              onLoadOlderHistory={() => void localData.loadOlderHistory()}
               onHudStateChange={dictation.transitionTo}
             />
           )}
@@ -564,13 +616,15 @@ function App() {
           )}
           {activeView === "vocabulary" && (
             <VocabularyView
-              vocabulary={vocabulary}
-              onAdd={(entry) => setVocabulary((current) => [entry, ...current])}
-              onRemove={(id) =>
-                setVocabulary((current) =>
-                  current.filter((entry) => entry.id !== id),
-                )
-              }
+              vocabulary={localData.vocabulary}
+              loading={localData.vocabularyLoading}
+              error={localData.vocabularyError}
+              pendingIds={localData.vocabularyPendingIds}
+              native={dictation.native}
+              onRefresh={() => void localData.refreshVocabulary()}
+              onAdd={localData.createVocabulary}
+              onUpdate={localData.updateVocabulary}
+              onRemove={localData.deleteVocabulary}
             />
           )}
           {activeView === "settings" && (
@@ -584,6 +638,9 @@ function App() {
               shortcutStatus={shortcut.status}
               settingsSaving={settingsSaving}
               nativeError={settingsError ?? undefined}
+              clearError={localData.clearError ?? undefined}
+              clearPendingScope={localData.clearPendingScope}
+              lastClearResult={localData.lastClearResult}
               onChange={changeSettings}
               onShortcutChange={changeShortcut}
               onRefreshAccessibility={() => void accessibility.refresh()}
@@ -591,6 +648,7 @@ function App() {
               onRefreshShortcut={() => void shortcut.refresh()}
               onRequestInputMonitoring={() => void shortcut.request()}
               onRestartOnboarding={restartOnboarding}
+              onClearLocalData={clearSavedLocalData}
             />
           )}
         </main>

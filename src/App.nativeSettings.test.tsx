@@ -11,11 +11,17 @@ import type {
   NativeAppSettings,
   NativeLanguagePolicy,
 } from "./lib/nativeSettings";
+import type { NativeDictationTranscript } from "./lib/nativeDictation";
 import App from "./App";
 
 const nativeMocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
+}));
+
+const localDataMocks = vi.hoisted(() => ({
+  clearData: vi.fn(),
+  lastTranscript: null as NativeDictationTranscript | null,
 }));
 
 vi.mock("./lib/nativeSettings", async (importOriginal) => {
@@ -32,11 +38,39 @@ vi.mock("./hooks/useDictationController", () => ({
     delivery: null,
     error: null,
     language: "AUTO",
-    lastTranscript: null,
+    lastTranscript: localDataMocks.lastTranscript,
     native: true,
     pending: false,
     state: "idle",
     transitionTo: vi.fn(),
+  }),
+}));
+
+vi.mock("./hooks/useLocalData", () => ({
+  useLocalData: () => ({
+    dashboard: null,
+    dashboardError: null,
+    dashboardLoading: false,
+    subscriptionError: null,
+    history: [],
+    historyError: null,
+    historyLoading: false,
+    historyLoadingMore: false,
+    historyNextCursor: null,
+    vocabulary: [],
+    vocabularyError: null,
+    vocabularyLoading: false,
+    vocabularyPendingIds: new Set<string>(),
+    clearError: null,
+    clearPendingScope: null,
+    lastClearResult: null,
+    refreshDashboardAndHistory: vi.fn(),
+    loadOlderHistory: vi.fn(),
+    refreshVocabulary: vi.fn(),
+    createVocabulary: vi.fn(),
+    updateVocabulary: vi.fn(),
+    deleteVocabulary: vi.fn(),
+    clearData: localDataMocks.clearData,
   }),
 }));
 
@@ -142,6 +176,18 @@ async function openDictationSettings() {
   );
 }
 
+async function openPrivacySettings() {
+  render(<App />);
+  await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Privacy & history" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("switch", { name: "Keep transcript history" }),
+    ).toBeInTheDocument(),
+  );
+}
+
 describe("native language and cleanup persistence", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -149,6 +195,8 @@ describe("native language and cleanup persistence", () => {
     window.history.replaceState({}, "", "/");
     nativeMocks.getSettings.mockReset();
     nativeMocks.updateSettings.mockReset();
+    localDataMocks.clearData.mockReset();
+    localDataMocks.lastTranscript = null;
     nativeMocks.getSettings.mockResolvedValue(baseSettings);
   });
 
@@ -276,6 +324,87 @@ describe("native language and cleanup persistence", () => {
     expect(screen.queryByLabelText("Shortcut ⌥+Space")).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Shortcut ⌥").length).toBeGreaterThan(1);
     expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["transcript history", "Keep transcript history", "saveTranscriptHistory"],
+    ["cloud fallback", "Allow cloud fallback", "allowCloudFallback"],
+  ] as const)(
+    "publishes the %s choice only after native acknowledgement",
+    async (_label, controlName, nativeField) => {
+      const save = deferred<NativeAppSettings>();
+      nativeMocks.updateSettings.mockReturnValueOnce(save.promise);
+      await openPrivacySettings();
+
+      const control = screen.getByRole("switch", { name: controlName });
+      expect(control).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(control);
+
+      await waitFor(() =>
+        expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
+      );
+      expect(nativeMocks.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+        [nativeField]: true,
+      });
+      expect(control).toHaveAttribute("aria-checked", "false");
+      expect(control).toBeDisabled();
+
+      await act(async () => {
+        save.resolve({ ...baseSettings, [nativeField]: true });
+        await save.promise;
+      });
+
+      await waitFor(() =>
+        expect(control).toHaveAttribute("aria-checked", "true"),
+      );
+      expect(control).toBeEnabled();
+    },
+  );
+
+  it("hides the exact cleared recovery transcript even if React had not identified it", async () => {
+    localDataMocks.lastTranscript = {
+      sessionId: "cleared-session",
+      engineId: "whisper-local",
+      transcript: {
+        text: "This cleared recovery text must stay gone.",
+        segments: [],
+        detectedLanguage: "en",
+        confidence: null,
+        isFinal: true,
+      },
+      delivery: {
+        status: "focusChanged",
+        transcriptAvailable: true,
+        targetApp: "Notes",
+        caretRepositioned: null,
+      },
+    };
+    localDataMocks.clearData.mockResolvedValue({
+      scope: "all",
+      deletedUsageSessions: 1,
+      deletedTranscripts: 1,
+      deletedVocabularyEntries: 0,
+      clearedLatestTranscript: true,
+      clearedLatestSessionId: "cleared-session",
+      storageCleanupComplete: true,
+      storageCleanupWarning: null,
+      memoryCleanupComplete: true,
+      memoryCleanupWarning: null,
+      clearedAtMs: 10,
+    });
+    await openPrivacySettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset local data" }));
+    expect(localDataMocks.clearData).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reset" }));
+
+    await waitFor(() =>
+      expect(localDataMocks.clearData).toHaveBeenCalledWith("all"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    expect(
+      screen.queryByText("This cleared recovery text must stay gone."),
+    ).not.toBeInTheDocument();
   });
 
   it.each<[string, NativeLanguagePolicy, string]>([

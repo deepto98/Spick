@@ -31,12 +31,13 @@ describe("Spick product shell", () => {
     expect(continueButton).toBeEnabled();
   });
 
-  it("renders sample dashboard data and navigates to engine setup", () => {
+  it("renders an honest empty dashboard and navigates to engine setup", () => {
     window.localStorage.setItem("spick-onboarding-complete", "true");
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
-    expect(screen.getByText("SAMPLE DATA")).toBeInTheDocument();
+    expect(screen.getByText("No recordings yet")).toBeInTheDocument();
+    expect(screen.queryByText("SAMPLE DATA")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Engines" }));
 

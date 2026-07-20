@@ -5,21 +5,31 @@ import {
   Info,
   Languages,
   Lightbulb,
-  MoreHorizontal,
   PenLine,
+  Pencil,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
-  Upload,
   X,
 } from "lucide-react";
-import type { VocabularyEntry } from "../types";
-import { PageHeader, SelectField } from "../components/Ui";
+import { PageHeader, SelectField, Toggle } from "../components/Ui";
+import type {
+  VocabularyCategory,
+  VocabularyEntryDto,
+  VocabularyInput,
+} from "../lib/nativeLocalData";
 
 interface VocabularyViewProps {
-  vocabulary: VocabularyEntry[];
-  onAdd: (entry: VocabularyEntry) => void;
-  onRemove: (id: string) => void;
+  vocabulary: VocabularyEntryDto[];
+  loading: boolean;
+  error?: string | null;
+  pendingIds: ReadonlySet<string>;
+  native: boolean;
+  onRefresh: () => void;
+  onAdd: (input: VocabularyInput) => Promise<boolean>;
+  onUpdate: (id: string, input: VocabularyInput) => Promise<boolean>;
+  onRemove: (id: string) => Promise<boolean>;
 }
 
 const filters = [
@@ -30,69 +40,145 @@ const filters = [
   "Replacements",
 ] as const;
 
+const categoryLabels: Record<VocabularyCategory, string> = {
+  name: "Name",
+  technical: "Technical",
+  company: "Company",
+  replacement: "Replacement",
+};
+
+const filterCategories: Partial<
+  Record<(typeof filters)[number], VocabularyCategory>
+> = {
+  Names: "name",
+  Technical: "technical",
+  Companies: "company",
+  Replacements: "replacement",
+};
+
+const languageOptions = [
+  { label: "Any language", tag: null },
+  { label: "English", tag: "en" },
+  { label: "Hindi", tag: "hi" },
+  { label: "Bengali", tag: "bn" },
+  { label: "Spanish", tag: "es" },
+  { label: "French", tag: "fr" },
+] as const;
+
+function languageLabel(tag: string | null) {
+  if (!tag) return "Any language";
+  const known = languageOptions.find((item) => item.tag === tag);
+  if (known) return known.label;
+  try {
+    return (
+      new Intl.DisplayNames(undefined, { type: "language" }).of(tag) ?? tag
+    );
+  } catch {
+    return tag;
+  }
+}
+
 export function VocabularyView({
   vocabulary,
+  loading,
+  error,
+  pendingIds,
+  native,
+  onRefresh,
   onAdd,
+  onUpdate,
   onRemove,
 }: VocabularyViewProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<(typeof filters)[number]>("All");
-  const [showAdd, setShowAdd] = useState(false);
+  const [dialogEntry, setDialogEntry] = useState<
+    VocabularyEntryDto | "new" | null
+  >(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const filteredEntries = useMemo(() => {
-    const category =
-      filter === "Companies"
-        ? "Company"
-        : filter === "Names"
-          ? "Name"
-          : filter === "Replacements"
-            ? "Replacement"
-            : filter;
+    const category = filterCategories[filter];
+    const normalizedQuery = query.trim().toLocaleLowerCase();
     return vocabulary.filter((entry) => {
-      const matchesQuery = `${entry.phrase} ${entry.soundsLike ?? ""}`
-        .toLowerCase()
-        .includes(query.toLowerCase());
-      const matchesFilter =
-        filter === "All" || entry.category === category.replace(/s$/, "");
-      return matchesQuery && matchesFilter;
+      const matchesQuery = `${entry.phrase} ${entry.spokenForm ?? ""}`
+        .toLocaleLowerCase()
+        .includes(normalizedQuery);
+      return matchesQuery && (!category || entry.category === category);
     });
   }, [filter, query, vocabulary]);
+  const enabledCount = vocabulary.filter((entry) => entry.enabled).length;
+  const languageCount = new Set(
+    vocabulary.map((entry) => entry.languageTag).filter(Boolean),
+  ).size;
+
+  const remove = async (id: string) => {
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+      return;
+    }
+    setConfirmDeleteId(null);
+    await onRemove(id);
+  };
 
   return (
     <div className="view view--vocabulary">
       <PageHeader
         eyebrow="NAMES & TERMS"
         title="Vocabulary"
-        description="Add spellings Spick might miss. This list is not used during dictation yet."
+        description="The local prompt holds up to 64 enabled phrases and 1 KB. Pause a phrase to free space; notes and categories are for organization."
         actions={
           <button
             type="button"
             className="button button--primary"
-            onClick={() => setShowAdd(true)}
+            onClick={() => setDialogEntry("new")}
+            disabled={!native || loading || pendingIds.has("create")}
           >
             <Plus size={16} /> Add phrase
           </button>
         }
       />
 
-      <section className="vocabulary-summary">
+      {error && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Vocabulary wasn’t saved</strong>
+          <span>{error}</span>
+          <button type="button" className="text-button" onClick={onRefresh}>
+            Try again
+          </button>
+        </div>
+      )}
+
+      {!native && (
+        <div className="engine-inline-error" role="status">
+          <strong>Development app required</strong>
+          <span>
+            Vocabulary is stored by the Tauri app, not this browser preview.
+          </span>
+        </div>
+      )}
+
+      <section className="vocabulary-summary" aria-busy={loading}>
         <div className="vocabulary-summary__icon">
           <BookOpenText size={22} />
         </div>
         <div>
-          <strong>{vocabulary.length} example phrases</strong>
-          <span>You can edit them here, but changes are not saved</span>
+          <strong>
+            {loading && vocabulary.length === 0
+              ? "Loading your phrases…"
+              : `${vocabulary.length} saved ${vocabulary.length === 1 ? "phrase" : "phrases"}`}
+          </strong>
+          <span>Every enabled written phrase is supplied as a local hint</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>Search works</strong>
-          <span>in this list</span>
+          <strong>{enabledCount}/64</strong>
+          <span>enabled prompt phrases</span>
         </div>
         <div className="vocabulary-summary__metric">
-          <strong>Not connected</strong>
-          <span>to dictation</span>
+          <strong>{languageCount || "Any"}</strong>
+          <span>{languageCount === 1 ? "language" : "languages"}</span>
         </div>
         <span className="sync-badge">
-          <Check size={13} /> Example list
+          <Check size={13} /> On this Mac
         </span>
       </section>
 
@@ -132,8 +218,14 @@ export function VocabularyView({
             </button>
           ))}
         </div>
-        <button type="button" className="button button--secondary" disabled>
-          <Upload size={15} /> Import later
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Refresh vocabulary"
+          onClick={onRefresh}
+          disabled={!native || loading}
+        >
+          <RefreshCw size={15} />
         </button>
       </div>
 
@@ -142,62 +234,94 @@ export function VocabularyView({
           className="vocabulary-table"
           role="table"
           aria-label="Saved vocabulary"
+          aria-busy={loading}
         >
           <div className="vocabulary-table__header" role="row">
             <span role="columnheader">Written as</span>
-            <span role="columnheader">When you say</span>
+            <span role="columnheader">Pronunciation note</span>
             <span role="columnheader">Category</span>
             <span role="columnheader">Language</span>
             <span role="columnheader">
               <span className="sr-only">Actions</span>
             </span>
           </div>
-          {filteredEntries.map((entry) => (
-            <div className="vocabulary-table__row" role="row" key={entry.id}>
-              <div role="cell">
-                <span className="phrase-avatar">
-                  {entry.phrase[0]?.toUpperCase()}
+          {filteredEntries.map((entry) => {
+            const pending = pendingIds.has(entry.id);
+            const deleting = confirmDeleteId === entry.id;
+            return (
+              <div
+                className={`vocabulary-table__row ${entry.enabled ? "" : "vocabulary-table__row--disabled"}`}
+                role="row"
+                key={entry.id}
+                aria-busy={pending}
+              >
+                <div role="cell">
+                  <span className="phrase-avatar">
+                    {entry.phrase[0]?.toUpperCase()}
+                  </span>
+                  <span className="phrase-title">
+                    <strong>{entry.phrase}</strong>
+                    {!entry.enabled && <small>Paused</small>}
+                  </span>
+                </div>
+                <span role="cell" className="said-phrase">
+                  {entry.spokenForm
+                    ? `“${entry.spokenForm}”`
+                    : "Same as written"}
                 </span>
-                <strong>{entry.phrase}</strong>
-              </div>
-              <span role="cell" className="said-phrase">
-                {entry.soundsLike ? `“${entry.soundsLike}”` : "Same as written"}
-              </span>
-              <span role="cell">
-                <span
-                  className={`category-badge category-badge--${entry.category.toLowerCase()}`}
-                >
-                  {entry.category}
+                <span role="cell">
+                  <span
+                    className={`category-badge category-badge--${entry.category}`}
+                  >
+                    {categoryLabels[entry.category]}
+                  </span>
                 </span>
-              </span>
-              <span role="cell" className="language-cell">
-                <Languages size={14} /> {entry.language}
-              </span>
-              <div role="cell" className="table-actions">
-                <button
-                  type="button"
-                  className="icon-button icon-button--subtle"
-                  aria-label={`More options for ${entry.phrase}`}
-                >
-                  <MoreHorizontal size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button icon-button--subtle icon-button--danger"
-                  onClick={() => onRemove(entry.id)}
-                  aria-label={`Delete ${entry.phrase}`}
-                >
-                  <Trash2 size={15} />
-                </button>
+                <span role="cell" className="language-cell">
+                  <Languages size={14} /> {languageLabel(entry.languageTag)}
+                </span>
+                <div role="cell" className="table-actions">
+                  <button
+                    type="button"
+                    className="icon-button icon-button--subtle"
+                    aria-label={`Edit ${entry.phrase}`}
+                    onClick={() => setDialogEntry(entry)}
+                    disabled={pending}
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button icon-button--subtle icon-button--danger"
+                    onClick={() => void remove(entry.id)}
+                    aria-label={
+                      deleting
+                        ? `Confirm delete ${entry.phrase}`
+                        : `Delete ${entry.phrase}`
+                    }
+                    disabled={pending}
+                  >
+                    {deleting ? <Check size={15} /> : <Trash2 size={15} />}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         {filteredEntries.length === 0 && (
           <div className="empty-state">
             <Search size={22} />
-            <strong>No phrases found</strong>
-            <span>Try another search or add a new phrase.</span>
+            <strong>
+              {loading
+                ? "Loading vocabulary…"
+                : vocabulary.length === 0
+                  ? "No saved phrases yet"
+                  : "No phrases found"}
+            </strong>
+            <span>
+              {vocabulary.length === 0
+                ? "Add a name or term you want Spick to spell correctly."
+                : "Try another search or category."}
+            </span>
           </div>
         )}
       </section>
@@ -207,23 +331,30 @@ export function VocabularyView({
           <Lightbulb size={18} />
         </div>
         <p>
-          <strong>Got a name Spick might mangle?</strong>
+          <strong>Keep hints short and specific.</strong>
           <span>
-            A pronunciation hint can help with names, acronyms, and product
-            terms once vocabulary support is connected.
+            The current local engine uses only the written phrase as a prompt
+            hint. Pronunciation notes, language, and categories are stored for
+            future adapters and organization.
           </span>
         </p>
-        <button type="button" className="text-button">
-          See tips
-        </button>
       </section>
 
-      {showAdd && (
-        <AddPhraseDialog
-          onClose={() => setShowAdd(false)}
-          onAdd={(entry) => {
-            onAdd(entry);
-            setShowAdd(false);
+      {dialogEntry && (
+        <PhraseDialog
+          entry={dialogEntry === "new" ? null : dialogEntry}
+          pending={
+            dialogEntry === "new"
+              ? pendingIds.has("create")
+              : pendingIds.has(dialogEntry.id)
+          }
+          onClose={() => setDialogEntry(null)}
+          onSave={async (input) => {
+            const saved =
+              dialogEntry === "new"
+                ? await onAdd(input)
+                : await onUpdate(dialogEntry.id, input);
+            if (saved) setDialogEntry(null);
           }}
         />
       )}
@@ -231,27 +362,46 @@ export function VocabularyView({
   );
 }
 
-interface AddPhraseDialogProps {
+interface PhraseDialogProps {
+  entry: VocabularyEntryDto | null;
+  pending: boolean;
   onClose: () => void;
-  onAdd: (entry: VocabularyEntry) => void;
+  onSave: (input: VocabularyInput) => Promise<void>;
 }
 
-function AddPhraseDialog({ onClose, onAdd }: AddPhraseDialogProps) {
-  const [phrase, setPhrase] = useState("");
-  const [soundsLike, setSoundsLike] = useState("");
-  const [category, setCategory] =
-    useState<VocabularyEntry["category"]>("Technical");
-  const [language, setLanguage] = useState("English");
+function PhraseDialog({ entry, pending, onClose, onSave }: PhraseDialogProps) {
+  const customLanguageOption =
+    entry?.languageTag &&
+    !languageOptions.some((item) => item.tag === entry.languageTag)
+      ? {
+          label: `${languageLabel(entry.languageTag)} (${entry.languageTag})`,
+          tag: entry.languageTag,
+        }
+      : null;
+  const selectableLanguages = customLanguageOption
+    ? [...languageOptions, customLanguageOption]
+    : [...languageOptions];
+  const [phrase, setPhrase] = useState(entry?.phrase ?? "");
+  const [spokenForm, setSpokenForm] = useState(entry?.spokenForm ?? "");
+  const [category, setCategory] = useState<VocabularyCategory>(
+    entry?.category ?? "technical",
+  );
+  const [language, setLanguage] = useState(
+    customLanguageOption?.label ?? languageLabel(entry?.languageTag ?? null),
+  );
+  const [enabled, setEnabled] = useState(entry?.enabled ?? true);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!phrase.trim()) return;
-    onAdd({
-      id: crypto.randomUUID(),
+    if (!phrase.trim() || pending) return;
+    const languageTag =
+      selectableLanguages.find((item) => item.label === language)?.tag ?? null;
+    void onSave({
       phrase: phrase.trim(),
-      soundsLike: soundsLike.trim() || undefined,
+      spokenForm: spokenForm.trim() || null,
       category,
-      language,
+      languageTag,
+      enabled,
     });
   };
 
@@ -260,28 +410,31 @@ function AddPhraseDialog({ onClose, onAdd }: AddPhraseDialogProps) {
       className="dialog-backdrop"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget && !pending) onClose();
       }}
     >
       <div
         className="dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="add-phrase-title"
+        aria-labelledby="phrase-dialog-title"
       >
         <header className="dialog__header">
           <span className="dialog__icon">
             <PenLine size={19} />
           </span>
           <div>
-            <h2 id="add-phrase-title">Add a phrase</h2>
-            <p>Save the spelling you want Spick to use.</p>
+            <h2 id="phrase-dialog-title">
+              {entry ? "Edit phrase" : "Add a phrase"}
+            </h2>
+            <p>The written phrase becomes a bounded local prompt hint.</p>
           </div>
           <button
             type="button"
             className="icon-button"
             onClick={onClose}
             aria-label="Close"
+            disabled={pending}
           >
             <X size={18} />
           </button>
@@ -294,55 +447,79 @@ function AddPhraseDialog({ onClose, onAdd }: AddPhraseDialogProps) {
               value={phrase}
               onChange={(event) => setPhrase(event.currentTarget.value)}
               placeholder="e.g. WebRTC"
+              disabled={pending}
             />
           </label>
           <label className="field">
-            <span className="field__label">When I say</span>
+            <span className="field__label">
+              Pronunciation note (saved for future adapters)
+            </span>
             <input
-              value={soundsLike}
-              onChange={(event) => setSoundsLike(event.currentTarget.value)}
+              value={spokenForm}
+              onChange={(event) => setSpokenForm(event.currentTarget.value)}
               placeholder="e.g. web R T C"
+              disabled={pending}
             />
             <span className="field__hint">
-              Optional pronunciation or replacement phrase
+              Optional reference note. It does not rewrite transcripts yet.
             </span>
           </label>
           <div className="dialog__field-grid">
             <SelectField
               label="Category"
-              value={category}
-              onChange={(value) =>
-                setCategory(value as VocabularyEntry["category"])
-              }
-              options={["Name", "Technical", "Company", "Replacement"]}
+              value={categoryLabels[category]}
+              disabled={pending}
+              onChange={(value) => {
+                const match = Object.entries(categoryLabels).find(
+                  ([, label]) => label === value,
+                );
+                if (match) setCategory(match[0] as VocabularyCategory);
+              }}
+              options={Object.values(categoryLabels)}
             />
             <SelectField
               label="Language"
               value={language}
+              disabled={pending}
               onChange={setLanguage}
-              options={["English", "Hindi", "Bengali", "Spanish", "French"]}
+              options={selectableLanguages.map((item) => item.label)}
             />
           </div>
-          <div className="dialog__preview">
+          <div className="dialog__preview vocabulary-enabled-row">
             <Info size={15} />
             <span>
-              This stays in the preview. Dictation does not use it yet.
+              {enabled
+                ? "Uses the 64 phrase / 1 KB local prompt capacity"
+                : "Saved, but not sent to the engine"}
             </span>
+            <Toggle
+              label="Use this hint"
+              checked={enabled}
+              onChange={setEnabled}
+            />
           </div>
           <footer className="dialog__footer">
             <button
               type="button"
               className="button button--secondary"
               onClick={onClose}
+              disabled={pending}
             >
               Cancel
             </button>
             <button
               type="submit"
               className="button button--primary"
-              disabled={!phrase.trim()}
+              disabled={!phrase.trim() || pending}
             >
-              <Plus size={15} /> Add phrase
+              {pending ? (
+                "Saving…"
+              ) : (
+                <>
+                  {entry ? <Check size={15} /> : <Plus size={15} />}
+                  {entry ? "Save changes" : "Add phrase"}
+                </>
+              )}
             </button>
           </footer>
         </form>

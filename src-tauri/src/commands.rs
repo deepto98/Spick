@@ -25,6 +25,12 @@ use crate::{
         TranscriptResult, TranscriptionRequest,
     },
     hud,
+    local_data::{
+        ClearLocalDataResult, ClearLocalDataScope, CompletedDictationRecord,
+        DeleteVocabularyResult, HistoryCursor, HistoryPage, LocalDataChangedEvent, LocalDataDomain,
+        RecordOutcome, UsageDashboard, VocabularyEntryDto, VocabularyInput,
+        LOCAL_DATA_CHANGED_EVENT,
+    },
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
     platform::{self, TextTargetError, TextTargetErrorKind},
     shortcut,
@@ -66,6 +72,136 @@ pub fn get_settings(
 ) -> Result<AppSettings, String> {
     require_main_window(&window)?;
     state.settings_snapshot()
+}
+
+#[tauri::command]
+pub fn get_usage_dashboard(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    days: u16,
+) -> Result<UsageDashboard, String> {
+    require_main_window(&window)?;
+    state.local_data.usage_dashboard(days)
+}
+
+#[tauri::command]
+pub fn list_transcript_history(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    cursor: Option<HistoryCursor>,
+    limit: Option<u16>,
+) -> Result<HistoryPage, String> {
+    require_main_window(&window)?;
+    state.local_data.transcript_history(cursor, limit)
+}
+
+#[tauri::command]
+pub fn list_vocabulary(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<VocabularyEntryDto>, String> {
+    require_main_window(&window)?;
+    state.local_data.list_vocabulary()
+}
+
+#[tauri::command]
+pub fn create_vocabulary_entry(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: VocabularyInput,
+) -> Result<VocabularyEntryDto, String> {
+    require_main_window(&window)?;
+    let entry = state.local_data.create_vocabulary(input)?;
+    emit_local_data_changed(&app, state.inner(), vec![LocalDataDomain::Vocabulary]);
+    Ok(entry)
+}
+
+#[tauri::command]
+pub fn update_vocabulary_entry(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    input: VocabularyInput,
+) -> Result<VocabularyEntryDto, String> {
+    require_main_window(&window)?;
+    let entry = state.local_data.update_vocabulary(&id, input)?;
+    emit_local_data_changed(&app, state.inner(), vec![LocalDataDomain::Vocabulary]);
+    Ok(entry)
+}
+
+#[tauri::command]
+pub fn delete_vocabulary_entry(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<DeleteVocabularyResult, String> {
+    require_main_window(&window)?;
+    let result = state.local_data.delete_vocabulary(&id)?;
+    if result.deleted {
+        emit_local_data_changed(&app, state.inner(), vec![LocalDataDomain::Vocabulary]);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn clear_local_data(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ClearLocalDataScope,
+) -> Result<ClearLocalDataResult, String> {
+    require_main_window(&window)?;
+    // This uses the settings/history gate so an acknowledged history opt-out
+    // cannot race with a final transcript write.
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    // A pre-commit storage/checkpoint failure leaves memory untouched. Once
+    // this returns, database deletion has committed; a post-commit WAL warning
+    // is carried in the successful result rather than hidden by an error.
+    let mut result = state.local_data.clear(scope)?;
+    if scope.clears_history() || scope.clears_usage() {
+        apply_latest_clear_outcome(&mut result, state.clear_latest_transcript());
+    }
+    let mut domains = Vec::with_capacity(3);
+    // History count is part of UsageDashboard, so a history-only clear also
+    // invalidates the usage domain.
+    if scope.clears_usage() || scope.clears_history() {
+        domains.push(LocalDataDomain::Usage);
+    }
+    if scope.clears_history() {
+        domains.push(LocalDataDomain::History);
+    }
+    if scope.clears_vocabulary() {
+        domains.push(LocalDataDomain::Vocabulary);
+    }
+    emit_local_data_changed(&app, state.inner(), domains);
+    Ok(result)
+}
+
+fn apply_latest_clear_outcome(
+    result: &mut ClearLocalDataResult,
+    outcome: Result<Option<String>, String>,
+) {
+    match outcome {
+        Ok(session_id) => {
+            result.cleared_latest_transcript = session_id.is_some();
+            result.cleared_latest_session_id = session_id;
+        }
+        Err(error) => {
+            // SQLite deletion has already committed. Preserve successful
+            // counts/event delivery and make the rare poisoned-memory failure
+            // explicit instead of turning committed work into a command Err.
+            result.memory_cleanup_complete = false;
+            result.memory_cleanup_warning = Some(format!(
+                "local database rows were deleted, but the in-memory latest transcript could not be cleared: {error}"
+            ));
+        }
+    }
 }
 
 #[tauri::command]
@@ -694,6 +830,9 @@ pub(crate) fn start_session<R: Runtime>(
     let transcription_engine = settings.transcription_engine;
     let cleanup_engine = settings.cleanup_engine;
     let hud_settings = settings.hud.clone();
+    // Vocabulary is a per-session snapshot. Edits that win the SQLite read
+    // race are included; every later edit applies to the next session only.
+    let vocabulary = state.local_data.vocabulary_prompt_snapshot();
     let level_app = app.clone();
     let level_sink: LevelSink = Arc::new(move |payload| {
         if let Err(error) = level_app.emit(AUDIO_LEVEL_EVENT, payload) {
@@ -748,6 +887,7 @@ pub(crate) fn start_session<R: Runtime>(
             session_id.clone(),
             captured_target.clone(),
             hud_target_lease.clone(),
+            Arc::clone(&vocabulary),
         ) {
             let failed = session
                 .fail(error.clone())
@@ -890,6 +1030,23 @@ fn emit_state<R: Runtime>(app: &AppHandle<R>, event: &DictationStateEvent) -> Re
         .map_err(|error| format!("could not emit dictation state: {error}"))
 }
 
+fn emit_local_data_changed<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    domains: Vec<LocalDataDomain>,
+) {
+    if domains.is_empty() {
+        return;
+    }
+    let event = LocalDataChangedEvent {
+        revision: state.next_local_data_revision(),
+        domains,
+    };
+    if let Err(error) = app.emit_to(MAIN_WINDOW_LABEL, LOCAL_DATA_CHANGED_EVENT, event) {
+        eprintln!("could not emit local data change: {error}");
+    }
+}
+
 fn active_session_id(event: &DictationStateEvent) -> Result<String, String> {
     event
         .session
@@ -940,6 +1097,9 @@ fn finalize_capture<R: Runtime>(
                 return;
             };
             let result = transcribe_capture(state.inner(), session, capture.pcm_16khz());
+            // The decoder is finished. Wipe and release raw PCM before text
+            // delivery, event emission, or optional SQLite accounting.
+            drop(capture);
 
             match result {
                 Ok(transcript) if transcript.transcript.text.trim().is_empty() => {
@@ -998,6 +1158,15 @@ fn finalize_capture<R: Runtime>(
                                 | DictationDeliveryStatus::Failed
                                 | DictationDeliveryStatus::Indeterminate => {}
                             }
+                            // User-visible terminal events and HUD behavior
+                            // must never wait behind optional SQLite work.
+                            persist_completed_dictation(
+                                app,
+                                state.inner(),
+                                &completed,
+                                &transcript,
+                                status.captured_ms,
+                            );
                         }
                         Ok(None) => {}
                         Err(error) => {
@@ -1045,10 +1214,11 @@ fn transcribe_capture(
                 session.transcription_engine.model
             ))
         })?;
-    let cancellation = state
-        .transcription_cancellation(&session.id)
+    let operation = state
+        .transcription_operation(&session.id)
         .map_err(EngineError::Backend)?
         .ok_or(EngineError::Cancelled)?;
+    let cancellation = operation.cancellation;
     let model_path = state
         .models
         .verified_model_path_cancellable(&model.id, cancellation.as_ref())
@@ -1059,6 +1229,11 @@ fn transcribe_capture(
                 EngineError::Backend(error)
             }
         })?;
+    let vocabulary = operation
+        .vocabulary
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let mut result = state.whisper.transcribe(
         Arc::clone(&model),
         &model_path,
@@ -1069,7 +1244,7 @@ fn transcribe_capture(
                 channels: 1,
             },
             language_policy: &session.language_policy,
-            vocabulary: &[],
+            vocabulary: &vocabulary,
             cancellation: Some(cancellation.as_ref()),
         },
     )?;
@@ -1264,6 +1439,100 @@ fn session_matches(event: &DictationStateEvent, session_id: &str) -> bool {
         .session
         .as_ref()
         .is_some_and(|session| session.id == session_id)
+}
+
+fn persist_completed_dictation<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    completed: &DictationStateEvent,
+    transcript: &DictationTranscript,
+    speech_duration_ms: u64,
+) {
+    let outcome =
+        record_completed_dictation_locally(state, completed, transcript, speech_duration_ms);
+
+    match outcome {
+        Ok(outcome) if outcome.inserted_usage => {
+            let mut domains = vec![LocalDataDomain::Usage];
+            if outcome.inserted_history {
+                domains.push(LocalDataDomain::History);
+            }
+            emit_local_data_changed(app, state, domains);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            // The transcript was already delivered and the lifecycle already
+            // completed. Never fail or retry insertion because optional local
+            // accounting could not be written.
+            eprintln!("could not record local usage: {error}");
+        }
+    }
+}
+
+fn record_completed_dictation_locally(
+    state: &AppState,
+    completed: &DictationStateEvent,
+    transcript: &DictationTranscript,
+    speech_duration_ms: u64,
+) -> Result<RecordOutcome, String> {
+    let Some(session) = completed.session.as_ref() else {
+        return Ok(RecordOutcome::default());
+    };
+    let Some(completed_at_ms) = session.ended_at_ms else {
+        return Ok(RecordOutcome::default());
+    };
+
+    // This gate is also held by settings writes and destructive clears. If an
+    // opt-out acknowledgement returns, no older completion can subsequently
+    // observe the stale `true` value and write transcript text.
+    let _settings_update = match state.settings_update.lock() {
+        Ok(guard) => guard,
+        Err(_) => return Err("settings update is unavailable".into()),
+    };
+    let save_history = match state.settings.read() {
+        Ok(settings) => settings.save_transcript_history,
+        Err(_) => return Err("settings are unavailable".into()),
+    };
+    let language_tag = delivered_language_tag(session, &transcript.transcript);
+    state
+        .local_data
+        .record_completed_dictation(CompletedDictationRecord {
+            session_id: &session.id,
+            started_at_ms: session.started_at_ms,
+            completed_at_ms,
+            text: &transcript.transcript.text,
+            speech_duration_ms,
+            language_tag: &language_tag,
+            engine_id: &transcript.engine_id,
+            target_app: transcript.delivery.target_app.as_deref(),
+            delivery_status: transcript.delivery.status,
+            save_history,
+        })
+}
+
+fn delivered_language_tag(session: &DictationSession, transcript: &TranscriptResult) -> String {
+    if let Some(language) = transcript
+        .detected_language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+    {
+        return language.to_owned();
+    }
+    match &session.language_policy {
+        LanguagePolicy::Fixed { language } => language.clone(),
+        LanguagePolicy::Translate {
+            output_language, ..
+        } => output_language.clone(),
+        LanguagePolicy::Preferred { languages } | LanguagePolicy::Mixed { languages }
+            if languages.len() == 1 =>
+        {
+            languages[0].clone()
+        }
+        LanguagePolicy::Auto | LanguagePolicy::Preferred { .. } | LanguagePolicy::Mixed { .. } => {
+            "und".into()
+        }
+    }
 }
 
 fn complete_session_with_transcript(
@@ -1560,6 +1829,75 @@ mod tests {
         let error = rebase_settings_update(&previous, &requested, &current).unwrap_err();
 
         assert!(error.contains("settings changed"));
+    }
+
+    #[test]
+    fn acknowledged_history_opt_out_wins_before_a_waiting_completion_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::load(directory.path().join("settings.json")).unwrap());
+        state.settings.write().unwrap().save_transcript_history = true;
+        let mut completed = event("session-a", SessionState::Completed, 4);
+        completed.session.as_mut().unwrap().ended_at_ms = Some(2_000);
+        let transcript = DictationTranscript {
+            session_id: "session-a".into(),
+            engine_id: "whisper-test".into(),
+            transcript: TranscriptResult::final_text("clean delivered text"),
+            delivery: DictationDelivery {
+                status: DictationDeliveryStatus::Inserted,
+                transcript_available: true,
+                target_app: Some("Notes".into()),
+                caret_repositioned: Some(true),
+            },
+        };
+
+        let settings_gate = state.settings_update.lock().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            record_completed_dictation_locally(&worker_state, &completed, &transcript, 1_000)
+        });
+        started_rx.recv().unwrap();
+        state.settings.write().unwrap().save_transcript_history = false;
+        drop(settings_gate);
+
+        let outcome = worker.join().unwrap().unwrap();
+        assert!(outcome.inserted_usage);
+        assert!(!outcome.inserted_history);
+        assert!(state
+            .local_data
+            .transcript_history(None, None)
+            .unwrap()
+            .items
+            .is_empty());
+    }
+
+    #[test]
+    fn committed_clear_keeps_its_result_when_memory_cleanup_fails() {
+        let mut result = ClearLocalDataResult {
+            scope: ClearLocalDataScope::TranscriptHistory,
+            deleted_usage_sessions: 0,
+            deleted_transcripts: 2,
+            deleted_vocabulary_entries: 0,
+            cleared_latest_transcript: false,
+            cleared_latest_session_id: None,
+            storage_cleanup_complete: true,
+            storage_cleanup_warning: None,
+            memory_cleanup_complete: true,
+            memory_cleanup_warning: None,
+            cleared_at_ms: 10,
+        };
+
+        apply_latest_clear_outcome(&mut result, Err("transcript lock is poisoned".into()));
+
+        assert_eq!(result.deleted_transcripts, 2);
+        assert!(result.storage_cleanup_complete);
+        assert!(!result.memory_cleanup_complete);
+        assert!(result
+            .memory_cleanup_warning
+            .as_deref()
+            .unwrap()
+            .contains("in-memory"));
     }
 
     #[test]

@@ -20,24 +20,6 @@ export interface Engine {
   recommended?: boolean;
 }
 
-export interface VocabularyEntry {
-  id: string;
-  phrase: string;
-  soundsLike?: string;
-  category: "Name" | "Technical" | "Company" | "Replacement";
-  language: string;
-}
-
-export interface DictationSession {
-  id: string;
-  application: string;
-  text: string;
-  timestamp: string;
-  words: number;
-  language: string;
-  color: string;
-}
-
 export interface AppSettings {
   hotkey: string;
   language: string;

@@ -3,7 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
 };
@@ -17,6 +17,7 @@ use crate::{
         SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
+    local_data::LocalDataStore,
     model_store::ModelStore,
     platform::{CapturedTextTarget, TextTargetController},
     session::SessionController,
@@ -33,6 +34,7 @@ pub struct AppState {
     pub audio: Mutex<AudioCaptureController>,
     pub models: Arc<ModelStore>,
     pub whisper: WhisperCppRuntime,
+    pub local_data: LocalDataStore,
     pub text_targets: TextTargetController,
     /// Serializes model selection/removal with settings writes so an active
     /// model cannot disappear between verification and persistence.
@@ -51,6 +53,7 @@ pub struct AppState {
     /// interactive and stealing its captured text focus.
     pub hud_target_protection: Mutex<HudTargetProtection>,
     transcripts: Mutex<TranscriptStore>,
+    local_data_revision: AtomicU64,
     settings_path: PathBuf,
 }
 
@@ -58,6 +61,7 @@ pub struct TranscriptionOperation {
     pub cancellation: Arc<AtomicBool>,
     pub target: Option<CapturedTextTarget>,
     pub hud_target_lease: Option<HudTargetProtectionLease>,
+    pub vocabulary: Arc<[String]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,11 +107,17 @@ impl HudTargetProtection {
 impl AppState {
     #[cfg(test)]
     pub fn load(settings_path: PathBuf) -> Result<Self, String> {
-        let models_path = parent_directory(&settings_path).join("models");
-        Self::load_with_models(settings_path, models_path)
+        let data_path = parent_directory(&settings_path);
+        let models_path = data_path.join("models");
+        let database_path = data_path.join("spick.sqlite3");
+        Self::load_with_paths(settings_path, models_path, database_path)
     }
 
-    pub fn load_with_models(settings_path: PathBuf, models_path: PathBuf) -> Result<Self, String> {
+    pub fn load_with_paths(
+        settings_path: PathBuf,
+        models_path: PathBuf,
+        database_path: PathBuf,
+    ) -> Result<Self, String> {
         let settings = load_settings(&settings_path)?;
         Ok(Self {
             settings: RwLock::new(settings),
@@ -115,11 +125,13 @@ impl AppState {
             audio: Mutex::new(AudioCaptureController::default()),
             models: Arc::new(ModelStore::new(models_path)),
             whisper: WhisperCppRuntime::default(),
+            local_data: LocalDataStore::open(database_path),
             text_targets: TextTargetController::default(),
             model_configuration: Mutex::new(()),
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),
             transcripts: Mutex::new(TranscriptStore::default()),
+            local_data_revision: AtomicU64::new(0),
             settings_path,
         })
     }
@@ -140,10 +152,13 @@ impl AppState {
         session_id: String,
         target: Option<CapturedTextTarget>,
         hud_target_lease: Option<HudTargetProtectionLease>,
+        vocabulary: Arc<[String]>,
     ) -> Result<Arc<AtomicBool>, String> {
         self.transcripts
             .lock()
-            .map(|mut transcripts| transcripts.begin(session_id, target, hud_target_lease))
+            .map(|mut transcripts| {
+                transcripts.begin(session_id, target, hud_target_lease, vocabulary)
+            })
             .map_err(|_| "transcript store is unavailable".into())
     }
 
@@ -151,22 +166,6 @@ impl AppState {
         self.transcripts
             .lock()
             .map(|mut transcripts| transcripts.cancel(session_id))
-            .map_err(|_| "transcript store is unavailable".into())
-    }
-
-    pub fn transcription_cancellation(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Arc<AtomicBool>>, String> {
-        self.transcripts
-            .lock()
-            .map(|transcripts| {
-                transcripts
-                    .active
-                    .as_ref()
-                    .filter(|active| active.session_id == session_id)
-                    .map(|active| Arc::clone(&active.cancellation))
-            })
             .map_err(|_| "transcript store is unavailable".into())
     }
 
@@ -185,6 +184,7 @@ impl AppState {
                         cancellation: Arc::clone(&active.cancellation),
                         target: active.target.clone(),
                         hud_target_lease: active.hud_target_lease.clone(),
+                        vocabulary: Arc::clone(&active.vocabulary),
                     })
             })
             .map_err(|_| "transcript store is unavailable".into())
@@ -210,6 +210,22 @@ impl AppState {
             .map(|transcripts| transcripts.latest.clone())
             .map_err(|_| "transcript store is unavailable".into())
     }
+
+    pub fn clear_latest_transcript(&self) -> Result<Option<String>, String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| {
+                transcripts
+                    .latest
+                    .take()
+                    .map(|transcript| transcript.session_id)
+            })
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn next_local_data_revision(&self) -> u64 {
+        self.local_data_revision.fetch_add(1, Ordering::Relaxed) + 1
+    }
 }
 
 #[derive(Default)]
@@ -223,6 +239,7 @@ struct ActiveTranscription {
     cancellation: Arc<AtomicBool>,
     target: Option<CapturedTextTarget>,
     hud_target_lease: Option<HudTargetProtectionLease>,
+    vocabulary: Arc<[String]>,
 }
 
 impl TranscriptStore {
@@ -231,6 +248,7 @@ impl TranscriptStore {
         session_id: String,
         target: Option<CapturedTextTarget>,
         hud_target_lease: Option<HudTargetProtectionLease>,
+        vocabulary: Arc<[String]>,
     ) -> Arc<AtomicBool> {
         if let Some(active) = self.active.take() {
             active.cancellation.store(true, Ordering::Relaxed);
@@ -241,6 +259,7 @@ impl TranscriptStore {
             cancellation: Arc::clone(&cancellation),
             target,
             hud_target_lease,
+            vocabulary,
         });
         self.latest = None;
         cancellation
@@ -784,7 +803,7 @@ mod tests {
     #[test]
     fn transcript_store_rejects_cancelled_and_stale_results() {
         let mut store = TranscriptStore::default();
-        let cancellation = store.begin("session-a".into(), None, None);
+        let cancellation = store.begin("session-a".into(), None, None, Arc::from([]));
         assert!(!cancellation.load(Ordering::Relaxed));
         assert!(!store.complete(transcript("session-b", "stale")));
 
@@ -793,12 +812,30 @@ mod tests {
         assert!(!store.complete(transcript("session-a", "cancelled")));
         assert!(store.latest.is_none());
 
-        store.begin("session-c".into(), None, None);
+        store.begin("session-c".into(), None, None, Arc::from([]));
         assert!(store.complete(transcript("session-c", "kept")));
         assert_eq!(store.latest.as_ref().unwrap().transcript.text, "kept");
 
-        store.begin("session-d".into(), None, None);
+        store.begin("session-d".into(), None, None, Arc::from([]));
         assert!(store.latest.is_none());
+    }
+
+    #[test]
+    fn clearing_latest_returns_the_exact_suppression_identity() {
+        let (_directory, path) = test_path();
+        let state = AppState::load(path).unwrap();
+        state
+            .begin_transcription("session-a".into(), None, None, Arc::from([]))
+            .unwrap();
+        assert!(state
+            .complete_transcription(transcript("session-a", "queued text"))
+            .unwrap());
+
+        assert_eq!(
+            state.clear_latest_transcript().unwrap(),
+            Some("session-a".into())
+        );
+        assert_eq!(state.clear_latest_transcript().unwrap(), None);
     }
 
     #[test]

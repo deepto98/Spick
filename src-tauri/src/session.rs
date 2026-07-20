@@ -7,6 +7,7 @@ use crate::domain::{
     DictationDelivery, DictationSession, DictationStateEvent, EngineConfig, LanguagePolicy,
     SessionState, SessionTrigger,
 };
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
@@ -39,7 +40,6 @@ impl fmt::Display for SessionError {
 #[derive(Debug, Default)]
 pub struct SessionController {
     current: Option<DictationSession>,
-    sequence: u64,
     revision: u64,
 }
 
@@ -127,10 +127,12 @@ impl SessionController {
             }
         }
 
-        self.sequence = self.sequence.saturating_add(1);
         self.revision = self.revision.saturating_add(1);
         self.current = Some(DictationSession {
-            id: format!("dictation-{timestamp_ms}-{}", self.sequence),
+            // Receipts use this identifier as their exact-once key across app
+            // launches. A random UUID avoids clock rollback and restart
+            // collisions that a process-local counter cannot prevent.
+            id: format!("dictation-{}", Uuid::new_v4()),
             state: SessionState::Listening,
             trigger,
             language_policy,
@@ -397,6 +399,36 @@ mod tests {
         assert_eq!(next.state, SessionState::Listening);
         assert_eq!(next.revision, 5);
         assert_ne!(session(&completed).id, session(&next).id);
+    }
+
+    #[test]
+    fn receipt_identity_does_not_repeat_across_controllers_at_the_same_time() {
+        let mut first = SessionController::default();
+        let mut restarted = SessionController::default();
+        let first = first
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                None,
+                100,
+            )
+            .unwrap();
+        let restarted = restarted
+            .start_at(
+                SessionTrigger::Shortcut,
+                LanguagePolicy::Auto,
+                engine(),
+                None,
+                100,
+            )
+            .unwrap();
+
+        assert_ne!(session(&first).id, session(&restarted).id);
+        for event in [&first, &restarted] {
+            let uuid = session(event).id.strip_prefix("dictation-").unwrap();
+            assert!(Uuid::parse_str(uuid).is_ok());
+        }
     }
 
     #[test]

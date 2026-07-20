@@ -146,18 +146,19 @@ The target layer refuses known secure/password/protected controls before audio c
 
 ## Data storage boundaries
 
-| Data                                                                       | Storage                                             | Default lifetime                           |
-| -------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------ |
-| Preferences, language policies, provider selections, and hotkey            | Application settings store                          | Until changed or reset                     |
-| Usage counts, voiced duration, WPM inputs, latency, and engine identifiers | Local SQLite database                               | Until history is cleared                   |
-| Transcript history                                                         | Local SQLite database only when enabled             | User-configurable                          |
-| API keys and provider secrets                                              | OS credential store                                 | Until removed                              |
-| Downloaded model files and manifests                                       | Application model directory                         | Until removed                              |
-| Raw microphone audio                                                       | Memory during the active session                    | Discarded after completion or cancellation |
-| Clipboard snapshot used by fallback insertion                              | Memory during insertion                             | Discarded after restoration                |
-| Diagnostic logs                                                            | Local log directory, with sensitive fields excluded | Bounded retention                          |
+| Data                                                                                | Storage                                             | Default lifetime                           |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------ |
+| Preferences, language policies, provider selections, and hotkey                     | Application settings store                          | Until changed or reset                     |
+| Usage counts, capture duration, word-count inputs, language, and engine identifiers | Native-owned local SQLite database                  | Until usage and history are cleared        |
+| Transcript history                                                                  | Local SQLite database only when enabled             | User-configurable                          |
+| Vocabulary phrases and inactive pronunciation/category metadata                     | Native-owned local SQLite database                  | Until removed                              |
+| API keys and provider secrets                                                       | OS credential store                                 | Until removed                              |
+| Downloaded model files and manifests                                                | Application model directory                         | Until removed                              |
+| Raw microphone audio                                                                | Memory during the active session                    | Discarded after completion or cancellation |
+| Clipboard snapshot used by fallback insertion                                       | Memory during insertion                             | Discarded after restoration                |
+| Diagnostic logs                                                                     | Local log directory, with sensitive fields excluded | Bounded retention                          |
 
-Statistics are derived locally. Speaking speed uses words and voiced duration rather than total wall-clock time; language-aware alternatives can be shown when whitespace-delimited word counts are not meaningful.
+Statistics are derived locally. Speaking speed uses Unicode word boundaries and microphone capture duration; the API labels that duration basis explicitly so a future voice-activity metric cannot be confused with it. Each completed session has one UUID receipt, making retries idempotent without storing transcript text in aggregate tables. Private-text deletion uses SQLite secure deletion and a checked WAL truncation after commit; if another reader prevents physical cleanup, the clear result carries an explicit warning so the same clear can be retried.
 
 ## Reliability boundaries
 

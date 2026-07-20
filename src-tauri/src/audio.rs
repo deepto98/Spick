@@ -201,6 +201,7 @@ struct ActiveCapture {
     phase: Arc<AtomicU8>,
     metadata: Arc<Mutex<Option<CaptureMetadata>>>,
     captured_frames: Arc<AtomicU64>,
+    observed_frames: Arc<AtomicU64>,
     dropped_chunks: Arc<AtomicU64>,
 }
 
@@ -211,6 +212,7 @@ impl ActiveCapture {
         error_sink: ErrorSink,
     ) -> Result<Self, String> {
         let captured_frames = Arc::new(AtomicU64::new(0));
+        let observed_frames = Arc::new(AtomicU64::new(0));
         let dropped_chunks = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
         let phase = Arc::new(AtomicU8::new(InternalCapturePhase::Starting as u8));
@@ -230,6 +232,7 @@ impl ActiveCapture {
 
         let owner_session_id = session_id.clone();
         let owner_captured_frames = Arc::clone(&captured_frames);
+        let owner_observed_frames = Arc::clone(&observed_frames);
         let owner_dropped_chunks = Arc::clone(&dropped_chunks);
         let owner_shutdown = Arc::clone(&shutdown);
         let owner_phase = Arc::clone(&phase);
@@ -246,6 +249,7 @@ impl ActiveCapture {
                     stream_error_sender,
                     failure_sender,
                     owner_captured_frames,
+                    owner_observed_frames,
                     owner_dropped_chunks,
                     owner_shutdown,
                     owner_phase,
@@ -263,6 +267,7 @@ impl ActiveCapture {
             phase,
             metadata,
             captured_frames,
+            observed_frames,
             dropped_chunks,
         })
     }
@@ -270,9 +275,10 @@ impl ActiveCapture {
     fn status(&self) -> AudioCaptureStatus {
         let metadata = self.metadata.lock().ok().and_then(|value| value.clone());
         let captured_frames = self.captured_frames.load(Ordering::Relaxed);
+        let observed_frames = self.observed_frames.load(Ordering::Relaxed);
         let (device_name, input_sample_rate, input_channels, captured_ms, sample_count) = metadata
             .map_or((None, None, None, 0, 0), |metadata| {
-                let captured_ms = duration_ms(captured_frames, metadata.input_sample_rate)
+                let captured_ms = duration_ms(observed_frames, metadata.input_sample_rate)
                     .min(MAX_CAPTURE_DURATION_MS);
                 let sample_count = output_sample_count(captured_frames, metadata.input_sample_rate)
                     .min(MAX_OUTPUT_SAMPLES);
@@ -400,6 +406,7 @@ pub(crate) struct FinalizedCapture {
     device_name: String,
     input_sample_rate: u32,
     input_channels: u16,
+    captured_ms: u64,
     dropped_chunks: u64,
 }
 
@@ -418,7 +425,7 @@ impl FinalizedCapture {
             input_channels: Some(self.input_channels),
             output_sample_rate: OUTPUT_SAMPLE_RATE,
             sample_count: self.samples_16khz.len(),
-            captured_ms: duration_ms(self.samples_16khz.len() as u64, OUTPUT_SAMPLE_RATE),
+            captured_ms: self.captured_ms,
             dropped_chunks: self.dropped_chunks,
         }
     }
@@ -437,6 +444,7 @@ fn run_capture_owner(
     stream_error_sender: mpsc::Sender<CaptureCommand>,
     failure_sender: mpsc::Sender<AudioCaptureFailure>,
     captured_frames: Arc<AtomicU64>,
+    observed_frames: Arc<AtomicU64>,
     dropped_chunks: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
@@ -446,6 +454,7 @@ fn run_capture_owner(
     let setup = open_microphone_stream(
         data_sender,
         Arc::clone(&captured_frames),
+        Arc::clone(&observed_frames),
         Arc::clone(&dropped_chunks),
         stream_error_sender,
     );
@@ -525,6 +534,11 @@ fn run_capture_owner(
                         device_name: metadata.device_name,
                         input_sample_rate: metadata.input_sample_rate,
                         input_channels: metadata.input_channels,
+                        captured_ms: duration_ms(
+                            observed_frames.load(Ordering::Relaxed),
+                            metadata.input_sample_rate,
+                        )
+                        .min(MAX_CAPTURE_DURATION_MS),
                         dropped_chunks: dropped_chunks.load(Ordering::Relaxed),
                     }))
                 } else {
@@ -633,6 +647,7 @@ fn notify_failure(
 fn open_microphone_stream(
     sender: SyncSender<Vec<f32>>,
     captured_frames: Arc<AtomicU64>,
+    observed_frames: Arc<AtomicU64>,
     dropped_chunks: Arc<AtomicU64>,
     stream_error_sender: mpsc::Sender<CaptureCommand>,
 ) -> Result<(Stream, CaptureMetadata), String> {
@@ -665,18 +680,21 @@ fn open_microphone_stream(
         sample_format,
         sender,
         captured_frames,
+        observed_frames,
         dropped_chunks,
         stream_error_sender,
     )?;
     Ok((stream, metadata))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_input_stream(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     sample_format: SampleFormat,
     sender: SyncSender<Vec<f32>>,
     captured_frames: Arc<AtomicU64>,
+    observed_frames: Arc<AtomicU64>,
     dropped_chunks: Arc<AtomicU64>,
     stream_error_sender: mpsc::Sender<CaptureCommand>,
 ) -> Result<Stream, String> {
@@ -687,6 +705,7 @@ fn build_input_stream(
                 config,
                 sender,
                 captured_frames,
+                observed_frames,
                 dropped_chunks,
                 stream_error_sender,
             )
@@ -708,11 +727,13 @@ fn build_input_stream(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_typed_input_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     sender: SyncSender<Vec<f32>>,
     captured_frames: Arc<AtomicU64>,
+    observed_frames: Arc<AtomicU64>,
     dropped_chunks: Arc<AtomicU64>,
     stream_error_sender: mpsc::Sender<CaptureCommand>,
 ) -> Result<Stream, String>
@@ -736,6 +757,7 @@ where
                     return;
                 }
                 let frame_count = mono.len() as u64;
+                observed_frames.fetch_add(frame_count, Ordering::Relaxed);
                 match sender.try_send(mono) {
                     Ok(()) => {
                         captured_frames.fetch_add(frame_count, Ordering::Relaxed);
@@ -959,10 +981,12 @@ mod tests {
             device_name: "Test".into(),
             input_sample_rate: 48_000,
             input_channels: 2,
+            captured_ms: 1,
             dropped_chunks: 0,
         };
 
         assert_eq!(capture.pcm_16khz(), &[0.1, 0.2]);
+        assert_eq!(capture.status().captured_ms, 1);
         assert_eq!(capture.samples_16khz, vec![0.1, 0.2]);
     }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AppWindow,
+  AlertTriangle,
   BellRing,
   Check,
   ChevronRight,
@@ -16,9 +17,14 @@ import {
   RotateCcw,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
   Volume2,
 } from "lucide-react";
 import type { AppSettings } from "../types";
+import type {
+  ClearLocalDataResult,
+  ClearLocalDataScope,
+} from "../lib/nativeLocalData";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
 import { captureMacShortcut } from "../lib/shortcutCapture";
@@ -44,6 +50,9 @@ interface SettingsViewProps {
   shortcutError?: string;
   settingsSaving: boolean;
   nativeError?: string;
+  clearError?: string;
+  clearPendingScope?: ClearLocalDataScope | null;
+  lastClearResult?: ClearLocalDataResult | null;
   onChange: (next: AppSettings) => void;
   onShortcutChange: (shortcut: string) => void;
   onRequestAccessibility: () => void;
@@ -51,6 +60,9 @@ interface SettingsViewProps {
   onRefreshShortcut: () => void;
   onRequestInputMonitoring: () => void;
   onRestartOnboarding: () => void;
+  onClearLocalData?: (
+    scope: ClearLocalDataScope,
+  ) => Promise<ClearLocalDataResult | null>;
 }
 
 type SettingsSection = "general" | "dictation" | "language" | "privacy";
@@ -104,6 +116,9 @@ export function SettingsView({
   shortcutError,
   settingsSaving,
   nativeError,
+  clearError,
+  clearPendingScope = null,
+  lastClearResult = null,
   onChange,
   onShortcutChange,
   onRequestAccessibility,
@@ -111,12 +126,15 @@ export function SettingsView({
   onRefreshShortcut,
   onRequestInputMonitoring,
   onRestartOnboarding,
+  onClearLocalData,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("general");
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [shortcutCaptureError, setShortcutCaptureError] = useState<
     string | null
   >(null);
+  const [confirmClearScope, setConfirmClearScope] =
+    useState<ClearLocalDataScope | null>(null);
   const usesOptionGesture = settings.hotkey === "⌥";
   const shortcutControlsDisabled = settingsSaving || shortcutPending;
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
@@ -167,12 +185,22 @@ export function SettingsView({
     setSection(next);
   };
 
+  const requestClear = async (scope: ClearLocalDataScope) => {
+    if (!onClearLocalData || clearPendingScope) return;
+    if (confirmClearScope !== scope) {
+      setConfirmClearScope(scope);
+      return;
+    }
+    const result = await onClearLocalData(scope);
+    if (result) setConfirmClearScope(null);
+  };
+
   return (
     <div className="view view--settings">
       <PageHeader
         eyebrow="PREFERENCES"
         title="Settings"
-        description="Language, light cleanup, and Accessibility are live. Preview-only controls are marked."
+        description="Shortcut, language, cleanup, and privacy choices are saved here. Unconnected controls are marked."
         actions={
           <span className="settings-saved">
             <Check size={14} />
@@ -199,6 +227,13 @@ export function SettingsView({
         <div className="engine-inline-error" role="alert">
           <strong>Couldn’t check the Option shortcut</strong>
           <span>{shortcutError}</span>
+        </div>
+      )}
+
+      {clearError && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Couldn’t clear local data</strong>
+          <span>{clearError}</span>
         </div>
       )}
 
@@ -233,19 +268,13 @@ export function SettingsView({
                 <SettingRow
                   icon={<MonitorUp size={17} />}
                   title="Open Spick at login"
-                  description="Start Spick when you sign in to your Mac."
-                  control={
-                    <Toggle
-                      label="Launch at login"
-                      checked={settings.launchAtLogin}
-                      onChange={(value) => update("launchAtLogin", value)}
-                    />
-                  }
+                  description="Not connected in this development build yet."
+                  control={<span className="fixed-value">Coming later</span>}
                 />
                 <SettingRow
                   icon={<AppWindow size={17} />}
                   title="Show floating widget"
-                  description="Keep the microphone control above other windows."
+                  description="Show the microphone control above other windows during this run."
                   control={
                     <Toggle
                       label="Show floating widget"
@@ -257,14 +286,8 @@ export function SettingsView({
                 <SettingRow
                   icon={<Volume2 size={17} />}
                   title="Interface sounds"
-                  description="Play a cue when recording starts and stops."
-                  control={
-                    <Toggle
-                      label="Interface sounds"
-                      checked={settings.playSounds}
-                      onChange={(value) => update("playSounds", value)}
-                    />
-                  }
+                  description="Audio cues are not connected in this development build yet."
+                  control={<span className="fixed-value">Coming later</span>}
                 />
               </section>
               <section className="settings-card settings-card--standalone">
@@ -375,12 +398,16 @@ export function SettingsView({
                     </span>
                     <div>
                       <strong>Microphone</strong>
-                      <p>The input Spick will record from.</p>
+                      <p>
+                        Device selection is not connected yet; Spick uses the
+                        system default.
+                      </p>
                     </div>
                   </div>
                   <SelectField
                     label=""
                     value={settings.microphone}
+                    disabled
                     onChange={(value) => update("microphone", value)}
                     options={[
                       "System default microphone",
@@ -543,10 +570,11 @@ export function SettingsView({
                   <LockKeyhole size={22} />
                 </span>
                 <div>
-                  <strong>Recordings stay in memory</strong>
+                  <strong>Audio is discarded after every dictation</strong>
                   <p>
-                    Spick discards audio after each session. Local models keep
-                    transcription on this computer.
+                    Aggregate word counts, capture duration, language, engine,
+                    and delivery result stay on this Mac for stats. They never
+                    include transcript text.
                   </p>
                 </div>
                 <span className="privacy-grade">ON DEVICE</span>
@@ -555,11 +583,12 @@ export function SettingsView({
                 <SettingRow
                   icon={<History size={17} />}
                   title="Keep transcript history"
-                  description="Save transcripts and usage numbers on this Mac."
+                  description="Save transcript text on this Mac. Turning this off leaves aggregate usage totals in place and does not delete older text."
                   control={
                     <Toggle
                       label="Keep transcript history"
                       checked={settings.keepHistory}
+                      disabled={settingsSaving}
                       onChange={(value) => update("keepHistory", value)}
                     />
                   }
@@ -567,11 +596,12 @@ export function SettingsView({
                 <SettingRow
                   icon={<Cloud size={17} />}
                   title="Allow cloud fallback"
-                  description="Retry uncertain phrases with your cloud provider."
+                  description="Save permission to use a configured cloud provider. No cloud provider is connected yet."
                   control={
                     <Toggle
                       label="Allow cloud fallback"
                       checked={settings.cloudFallback}
+                      disabled={settingsSaving}
                       onChange={(value) => update("cloudFallback", value)}
                     />
                   }
@@ -585,19 +615,107 @@ export function SettingsView({
               </section>
               <section className="danger-card">
                 <div>
-                  <strong>Delete local history</strong>
+                  <strong>Delete saved transcript text</strong>
                   <span>
-                    Remove transcripts and usage numbers saved on this Mac.
+                    Keep aggregate usage stats, vocabulary, and preferences.
                   </span>
                 </div>
                 <button
                   type="button"
                   className="button button--danger"
-                  disabled
+                  disabled={!onClearLocalData || clearPendingScope !== null}
+                  onClick={() => void requestClear("transcriptHistory")}
                 >
-                  No history yet
+                  {clearPendingScope === "transcriptHistory"
+                    ? "Deleting…"
+                    : confirmClearScope === "transcriptHistory"
+                      ? "Confirm delete"
+                      : "Delete transcripts"}
                 </button>
               </section>
+              <section className="danger-card">
+                <div>
+                  <strong>Reset all local data</strong>
+                  <span>
+                    Delete usage totals, transcript text, and vocabulary. App
+                    preferences stay in place.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  disabled={!onClearLocalData || clearPendingScope !== null}
+                  onClick={() => void requestClear("all")}
+                >
+                  {clearPendingScope === "all"
+                    ? "Resetting…"
+                    : confirmClearScope === "all"
+                      ? "Confirm reset"
+                      : "Reset local data"}
+                </button>
+              </section>
+              {confirmClearScope && !clearPendingScope && (
+                <div className="clear-confirmation" role="status">
+                  <Trash2 size={15} />
+                  <span>
+                    This cannot be undone. Press the same button once more to
+                    confirm.
+                  </span>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setConfirmClearScope(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              {lastClearResult && (
+                <div
+                  className={`clear-result ${lastClearResult.storageCleanupComplete && lastClearResult.memoryCleanupComplete ? "" : "clear-result--warning"}`}
+                  role="status"
+                >
+                  {lastClearResult.storageCleanupComplete &&
+                  lastClearResult.memoryCleanupComplete ? (
+                    <Check size={15} />
+                  ) : (
+                    <AlertTriangle size={15} />
+                  )}
+                  <span>
+                    <strong>
+                      Cleared {lastClearResult.deletedTranscripts} saved{" "}
+                      {lastClearResult.deletedTranscripts === 1
+                        ? "transcript"
+                        : "transcripts"}
+                      , {lastClearResult.deletedUsageSessions} usage{" "}
+                      {lastClearResult.deletedUsageSessions === 1
+                        ? "session"
+                        : "sessions"}
+                      , and {lastClearResult.deletedVocabularyEntries}{" "}
+                      vocabulary{" "}
+                      {lastClearResult.deletedVocabularyEntries === 1
+                        ? "entry"
+                        : "entries"}
+                      .
+                    </strong>
+                    {!lastClearResult.storageCleanupComplete && (
+                      <small>
+                        {lastClearResult.storageCleanupWarning ??
+                          "The SQLite storage cleanup could not finish."}{" "}
+                        Close other Spick windows, then run the same clear
+                        action again.
+                      </small>
+                    )}
+                    {!lastClearResult.memoryCleanupComplete && (
+                      <small>
+                        {lastClearResult.memoryCleanupWarning ??
+                          "The latest in-memory recovery transcript could not be cleared."}{" "}
+                        Quit and reopen Spick to discard that process memory.
+                      </small>
+                    )}
+                  </span>
+                </div>
+              )}
             </>
           )}
         </div>

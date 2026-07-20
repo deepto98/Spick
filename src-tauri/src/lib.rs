@@ -16,6 +16,7 @@ pub mod compatibility;
 pub mod domain;
 pub mod engines;
 mod hud;
+mod local_data;
 mod model_store;
 pub mod platform;
 mod session;
@@ -98,9 +99,16 @@ pub fn run() {
             }
 
             let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let models_path = app.path().app_local_data_dir()?.join("models");
-            let state =
-                AppState::load_with_models(settings_path, models_path).map_err(setup_error)?;
+            let local_data_dir = app.path().app_local_data_dir()?;
+            let models_path = local_data_dir.join("models");
+            let database_path = local_data_dir.join("spick.sqlite3");
+            let state = AppState::load_with_paths(settings_path, models_path, database_path)
+                .map_err(setup_error)?;
+            if let Some(reason) = state.local_data.unavailable_reason() {
+                // Dictation remains usable: only optional statistics, saved
+                // history, and vocabulary persistence are disabled.
+                eprintln!("{reason}");
+            }
             let settings = state.settings_snapshot().map_err(setup_error)?;
 
             if !app.manage(state) {
@@ -128,6 +136,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            commands::get_usage_dashboard,
+            commands::list_transcript_history,
+            commands::list_vocabulary,
+            commands::create_vocabulary_entry,
+            commands::update_vocabulary_entry,
+            commands::delete_vocabulary_entry,
+            commands::clear_local_data,
             commands::get_dictation_session,
             commands::get_audio_capture_status,
             commands::get_shortcut_status,

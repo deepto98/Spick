@@ -4701,6 +4701,104 @@ select:focus-visible {
   border-color: #d9aa92;
 }
 
+/* Local usage, transcript history, and vocabulary */
+.data-section--loading {
+  opacity: 0.72;
+}
+
+.trend-copy--down {
+  color: #9b5b48 !important;
+}
+
+.data-empty-state {
+  min-height: 145px;
+  text-align: center;
+}
+
+.inline-data-error {
+  padding: 9px 0 2px;
+  color: #80503f;
+  font-size: 10px;
+}
+
+.history-load-more {
+  display: flex;
+  margin: 10px auto 0;
+}
+
+.memory-badge {
+  padding: 2px 5px;
+  color: #8b5b44;
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.45px;
+  background: #f4e5d8;
+  border-radius: 4px;
+}
+
+.vocabulary-table__row--disabled {
+  opacity: 0.58;
+}
+
+.phrase-title {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.phrase-title small {
+  color: #8a8277;
+  font-size: 7px;
+}
+
+.vocabulary-enabled-row > span {
+  flex: 1;
+}
+
+.clear-confirmation,
+.clear-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  color: #744939;
+  font-size: 10px;
+  background: #fff4ec;
+  border: 1px solid #dfb29e;
+  border-radius: 9px;
+}
+
+.clear-confirmation > span,
+.clear-result > span {
+  flex: 1;
+}
+
+.clear-result > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.clear-result small {
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.clear-result {
+  color: #426b55;
+  background: #edf7f0;
+  border-color: #bfd9c8;
+}
+
+.clear-result--warning {
+  color: #765337;
+  background: #fff4ec;
+  border-color: #dfb29e;
+}
+
 @keyframes loader-spin {
   to {
     transform: rotate(1turn);

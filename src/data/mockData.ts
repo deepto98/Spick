@@ -1,20 +1,4 @@
-import type { DictationSession, Engine, VocabularyEntry } from "../types";
-
-export const weeklyWords = [
-  { day: "Mon", words: 2640 },
-  { day: "Tue", words: 3380 },
-  { day: "Wed", words: 2860 },
-  { day: "Thu", words: 4230 },
-  { day: "Fri", words: 3690 },
-  { day: "Sat", words: 1760 },
-  { day: "Sun", words: 3120 },
-];
-
-export const languages = [
-  { name: "English", code: "EN", percentage: 68, color: "#a94f31" },
-  { name: "Hindi", code: "HI", percentage: 22, color: "#c6974c" },
-  { name: "Bengali", code: "BN", percentage: 10, color: "#78907a" },
-];
+import type { Engine } from "../types";
 
 export const initialEngines: Engine[] = [
   {
@@ -90,80 +74,5 @@ export const initialEngines: Engine[] = [
     status: "available",
     languageSupport: "To be verified",
     performance: "Adapter planned",
-  },
-];
-
-export const initialVocabulary: VocabularyEntry[] = [
-  {
-    id: "1",
-    phrase: "Spick",
-    soundsLike: "speak",
-    category: "Company",
-    language: "English",
-  },
-  {
-    id: "2",
-    phrase: "whisper.cpp",
-    soundsLike: "whisper dot C P P",
-    category: "Technical",
-    language: "English",
-  },
-  {
-    id: "3",
-    phrase: "Tauri",
-    soundsLike: "tow-ree",
-    category: "Technical",
-    language: "English",
-  },
-  {
-    id: "4",
-    phrase: "Kubernetes",
-    soundsLike: "koo-ber-net-eez",
-    category: "Technical",
-    language: "English",
-  },
-  {
-    id: "5",
-    phrase: "LLM",
-    soundsLike: "L L M",
-    category: "Technical",
-    language: "English",
-  },
-  {
-    id: "6",
-    phrase: "artificial intelligence",
-    soundsLike: "AI",
-    category: "Replacement",
-    language: "English",
-  },
-];
-
-export const recentDictations: DictationSession[] = [
-  {
-    id: "d1",
-    application: "Notion",
-    text: "Could we move tomorrow’s design review to ten? I need another pass at the model notes.",
-    timestamp: "12 min ago",
-    words: 16,
-    language: "EN",
-    color: "#121212",
-  },
-  {
-    id: "d2",
-    application: "Slack",
-    text: "I’ll send the multilingual model comparison before lunch. The local benchmarks still need a second run.",
-    timestamp: "48 min ago",
-    words: 16,
-    language: "EN",
-    color: "#9b5a3c",
-  },
-  {
-    id: "d3",
-    application: "VS Code",
-    text: "Please add language hints and vocabulary support to the provider adapter before we wire up streaming.",
-    timestamp: "2 hr ago",
-    words: 16,
-    language: "EN",
-    color: "#58715d",
   },
 ];

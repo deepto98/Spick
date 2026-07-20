@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../types";
 import { SettingsView } from "./SettingsView";
@@ -220,5 +226,83 @@ describe("shortcut settings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Option" }));
     expect(onShortcutChange).toHaveBeenCalledWith("Option");
+  });
+});
+
+describe("privacy and local data", () => {
+  it("separates aggregate usage from optional text history and confirms clears", async () => {
+    const onClearLocalData = vi.fn(async () => ({
+      scope: "transcriptHistory" as const,
+      deletedUsageSessions: 0,
+      deletedTranscripts: 2,
+      deletedVocabularyEntries: 0,
+      clearedLatestTranscript: true,
+      clearedLatestSessionId: "session-2",
+      storageCleanupComplete: true,
+      storageCleanupWarning: null,
+      memoryCleanupComplete: true,
+      memoryCleanupWarning: null,
+      clearedAtMs: 1,
+    }));
+    render(
+      <SettingsView
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        clearError="first attempt failed"
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        onChange={vi.fn()}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRestartOnboarding={vi.fn()}
+        onClearLocalData={onClearLocalData}
+        lastClearResult={{
+          scope: "transcriptHistory",
+          deletedUsageSessions: 0,
+          deletedTranscripts: 2,
+          deletedVocabularyEntries: 0,
+          clearedLatestTranscript: true,
+          clearedLatestSessionId: "session-2",
+          storageCleanupComplete: false,
+          storageCleanupWarning: "another SQLite reader is still open",
+          memoryCleanupComplete: false,
+          memoryCleanupWarning: "the recovery transcript lock is unavailable",
+          clearedAtMs: 1,
+        }}
+        settings={settings}
+        settingsSaving={false}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("first attempt failed");
+    fireEvent.click(screen.getByRole("button", { name: "Privacy & history" }));
+    expect(
+      screen.getByText(/Aggregate word counts, capture duration/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Turning this off leaves aggregate usage totals/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/another SQLite reader is still open/),
+    ).toHaveTextContent(/run the same clear action again/i);
+    expect(
+      screen.getByText(/the recovery transcript lock is unavailable/),
+    ).toHaveTextContent(/quit and reopen Spick/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete transcripts" }));
+    expect(onClearLocalData).not.toHaveBeenCalled();
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() =>
+      expect(onClearLocalData).toHaveBeenCalledWith("transcriptHistory"),
+    );
   });
 });
