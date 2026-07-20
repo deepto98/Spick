@@ -376,7 +376,12 @@ pub fn protect_target<R: Runtime>(app: &AppHandle<R>, protect: bool) -> Result<(
 }
 
 /// Starts an operating-system window drag without making the HUD focusable.
-pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+///
+/// The return value reports whether the native operation completed before this
+/// function returned. macOS panel dragging is synchronous, which lets callers
+/// persist the final position before another presentation change can restore a
+/// stale coordinate. Tauri's portable fallback may continue asynchronously.
+pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     let window = app
         .get_webview_window(HUD_WINDOW_LABEL)
         .ok_or_else(|| "dictation HUD is not available".to_string())?;
@@ -410,13 +415,14 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             Ok(())
         })?;
         if dragged_as_panel {
-            return Ok(());
+            return Ok(true);
         }
     }
 
     window
         .start_dragging()
-        .map_err(|error| format!("could not move dictation HUD: {error}"))
+        .map_err(|error| format!("could not move dictation HUD: {error}"))?;
+    Ok(false)
 }
 
 /// Returns the HUD's current physical top-left coordinate for persistence.

@@ -5,7 +5,7 @@ use std::{
         Arc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
@@ -14,7 +14,10 @@ use core_graphics::event::{
     CGEventType, CallbackResult, EventField, KeyCode,
 };
 
-use super::gesture::GestureInput;
+use super::{
+    gesture::{GestureEvent, GestureInput},
+    ChordQueueFlags,
+};
 
 const LISTENER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(100);
@@ -64,8 +67,9 @@ pub fn request_listen_access() -> bool {
 }
 
 pub fn start_listener(
-    sender: SyncSender<GestureInput>,
+    sender: SyncSender<GestureEvent>,
     overflowed: Arc<AtomicBool>,
+    chord_queue: Arc<ChordQueueFlags>,
 ) -> Result<ListenerHandle, String> {
     if !listen_access_granted() {
         return Err("Allow Input Monitoring for Spick in System Settings".into());
@@ -82,6 +86,7 @@ pub fn start_listener(
             run_listener(
                 sender,
                 overflowed,
+                chord_queue,
                 worker_stop,
                 Arc::clone(&worker_health),
                 ready_sender,
@@ -109,8 +114,9 @@ pub fn start_listener(
 }
 
 fn run_listener(
-    sender: SyncSender<GestureInput>,
+    sender: SyncSender<GestureEvent>,
     overflowed: Arc<AtomicBool>,
+    chord_queue: Arc<ChordQueueFlags>,
     stop: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     ready_sender: SyncSender<Result<(), String>>,
@@ -123,6 +129,7 @@ fn run_listener(
         let callback_overflowed = Arc::clone(&overflowed);
         let callback_rebuild = Arc::clone(&rebuild);
         let callback_pressed_inputs = Arc::clone(&pressed_inputs);
+        let callback_chord_queue = Arc::clone(&chord_queue);
         let callback = move |_proxy, event_type, event: &CGEvent| {
             if matches!(
                 event_type,
@@ -133,16 +140,32 @@ fn run_listener(
             let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
             callback_pressed_inputs.observe(event_type, keycode);
             let mut input = normalize_fields(event_type, keycode, event.get_flags());
-            if input == Some(GestureInput::OptionDown) && callback_pressed_inputs.any() {
-                input = Some(GestureInput::Chord);
+            if input == Some(GestureInput::OptionDown) {
+                input = callback_pressed_inputs.chord_input().or(input);
             }
             if let Some(input) = input {
-                match callback_sender.try_send(input) {
+                if !callback_chord_queue.claim(input) {
+                    return CallbackResult::Keep;
+                }
+                let event = GestureEvent {
+                    input,
+                    occurred_at: Instant::now(),
+                };
+                match callback_sender.try_send(event) {
                     Ok(()) => {}
-                    Err(TrySendError::Full(_)) => {
-                        callback_overflowed.store(true, Ordering::Release)
+                    Err(TrySendError::Full(event)) => {
+                        callback_chord_queue.release(event.input);
+                        // Pointer/scroll events are deliberately lossy and
+                        // coalesced; dropping one must not masquerade as event
+                        // tap failure. A lost keyboard or Option transition is
+                        // still fatal so keyboard chords remain fail-closed.
+                        if event.input != GestureInput::PointerChord {
+                            callback_overflowed.store(true, Ordering::Release);
+                        }
                     }
-                    Err(TrySendError::Disconnected(_)) => {}
+                    Err(TrySendError::Disconnected(event)) => {
+                        callback_chord_queue.release(event.input)
+                    }
                 }
             }
             CallbackResult::Keep
@@ -244,12 +267,18 @@ impl PressedInputs {
         }
     }
 
-    fn any(&self) -> bool {
-        self.mouse_buttons.load(Ordering::Relaxed) != 0
-            || self
-                .keys
-                .iter()
-                .any(|word| word.load(Ordering::Relaxed) != 0)
+    fn chord_input(&self) -> Option<GestureInput> {
+        if self
+            .keys
+            .iter()
+            .any(|word| word.load(Ordering::Relaxed) != 0)
+        {
+            Some(GestureInput::KeyboardChord)
+        } else if self.mouse_buttons.load(Ordering::Relaxed) != 0 {
+            Some(GestureInput::PointerChord)
+        } else {
+            None
+        }
     }
 
     fn set_key(&self, keycode: i64, down: bool) {
@@ -293,24 +322,26 @@ fn normalize_fields(
                 if !flags.contains(CGEventFlags::CGEventFlagAlternate) {
                     Some(GestureInput::OptionUp)
                 } else if has_disallowed_modifier(flags) {
-                    Some(GestureInput::Chord)
+                    Some(GestureInput::KeyboardChord)
                 } else {
                     Some(GestureInput::OptionDown)
                 }
             } else if flags.contains(CGEventFlags::CGEventFlagAlternate) {
-                Some(GestureInput::Chord)
+                Some(GestureInput::KeyboardChord)
             } else {
                 None
             }
         }
-        CGEventType::KeyDown
-        | CGEventType::LeftMouseDown
+        CGEventType::KeyDown if flags.contains(CGEventFlags::CGEventFlagAlternate) => {
+            Some(GestureInput::KeyboardChord)
+        }
+        CGEventType::LeftMouseDown
         | CGEventType::RightMouseDown
         | CGEventType::OtherMouseDown
         | CGEventType::ScrollWheel
             if flags.contains(CGEventFlags::CGEventFlagAlternate) =>
         {
-            Some(GestureInput::Chord)
+            Some(GestureInput::PointerChord)
         }
         _ => None,
     }
@@ -357,12 +388,27 @@ mod tests {
                 i64::from(KeyCode::OPTION),
                 CGEventFlags::CGEventFlagAlternate | CGEventFlags::CGEventFlagShift,
             ),
-            Some(GestureInput::Chord)
+            Some(GestureInput::KeyboardChord)
         );
         assert_eq!(
             normalize_fields(CGEventType::KeyDown, 0, CGEventFlags::CGEventFlagAlternate,),
-            Some(GestureInput::Chord)
+            Some(GestureInput::KeyboardChord)
         );
+    }
+
+    #[test]
+    fn pointer_and_scroll_input_are_classified_separately() {
+        for event_type in [
+            CGEventType::LeftMouseDown,
+            CGEventType::RightMouseDown,
+            CGEventType::OtherMouseDown,
+            CGEventType::ScrollWheel,
+        ] {
+            assert_eq!(
+                normalize_fields(event_type, 0, CGEventFlags::CGEventFlagAlternate),
+                Some(GestureInput::PointerChord)
+            );
+        }
     }
 
     #[test]
@@ -395,13 +441,13 @@ mod tests {
     fn inputs_held_before_option_are_tracked_until_release() {
         let pressed = PressedInputs::default();
         pressed.observe(CGEventType::KeyDown, 12);
-        assert!(pressed.any());
+        assert_eq!(pressed.chord_input(), Some(GestureInput::KeyboardChord));
         pressed.observe(CGEventType::KeyUp, 12);
-        assert!(!pressed.any());
+        assert_eq!(pressed.chord_input(), None);
 
         pressed.observe(CGEventType::LeftMouseDown, 0);
-        assert!(pressed.any());
+        assert_eq!(pressed.chord_input(), Some(GestureInput::PointerChord));
         pressed.observe(CGEventType::LeftMouseUp, 0);
-        assert!(!pressed.any());
+        assert_eq!(pressed.chord_input(), None);
     }
 }

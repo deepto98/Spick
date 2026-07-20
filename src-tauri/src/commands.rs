@@ -363,10 +363,28 @@ pub fn set_hud_presentation(
 }
 
 #[tauri::command]
-pub fn start_hud_drag(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+pub fn start_hud_drag(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     require_hud_window(&window)?;
-    hud::start_drag(&app)?;
-    schedule_hud_position_save(app);
+    let revision = HUD_DRAG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    let settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let completed_synchronously = hud::start_drag(&app)?;
+    if completed_synchronously {
+        let position = hud::current_position(&app)?;
+        persist_hud_position_with_gate(state.inner(), position)?;
+        drop(settings_update);
+    } else {
+        // The portable drag API can return before the window stops moving. It
+        // must not hold the settings gate while the settling watcher runs.
+        drop(settings_update);
+        schedule_hud_position_save(app, revision);
+    }
     Ok(())
 }
 
@@ -615,8 +633,7 @@ fn require_hud_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
-fn schedule_hud_position_save<R: Runtime>(app: AppHandle<R>) {
-    let revision = HUD_DRAG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+fn schedule_hud_position_save<R: Runtime>(app: AppHandle<R>, revision: u64) {
     let spawn_result = thread::Builder::new()
         .name("spick-hud-position".into())
         .spawn(move || {
@@ -646,10 +663,7 @@ fn schedule_hud_position_save<R: Runtime>(app: AppHandle<R>) {
             let Some(position) = last_position else {
                 return;
             };
-            if HUD_DRAG_REVISION.load(Ordering::Acquire) != revision {
-                return;
-            }
-            if let Err(error) = persist_hud_position(&app, position) {
+            if let Err(error) = persist_hud_position_if_current(&app, position, revision) {
                 eprintln!("could not save the dictation HUD position: {error}");
             }
         });
@@ -659,14 +673,25 @@ fn schedule_hud_position_save<R: Runtime>(app: AppHandle<R>) {
     }
 }
 
-fn persist_hud_position<R: Runtime>(
+fn persist_hud_position_if_current<R: Runtime>(
     app: &AppHandle<R>,
     position: crate::domain::HudCoordinates,
+    revision: u64,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    persist_hud_position_for_state(state.inner(), position)
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    // Recheck after acquiring the serialization gate. A newer drag may have
+    // started while this watcher was waiting behind a presentation change.
+    if HUD_DRAG_REVISION.load(Ordering::Acquire) != revision {
+        return Ok(());
+    }
+    persist_hud_position_with_gate(state.inner(), position)
 }
 
+#[cfg(test)]
 fn persist_hud_position_for_state(
     state: &AppState,
     position: crate::domain::HudCoordinates,
@@ -675,6 +700,14 @@ fn persist_hud_position_for_state(
         .settings_update
         .lock()
         .map_err(|_| "settings update is unavailable".to_string())?;
+    persist_hud_position_with_gate(state, position)
+}
+
+/// Persists a HUD position while the caller owns `settings_update`.
+fn persist_hud_position_with_gate(
+    state: &AppState,
+    position: crate::domain::HudCoordinates,
+) -> Result<(), String> {
     let mut current = state
         .settings
         .write()

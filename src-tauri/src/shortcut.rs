@@ -25,7 +25,7 @@ mod gesture;
 mod macos_option;
 
 #[cfg(target_os = "macos")]
-use gesture::{GestureAction, GestureInput, GestureMachine};
+use gesture::{GestureAction, GestureEvent, GestureInput, GestureMachine};
 
 pub const OPTION_SHORTCUT: &str = "Option";
 pub const OPTION_FALLBACK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
@@ -34,8 +34,43 @@ pub const OPTION_FALLBACK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 const OPTION_EVENT_CAPACITY: usize = 64;
 #[cfg(target_os = "macos")]
 const IDLE_GESTURE_POLL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const OPTION_WATCHDOG_POLL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const OPTION_RECOVERY_GRACE: Duration = Duration::from_millis(750);
+
+#[cfg(target_os = "macos")]
+static OPTION_WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 
 static SHORTCUT_CONTROLLER: OnceLock<Mutex<ShortcutController>> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ChordQueueFlags {
+    keyboard: AtomicBool,
+    pointer: AtomicBool,
+}
+
+#[cfg(target_os = "macos")]
+impl ChordQueueFlags {
+    fn claim(&self, input: GestureInput) -> bool {
+        let flag = match input {
+            GestureInput::KeyboardChord => &self.keyboard,
+            GestureInput::PointerChord => &self.pointer,
+            _ => return true,
+        };
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn release(&self, input: GestureInput) {
+        match input {
+            GestureInput::KeyboardChord => self.keyboard.store(false, Ordering::Release),
+            GestureInput::PointerChord => self.pointer.store(false, Ordering::Release),
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,7 +247,7 @@ impl ShortcutController {
 #[cfg(target_os = "macos")]
 struct OptionRuntime {
     listener: macos_option::ListenerHandle,
-    sender: mpsc::SyncSender<GestureInput>,
+    sender: mpsc::SyncSender<GestureEvent>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -221,10 +256,15 @@ impl OptionRuntime {
     fn start<R: Runtime>(app: AppHandle<R>) -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel(OPTION_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
-        let listener = macos_option::start_listener(sender.clone(), Arc::clone(&overflowed))?;
+        let chord_queue = Arc::new(ChordQueueFlags::default());
+        let listener = macos_option::start_listener(
+            sender.clone(),
+            Arc::clone(&overflowed),
+            Arc::clone(&chord_queue),
+        )?;
         let worker = match thread::Builder::new()
             .name("spick-option-gesture".into())
-            .spawn(move || run_gesture_worker(app, receiver, overflowed))
+            .spawn(move || run_gesture_worker(app, receiver, overflowed, chord_queue))
         {
             Ok(worker) => worker,
             Err(error) => {
@@ -249,7 +289,7 @@ impl OptionRuntime {
 
     fn stop(&mut self) {
         self.listener.stop();
-        let _ = self.sender.send(GestureInput::Shutdown);
+        let _ = self.sender.send(GestureEvent::now(GestureInput::Shutdown));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -279,6 +319,10 @@ pub fn validate(shortcut: &str) -> Result<(), String> {
 
 pub fn register<R: Runtime>(app: &AppHandle<R>, shortcut: &str) -> Result<(), String> {
     validate(shortcut)?;
+    #[cfg(target_os = "macos")]
+    if shortcut == OPTION_SHORTCUT {
+        ensure_option_watchdog(app);
+    }
     let mut controller = shortcut_controller()
         .lock()
         .map_err(|_| "shortcut controller lock is poisoned".to_string())?;
@@ -297,7 +341,8 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Result<ShortcutStatus, String> 
             controller.option_listener_active(),
             controller.fallback_registered,
             permission_granted,
-        ) {
+        ) && !dictation_is_active(app)
+        {
             // This runs only from the dashboard status command, never from the
             // gesture worker being replaced, so stopping an unhealthy runtime
             // cannot join the current thread.
@@ -323,7 +368,8 @@ pub fn request_input_monitoring_permission<R: Runtime>(app: &AppHandle<R>) -> bo
         if option_activation_required(
             controller.option_selected,
             controller.option_listener_active() && granted,
-        ) {
+        ) && !dictation_is_active(app)
+        {
             if let Err(error) = controller.activate_option(app) {
                 eprintln!("Option shortcut activation failed after its permission check: {error}");
             }
@@ -342,6 +388,10 @@ pub fn request_input_monitoring_permission<R: Runtime>(app: &AppHandle<R>) -> bo
 /// binding cannot be installed or the old plugin binding cannot be removed.
 pub fn replace<R: Runtime>(app: &AppHandle<R>, _previous: &str, next: &str) -> Result<(), String> {
     validate(next)?;
+    #[cfg(target_os = "macos")]
+    if next == OPTION_SHORTCUT {
+        ensure_option_watchdog(app);
+    }
     let mut controller = shortcut_controller()
         .lock()
         .map_err(|_| "shortcut controller lock is poisoned".to_string())?;
@@ -350,6 +400,83 @@ pub fn replace<R: Runtime>(app: &AppHandle<R>, _previous: &str, next: &str) -> R
 
 fn shortcut_controller() -> &'static Mutex<ShortcutController> {
     SHORTCUT_CONTROLLER.get_or_init(|| Mutex::new(ShortcutController::default()))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_option_watchdog<R: Runtime>(app: &AppHandle<R>) {
+    if OPTION_WATCHDOG_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let app = app.clone();
+    if let Err(error) = thread::Builder::new()
+        .name("spick-option-watchdog".into())
+        .spawn(move || run_option_watchdog(app))
+    {
+        OPTION_WATCHDOG_STARTED.store(false, Ordering::Release);
+        eprintln!("could not start Option shortcut recovery: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_option_watchdog<R: Runtime>(app: AppHandle<R>) {
+    let mut unhealthy_since = None;
+    loop {
+        thread::sleep(OPTION_WATCHDOG_POLL);
+        let recovery_needed = {
+            let controller = shortcut_controller()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            option_status_recovery_required(
+                controller.option_selected,
+                controller.option_listener_active(),
+                controller.fallback_registered,
+                macos_option::listen_access_granted(),
+            )
+        };
+        if !recovery_needed {
+            unhealthy_since = None;
+            continue;
+        }
+
+        let now = Instant::now();
+        let unhealthy_at = *unhealthy_since.get_or_insert(now);
+        if now.duration_since(unhealthy_at) < OPTION_RECOVERY_GRACE || dictation_is_active(&app) {
+            continue;
+        }
+
+        let mut controller = shortcut_controller()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let still_needs_recovery = option_status_recovery_required(
+            controller.option_selected,
+            controller.option_listener_active(),
+            controller.fallback_registered,
+            macos_option::listen_access_granted(),
+        );
+        if still_needs_recovery {
+            if let Err(error) = controller.activate_option(&app) {
+                eprintln!("Option shortcut recovery failed: {error}");
+            }
+        }
+        unhealthy_since = None;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dictation_is_active<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let state = app.try_state::<AppState>();
+    state.is_some_and(|state| {
+        state.session.lock().map_or(true, |session| {
+            matches!(
+                session.snapshot().state,
+                SessionState::Listening | SessionState::Processing | SessionState::Inserting
+            )
+        })
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -387,8 +514,9 @@ fn unregister_accelerator<R: Runtime>(app: &AppHandle<R>, shortcut: &str) -> Res
 #[cfg(target_os = "macos")]
 fn run_gesture_worker<R: Runtime>(
     app: AppHandle<R>,
-    receiver: mpsc::Receiver<GestureInput>,
+    receiver: mpsc::Receiver<GestureEvent>,
     overflowed: Arc<AtomicBool>,
+    chord_queue: Arc<ChordQueueFlags>,
 ) {
     let mut machine = GestureMachine::default();
     loop {
@@ -400,8 +528,12 @@ fn run_gesture_worker<R: Runtime>(
             let mut shutdown = false;
             loop {
                 match receiver.try_recv() {
-                    Ok(GestureInput::Shutdown) => shutdown = true,
-                    Ok(_) => {}
+                    Ok(event) => {
+                        chord_queue.release(event.input);
+                        if event.input == GestureInput::Shutdown {
+                            shutdown = true;
+                        }
+                    }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         shutdown = true;
@@ -419,11 +551,17 @@ fn run_gesture_worker<R: Runtime>(
             .deadline()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(IDLE_GESTURE_POLL);
-        match receiver.recv_timeout(wait) {
-            Ok(input) => {
+        let received = match receiver.try_recv() {
+            Ok(event) => Ok(event),
+            Err(TryRecvError::Empty) => receiver.recv_timeout(wait),
+            Err(TryRecvError::Disconnected) => Err(RecvTimeoutError::Disconnected),
+        };
+        match received {
+            Ok(event) => {
+                chord_queue.release(event.input);
                 reconcile_gesture(&app, &mut machine);
-                let shutdown = input == GestureInput::Shutdown;
-                if let Some(action) = machine.handle(input, Instant::now()) {
+                let shutdown = event.input == GestureInput::Shutdown;
+                for action in machine.handle_timestamped(event).into_iter().flatten() {
                     execute_gesture_action(&app, &mut machine, action);
                 }
                 if shutdown {
@@ -509,7 +647,10 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event_state: ShortcutState) 
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{option_activation_required, option_status_recovery_required, ShortcutController};
+    use super::{
+        option_activation_required, option_status_recovery_required, ChordQueueFlags, GestureInput,
+        ShortcutController,
+    };
 
     #[test]
     fn status_identifies_the_selected_backend() {
@@ -547,5 +688,19 @@ mod tests {
         assert!(!option_status_recovery_required(true, true, false, true));
         // Treat a stale "active" health bit as unusable once access is gone.
         assert!(option_status_recovery_required(true, true, false, false));
+    }
+
+    #[test]
+    fn noisy_pointer_chords_cannot_consume_the_keyboard_chord_slot() {
+        let queued = ChordQueueFlags::default();
+        assert!(queued.claim(GestureInput::PointerChord));
+        assert!(!queued.claim(GestureInput::PointerChord));
+        assert!(queued.claim(GestureInput::KeyboardChord));
+        assert!(!queued.claim(GestureInput::KeyboardChord));
+
+        queued.release(GestureInput::PointerChord);
+        assert!(queued.claim(GestureInput::PointerChord));
+        queued.release(GestureInput::KeyboardChord);
+        assert!(queued.claim(GestureInput::KeyboardChord));
     }
 }

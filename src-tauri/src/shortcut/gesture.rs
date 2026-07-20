@@ -7,9 +7,27 @@ const QUARANTINE_DURATION: Duration = Duration::from_millis(500);
 pub enum GestureInput {
     OptionDown,
     OptionUp,
-    Chord,
+    KeyboardChord,
+    PointerChord,
     ListenerDisabled,
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GestureEvent {
+    pub input: GestureInput,
+    /// Timestamp captured by the passive event-tap callback, before the
+    /// gesture worker can be delayed by capture startup or OS scheduling.
+    pub occurred_at: Instant,
+}
+
+impl GestureEvent {
+    pub fn now(input: GestureInput) -> Self {
+        Self {
+            input,
+            occurred_at: Instant::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +62,23 @@ impl Default for GestureMachine {
 }
 
 impl GestureMachine {
+    /// Applies a native event in the order it occurred, servicing an expired
+    /// hold deadline before the event itself. Returning two actions is rare but
+    /// intentional: if the worker wakes to a release that occurred after the
+    /// deadline, Start must precede Stop instead of dropping the gesture.
+    pub fn handle_timestamped(&mut self, event: GestureEvent) -> [Option<GestureAction>; 2] {
+        let deadline_action = if matches!(
+            event.input,
+            GestureInput::ListenerDisabled | GestureInput::Shutdown
+        ) {
+            None
+        } else {
+            self.handle_timeout(event.occurred_at)
+        };
+        let input_action = self.handle(event.input, event.occurred_at);
+        [deadline_action, input_action]
+    }
+
     pub fn handle(&mut self, input: GestureInput, now: Instant) -> Option<GestureAction> {
         match (self.state, input) {
             (_, GestureInput::Shutdown) => {
@@ -61,7 +96,10 @@ impl GestureMachine {
                 self.state = GestureState::ToggleListening;
                 Some(GestureAction::Start)
             }
-            (GestureState::Armed { .. }, GestureInput::Chord | GestureInput::OptionDown) => {
+            (
+                GestureState::Armed { .. },
+                GestureInput::KeyboardChord | GestureInput::PointerChord | GestureInput::OptionDown,
+            ) => {
                 self.state = GestureState::DirtyIdle;
                 None
             }
@@ -87,10 +125,15 @@ impl GestureMachine {
                 self.state = GestureState::Idle;
                 Some(GestureAction::Stop)
             }
-            (GestureState::Holding, GestureInput::Chord | GestureInput::OptionDown) => {
+            (GestureState::Holding, GestureInput::KeyboardChord | GestureInput::OptionDown) => {
                 self.state = GestureState::DirtyIdle;
                 Some(GestureAction::Cancel)
             }
+            // Pointer input may be the user dragging Spick's nonactivating HUD.
+            // Keeping the recording alive is safe even when it targets another
+            // app: insertion still revalidates the captured field and fails
+            // closed if that click moved focus.
+            (GestureState::Holding, GestureInput::PointerChord) => None,
             (GestureState::Holding, GestureInput::ListenerDisabled) => {
                 self.state = GestureState::Idle;
                 Some(GestureAction::Cancel)
@@ -103,7 +146,10 @@ impl GestureMachine {
                 self.state = GestureState::Idle;
                 Some(GestureAction::Stop)
             }
-            (GestureState::ToggleStopArmed, GestureInput::Chord | GestureInput::OptionDown) => {
+            (
+                GestureState::ToggleStopArmed,
+                GestureInput::KeyboardChord | GestureInput::PointerChord | GestureInput::OptionDown,
+            ) => {
                 self.state = GestureState::DirtyToggle;
                 None
             }
@@ -225,7 +271,10 @@ mod tests {
         let mut machine = GestureMachine::default();
         machine.handle(GestureInput::OptionDown, start);
         assert_eq!(
-            machine.handle(GestureInput::Chord, start + Duration::from_millis(40)),
+            machine.handle(
+                GestureInput::KeyboardChord,
+                start + Duration::from_millis(40)
+            ),
             None
         );
         assert_eq!(machine.handle_timeout(start + HOLD_THRESHOLD), None);
@@ -241,7 +290,7 @@ mod tests {
         );
         assert_eq!(
             machine.handle(
-                GestureInput::Chord,
+                GestureInput::KeyboardChord,
                 start + HOLD_THRESHOLD + Duration::from_millis(10)
             ),
             Some(GestureAction::Cancel)
@@ -254,7 +303,10 @@ mod tests {
         let mut machine = toggled_machine(start);
         machine.handle(GestureInput::OptionDown, start + Duration::from_millis(100));
         assert_eq!(
-            machine.handle(GestureInput::Chord, start + Duration::from_millis(110)),
+            machine.handle(
+                GestureInput::KeyboardChord,
+                start + Duration::from_millis(110)
+            ),
             None
         );
         assert_eq!(
@@ -277,7 +329,10 @@ mod tests {
         let mut machine = GestureMachine::default();
 
         machine.handle(GestureInput::OptionDown, start);
-        machine.handle(GestureInput::Chord, start + Duration::from_millis(10));
+        machine.handle(
+            GestureInput::KeyboardChord,
+            start + Duration::from_millis(10),
+        );
         assert_eq!(
             machine.handle(GestureInput::OptionUp, start + Duration::from_millis(20)),
             None
@@ -290,7 +345,10 @@ mod tests {
         );
 
         machine.handle(GestureInput::OptionDown, start + Duration::from_millis(200));
-        machine.handle(GestureInput::Chord, start + Duration::from_millis(210));
+        machine.handle(
+            GestureInput::KeyboardChord,
+            start + Duration::from_millis(210),
+        );
         assert_eq!(
             machine.handle(GestureInput::OptionUp, start + Duration::from_millis(220)),
             None
@@ -365,6 +423,31 @@ mod tests {
     }
 
     #[test]
+    fn pointer_input_does_not_cancel_hold_to_talk() {
+        let start = Instant::now();
+        let mut machine = GestureMachine::default();
+        machine.handle(GestureInput::OptionDown, start);
+        assert_eq!(
+            machine.handle_timeout(start + HOLD_THRESHOLD),
+            Some(GestureAction::Start)
+        );
+        assert_eq!(
+            machine.handle(
+                GestureInput::PointerChord,
+                start + HOLD_THRESHOLD + Duration::from_millis(10)
+            ),
+            None
+        );
+        assert_eq!(
+            machine.handle(
+                GestureInput::OptionUp,
+                start + HOLD_THRESHOLD + Duration::from_millis(20)
+            ),
+            Some(GestureAction::Stop)
+        );
+    }
+
+    #[test]
     fn terminal_session_reconciliation_makes_the_next_tap_a_start() {
         let start = Instant::now();
         let mut machine = toggled_machine(start);
@@ -382,7 +465,7 @@ mod tests {
         let mut machine = GestureMachine::default();
         machine.quarantine(start);
         assert_eq!(machine.handle(GestureInput::OptionDown, start), None);
-        assert_eq!(machine.handle(GestureInput::Chord, start), None);
+        assert_eq!(machine.handle(GestureInput::KeyboardChord, start), None);
         assert_eq!(machine.handle_timeout(start + QUARANTINE_DURATION), None);
         machine.handle(GestureInput::OptionDown, start + Duration::from_secs(1));
         assert_eq!(
@@ -415,6 +498,34 @@ mod tests {
                 start + HOLD_THRESHOLD + Duration::from_millis(10)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn timestamped_release_orders_expired_start_before_stop() {
+        let start = Instant::now();
+        let mut machine = GestureMachine::default();
+        machine.handle(GestureInput::OptionDown, start);
+        assert_eq!(
+            machine.handle_timestamped(GestureEvent {
+                input: GestureInput::OptionUp,
+                occurred_at: start + HOLD_THRESHOLD + Duration::from_millis(1),
+            }),
+            [Some(GestureAction::Start), Some(GestureAction::Stop)]
+        );
+    }
+
+    #[test]
+    fn event_timestamp_preserves_a_quick_tap_after_worker_delay() {
+        let start = Instant::now();
+        let mut machine = GestureMachine::default();
+        machine.handle(GestureInput::OptionDown, start);
+        assert_eq!(
+            machine.handle_timestamped(GestureEvent {
+                input: GestureInput::OptionUp,
+                occurred_at: start + Duration::from_millis(80),
+            }),
+            [None, Some(GestureAction::Start)]
         );
     }
 
