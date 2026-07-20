@@ -14,6 +14,7 @@ use crate::{
         AudioCaptureFailure, AudioCaptureStatus, CaptureFinalizer, ErrorSink, LevelSink,
         AUDIO_LEVEL_EVENT,
     },
+    cloud::{provider_for_engine, validate_provider_language_policy, CloudTranscription},
     domain::{
         AppSettings, DictationDelivery, DictationDeliveryStatus, DictationSession,
         DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, HudPresentation,
@@ -757,6 +758,12 @@ fn rebase_settings_update(
 }
 
 fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String> {
+    if let Some(provider) = provider_for_engine(&settings.transcription_engine) {
+        return validate_provider_language_policy(provider, &settings.language_policy);
+    }
+    if settings.transcription_engine.location == EngineLocation::Cloud {
+        return Err("The selected cloud transcription engine is not supported.".into());
+    }
     if settings.transcription_engine.provider != EngineProvider::WhisperCpp
         || settings.transcription_engine.location != EngineLocation::Local
     {
@@ -829,6 +836,7 @@ pub(crate) fn start_session<R: Runtime>(
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
     let cleanup_engine = settings.cleanup_engine;
+    let allow_cloud_fallback = settings.allow_cloud_fallback;
     let hud_settings = settings.hud.clone();
     // Vocabulary is a per-session snapshot. Edits that win the SQLite read
     // race are included; every later edit applies to the next session only.
@@ -888,6 +896,7 @@ pub(crate) fn start_session<R: Runtime>(
             captured_target.clone(),
             hud_target_lease.clone(),
             Arc::clone(&vocabulary),
+            allow_cloud_fallback,
         ) {
             let failed = session
                 .fail(error.clone())
@@ -1199,62 +1208,125 @@ fn transcribe_capture(
     session: &DictationSession,
     pcm_16khz: &[f32],
 ) -> Result<PendingDictationTranscript, EngineError> {
-    if session.transcription_engine.provider != EngineProvider::WhisperCpp
-        || session.transcription_engine.location != EngineLocation::Local
-    {
-        return Err(EngineError::Backend(
-            "the selected transcription engine is not connected yet".into(),
-        ));
-    }
-
-    let model =
-        resolve_curated_whisper_model(&session.transcription_engine.model).ok_or_else(|| {
-            EngineError::InvalidRequest(format!(
-                "unknown local model: {}",
-                session.transcription_engine.model
-            ))
-        })?;
     let operation = state
         .transcription_operation(&session.id)
         .map_err(EngineError::Backend)?
         .ok_or(EngineError::Cancelled)?;
     let cancellation = operation.cancellation;
-    let model_path = state
-        .models
-        .verified_model_path_cancellable(&model.id, cancellation.as_ref())
-        .map_err(|error| {
-            if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
-                EngineError::Cancelled
-            } else {
-                EngineError::Backend(error)
-            }
-        })?;
     let vocabulary = operation
         .vocabulary
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let mut result = state.whisper.transcribe(
-        Arc::clone(&model),
-        &model_path,
-        TranscriptionRequest {
-            audio: AudioInput {
-                samples: pcm_16khz,
-                sample_rate_hz: 16_000,
-                channels: 1,
-            },
-            language_policy: &session.language_policy,
-            vocabulary: &vocabulary,
-            cancellation: Some(cancellation.as_ref()),
+    validate_cleanup_selection(session.cleanup_engine.as_ref())?;
+    let clean = session.cleanup_engine.is_some();
+    let request = || TranscriptionRequest {
+        audio: AudioInput {
+            samples: pcm_16khz,
+            sample_rate_hz: 16_000,
+            channels: 1,
         },
-    )?;
-    apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
+        language_policy: &session.language_policy,
+        vocabulary: &vocabulary,
+        cancellation: Some(cancellation.as_ref()),
+    };
 
+    if let Some(provider) = provider_for_engine(&session.transcription_engine) {
+        let cloud = state.cloud.transcribe(provider, request(), clean, || {
+            state.claim_cloud_upload(&session.id)
+        })?;
+        return finish_cloud_transcription(session, cloud);
+    }
+
+    if session.transcription_engine.provider != EngineProvider::WhisperCpp
+        || session.transcription_engine.location != EngineLocation::Local
+    {
+        return Err(EngineError::InvalidRequest(
+            "The selected transcription engine is not supported.".into(),
+        ));
+    }
+
+    let local = (|| {
+        let model = resolve_curated_whisper_model(&session.transcription_engine.model).ok_or_else(
+            || {
+                EngineError::InvalidRequest(format!(
+                    "unknown local model: {}",
+                    session.transcription_engine.model
+                ))
+            },
+        )?;
+        let model_path = state
+            .models
+            .verified_model_path_cancellable(&model.id, cancellation.as_ref())
+            .map_err(|error| {
+                if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+                    EngineError::Cancelled
+                } else {
+                    EngineError::Backend(error)
+                }
+            })?;
+        let mut result = state
+            .whisper
+            .transcribe(Arc::clone(&model), &model_path, request())?;
+        apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
+        Ok(PendingDictationTranscript {
+            session_id: session.id.clone(),
+            engine_id: model.id.clone(),
+            transcript: result,
+        })
+    })();
+
+    let local_error = match local {
+        Ok(transcript) => return Ok(transcript),
+        Err(error) => error,
+    };
+    if !operation.allow_cloud_fallback || !cloud_fallback_eligible(&local_error) {
+        return Err(local_error);
+    }
+    if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+    let Some(provider) = state.cloud.first_configured()? else {
+        return Err(local_error);
+    };
+    // One fallback attempt means one upload. A provider failure is surfaced;
+    // Spick never fans the same recording out to another cloud service.
+    let cloud = state.cloud.transcribe(provider, request(), clean, || {
+        state.claim_cloud_upload(&session.id)
+    })?;
+    finish_cloud_transcription(session, cloud)
+}
+
+fn validate_cleanup_selection(cleanup_engine: Option<&EngineConfig>) -> Result<(), EngineError> {
+    if cleanup_engine.is_some_and(|engine| !engine.is_builtin_readable_cleanup()) {
+        Err(EngineError::InvalidRequest(
+            "The selected cleanup engine is not supported.".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn finish_cloud_transcription(
+    session: &DictationSession,
+    cloud: CloudTranscription,
+) -> Result<PendingDictationTranscript, EngineError> {
+    let mut result = cloud.transcript;
+    if !cloud.cleanup_applied {
+        apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
+    }
     Ok(PendingDictationTranscript {
         session_id: session.id.clone(),
-        engine_id: model.id.clone(),
+        engine_id: cloud.engine_id.into(),
         transcript: result,
     })
+}
+
+fn cloud_fallback_eligible(error: &EngineError) -> bool {
+    matches!(
+        error,
+        EngineError::Backend(_) | EngineError::InvalidResult(_)
+    )
 }
 
 fn apply_configured_cleanup(
@@ -2046,5 +2118,101 @@ mod tests {
             &active,
             "whisper-tiny-multilingual-f16"
         ));
+    }
+
+    #[test]
+    fn cloud_fallback_never_runs_for_cancellation_or_configuration_errors() {
+        assert!(cloud_fallback_eligible(&EngineError::Backend(
+            "local runtime failed".into()
+        )));
+        assert!(cloud_fallback_eligible(&EngineError::InvalidResult(
+            "invalid local result".into()
+        )));
+        assert!(!cloud_fallback_eligible(&EngineError::Cancelled));
+        assert!(!cloud_fallback_eligible(&EngineError::InvalidRequest(
+            "bad settings".into()
+        )));
+    }
+
+    #[test]
+    fn settings_validation_enforces_the_selected_cloud_provider_language_contract() {
+        let bengali = LanguagePolicy::Fixed {
+            language: "bn-IN".into(),
+        };
+        let openai = AppSettings {
+            language_policy: bengali.clone(),
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::OpenAi,
+                model: "gpt-4o-transcribe".into(),
+                location: EngineLocation::Cloud,
+            },
+            ..AppSettings::default()
+        };
+        assert!(validate_selected_transcription(&openai).is_ok());
+
+        let xai = AppSettings {
+            language_policy: bengali.clone(),
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::XAi,
+                model: "speech-to-text".into(),
+                location: EngineLocation::Cloud,
+            },
+            ..AppSettings::default()
+        };
+        assert!(validate_selected_transcription(&xai).is_err());
+
+        let unknown = AppSettings {
+            language_policy: bengali,
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::Gemini,
+                model: "unregistered".into(),
+                location: EngineLocation::Cloud,
+            },
+            ..AppSettings::default()
+        };
+        assert!(validate_selected_transcription(&unknown).is_err());
+    }
+
+    #[test]
+    fn provider_side_cleanup_is_not_applied_twice() {
+        let cleanup_engine = EngineConfig::local(
+            EngineProvider::BuiltIn,
+            crate::domain::BUILTIN_READABLE_CLEANUP_MODEL,
+        );
+        let mut session = event("session-a", SessionState::Processing, 2)
+            .session
+            .unwrap();
+        session.cleanup_engine = Some(cleanup_engine);
+
+        let already_cleaned = finish_cloud_transcription(
+            &session,
+            CloudTranscription {
+                engine_id: "xai-speech-to-text",
+                transcript: TranscriptResult {
+                    detected_language: Some("en".into()),
+                    ..TranscriptResult::final_text("Um, provider kept this intentionally.")
+                },
+                cleanup_applied: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            already_cleaned.transcript.text,
+            "Um, provider kept this intentionally."
+        );
+
+        let needs_cleanup = finish_cloud_transcription(
+            &session,
+            CloudTranscription {
+                engine_id: "openai-gpt-4o-transcribe",
+                transcript: TranscriptResult {
+                    detected_language: Some("en".into()),
+                    ..TranscriptResult::final_text("Um, this is ready.")
+                },
+                cleanup_applied: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(needs_cleanup.transcript.text, "this is ready.");
     }
 }

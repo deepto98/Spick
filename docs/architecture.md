@@ -80,9 +80,9 @@ Settings schema v2 records an explicit cleanup choice. The v1 migration turns cl
 
 ### Cloud engines
 
-Cloud speech and cleanup services are integrated through adapters for configured providers such as OpenAI, Gemini, and xAI. A provider is selectable only for a role and language combination its adapter reports as supported.
+The development build has fixed batch adapters for OpenAI `gpt-4o-transcribe`, xAI Speech to Text, and experimental Gemini 3.5 Flash audio understanding. Credentials live in the OS credential store and are read only by the native transcription worker. Requests and raw provider responses are bounded and zeroed after use; errors omit provider bodies and credentials. Gemini uses the stable Interactions endpoint with server-side storage explicitly disabled.
 
-Cloud fallback is never implicit in local-only mode. When fallback is enabled, the routing decision and the data that will leave the device must be clear in settings.
+Cloud fallback is never implicit in local-only mode. Its permission is captured when recording starts. After an eligible local runtime failure, the worker chooses the first configured provider in the documented order and makes at most one upload; cancellation never triggers fallback. Settings disclose that enabled vocabulary hints may accompany audio and that an upload already in progress cannot be recalled.
 
 ### Capability-aware adapters
 

@@ -75,7 +75,7 @@ Exit criteria:
 
 - A user can understand which engine handles transcription and which handles cleanup.
 - Unsupported provider, language, and mode combinations cannot be selected.
-- API keys never enter application settings, SQLite, logs, or frontend state.
+- API keys never enter application settings, SQLite, or logs; the transient entry field clears immediately and the native side never returns a saved key to the frontend.
 - Local-only mode is covered by tests that reject cloud routing and fallback.
 - As-transcribed mode is byte-for-byte unchanged, and filler removal preserves quoted or explicitly referenced uses.
 

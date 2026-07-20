@@ -64,6 +64,7 @@ pub struct TranscriptionOperation {
     pub target: Option<CapturedTextTarget>,
     pub hud_target_lease: Option<HudTargetProtectionLease>,
     pub vocabulary: Arc<[String]>,
+    pub allow_cloud_fallback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,11 +157,18 @@ impl AppState {
         target: Option<CapturedTextTarget>,
         hud_target_lease: Option<HudTargetProtectionLease>,
         vocabulary: Arc<[String]>,
+        allow_cloud_fallback: bool,
     ) -> Result<Arc<AtomicBool>, String> {
         self.transcripts
             .lock()
             .map(|mut transcripts| {
-                transcripts.begin(session_id, target, hud_target_lease, vocabulary)
+                transcripts.begin(
+                    session_id,
+                    target,
+                    hud_target_lease,
+                    vocabulary,
+                    allow_cloud_fallback,
+                )
             })
             .map_err(|_| "transcript store is unavailable".into())
     }
@@ -169,6 +177,15 @@ impl AppState {
         self.transcripts
             .lock()
             .map(|mut transcripts| transcripts.cancel(session_id))
+            .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    /// Atomically establishes the point after which cancellation can suppress
+    /// delivery but cannot promise that a provider upload was never started.
+    pub fn claim_cloud_upload(&self, session_id: &str) -> Result<bool, String> {
+        self.transcripts
+            .lock()
+            .map(|mut transcripts| transcripts.claim_cloud_upload(session_id))
             .map_err(|_| "transcript store is unavailable".into())
     }
 
@@ -188,6 +205,7 @@ impl AppState {
                         target: active.target.clone(),
                         hud_target_lease: active.hud_target_lease.clone(),
                         vocabulary: Arc::clone(&active.vocabulary),
+                        allow_cloud_fallback: active.allow_cloud_fallback,
                     })
             })
             .map_err(|_| "transcript store is unavailable".into())
@@ -243,6 +261,8 @@ struct ActiveTranscription {
     target: Option<CapturedTextTarget>,
     hud_target_lease: Option<HudTargetProtectionLease>,
     vocabulary: Arc<[String]>,
+    allow_cloud_fallback: bool,
+    cloud_upload_claimed: bool,
 }
 
 impl TranscriptStore {
@@ -252,6 +272,7 @@ impl TranscriptStore {
         target: Option<CapturedTextTarget>,
         hud_target_lease: Option<HudTargetProtectionLease>,
         vocabulary: Arc<[String]>,
+        allow_cloud_fallback: bool,
     ) -> Arc<AtomicBool> {
         if let Some(active) = self.active.take() {
             active.cancellation.store(true, Ordering::Relaxed);
@@ -263,6 +284,8 @@ impl TranscriptStore {
             target,
             hud_target_lease,
             vocabulary,
+            allow_cloud_fallback,
+            cloud_upload_claimed: false,
         });
         self.latest = None;
         cancellation
@@ -276,6 +299,21 @@ impl TranscriptStore {
         {
             active.cancellation.store(true, Ordering::Relaxed);
         }
+    }
+
+    fn claim_cloud_upload(&mut self, session_id: &str) -> bool {
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|active| active.session_id == session_id)
+        else {
+            return false;
+        };
+        if active.cancellation.load(Ordering::Relaxed) || active.cloud_upload_claimed {
+            return false;
+        }
+        active.cloud_upload_claimed = true;
+        true
     }
 
     fn finish(&mut self, session_id: &str) {
@@ -806,7 +844,7 @@ mod tests {
     #[test]
     fn transcript_store_rejects_cancelled_and_stale_results() {
         let mut store = TranscriptStore::default();
-        let cancellation = store.begin("session-a".into(), None, None, Arc::from([]));
+        let cancellation = store.begin("session-a".into(), None, None, Arc::from([]), false);
         assert!(!cancellation.load(Ordering::Relaxed));
         assert!(!store.complete(transcript("session-b", "stale")));
 
@@ -815,12 +853,26 @@ mod tests {
         assert!(!store.complete(transcript("session-a", "cancelled")));
         assert!(store.latest.is_none());
 
-        store.begin("session-c".into(), None, None, Arc::from([]));
+        store.begin("session-c".into(), None, None, Arc::from([]), false);
         assert!(store.complete(transcript("session-c", "kept")));
         assert_eq!(store.latest.as_ref().unwrap().transcript.text, "kept");
 
-        store.begin("session-d".into(), None, None, Arc::from([]));
+        store.begin("session-d".into(), None, None, Arc::from([]), false);
         assert!(store.latest.is_none());
+    }
+
+    #[test]
+    fn cloud_upload_claim_and_cancellation_have_one_ordered_boundary() {
+        let mut store = TranscriptStore::default();
+        store.begin("cancel-first".into(), None, None, Arc::from([]), true);
+        store.cancel("cancel-first");
+        assert!(!store.claim_cloud_upload("cancel-first"));
+
+        let cancellation = store.begin("upload-first".into(), None, None, Arc::from([]), true);
+        assert!(store.claim_cloud_upload("upload-first"));
+        assert!(!store.claim_cloud_upload("upload-first"));
+        store.cancel("upload-first");
+        assert!(cancellation.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -828,7 +880,7 @@ mod tests {
         let (_directory, path) = test_path();
         let state = AppState::load(path).unwrap();
         state
-            .begin_transcription("session-a".into(), None, None, Arc::from([]))
+            .begin_transcription("session-a".into(), None, None, Arc::from([]), false)
             .unwrap();
         assert!(state
             .complete_transcription(transcript("session-a", "queued text"))
@@ -839,6 +891,31 @@ mod tests {
             Some("session-a".into())
         );
         assert_eq!(state.clear_latest_transcript().unwrap(), None);
+    }
+
+    #[test]
+    fn cloud_fallback_permission_is_snapshotted_per_session() {
+        let (_directory, path) = test_path();
+        let state = AppState::load(path).unwrap();
+        state
+            .begin_transcription("session-a".into(), None, None, Arc::from([]), true)
+            .unwrap();
+        assert!(
+            state
+                .transcription_operation("session-a")
+                .unwrap()
+                .unwrap()
+                .allow_cloud_fallback
+        );
+
+        state.settings.write().unwrap().allow_cloud_fallback = false;
+        assert!(
+            state
+                .transcription_operation("session-a")
+                .unwrap()
+                .unwrap()
+                .allow_cloud_fallback
+        );
     }
 
     #[test]
