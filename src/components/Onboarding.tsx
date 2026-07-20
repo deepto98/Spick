@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -16,68 +16,234 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
+import type { NativeShortcutStatus } from "../lib/nativeShortcut";
 import type { AppSettings } from "../types";
 import { DictationHud } from "./DictationHud";
 import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
+import { captureMacShortcut, matchesMacShortcut } from "../lib/shortcutCapture";
 import { ShortcutKeys, SpickLogo } from "./Ui";
 
 interface OnboardingProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
+  shortcutStatus: NativeShortcutStatus | null;
+  shortcutPending: boolean;
+  shortcutError?: string;
   settings: AppSettings;
   settingsError?: string;
   settingsReady: boolean;
   settingsSaving: boolean;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
+  onRefreshShortcut: () => void;
+  onRequestInputMonitoring: () => void;
   onRetrySettings: () => void;
   onSettingsChange: (settings: AppSettings) => void;
   onComplete: () => void;
 }
 
 const totalSteps = 4;
+const optionHoldThresholdMs = 280;
+
+type ShortcutPracticeState =
+  | "idle"
+  | "optionArmed"
+  | "optionDirtyIdle"
+  | "optionHolding"
+  | "optionToggleListening"
+  | "optionToggleStopArmed"
+  | "optionDirtyToggle"
+  | "customHolding"
+  | "customMismatch";
 
 export function Onboarding({
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
+  shortcutStatus,
+  shortcutPending,
+  shortcutError,
   settings,
   settingsError,
   settingsReady,
   settingsSaving,
   onRequestAccessibility,
   onRefreshAccessibility,
+  onRefreshShortcut,
+  onRequestInputMonitoring,
   onRetrySettings,
   onSettingsChange,
   onComplete,
 }: OnboardingProps) {
   const [step, setStep] = useState(0);
-  const [shortcutPressed, setShortcutPressed] = useState(false);
+  const [shortcutPractice, setShortcutPractice] =
+    useState<ShortcutPracticeState>("idle");
+  const shortcutPracticeRef = useRef<ShortcutPracticeState>("idle");
 
   const accessibilityReady =
     accessibilityStatus?.state === "granted" ||
     accessibilityStatus?.state === "unsupported";
+  const usesOptionGesture = settings.hotkey === "⌥";
 
   useEffect(() => {
+    shortcutPracticeRef.current = "idle";
     if (step !== 3) return;
+
+    let optionHoldTimer: number | null = null;
+    let customMainKey: string | null = null;
+
+    const updatePractice = (next: ShortcutPracticeState) => {
+      shortcutPracticeRef.current = next;
+      setShortcutPractice(next);
+    };
+    const clearOptionHoldTimer = () => {
+      if (optionHoldTimer === null) return;
+      window.clearTimeout(optionHoldTimer);
+      optionHoldTimer = null;
+    };
+    const resetPractice = () => {
+      clearOptionHoldTimer();
+      customMainKey = null;
+      updatePractice("idle");
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code === "Space") setShortcutPressed(true);
+      if (event.repeat) return;
+
+      if (!usesOptionGesture) {
+        const captured = captureMacShortcut(event);
+        if (captured.kind === "waiting") return;
+
+        event.preventDefault();
+        if (matchesMacShortcut(event, settings.hotkey)) {
+          customMainKey = event.code;
+          updatePractice("customHolding");
+        } else {
+          customMainKey = null;
+          updatePractice("customMismatch");
+        }
+        return;
+      }
+
+      const isOption = event.key === "Alt";
+      if (!isOption) {
+        if (!event.altKey) return;
+        clearOptionHoldTimer();
+        if (shortcutPracticeRef.current === "optionArmed") {
+          updatePractice("optionDirtyIdle");
+        } else if (shortcutPracticeRef.current === "optionHolding") {
+          updatePractice("idle");
+        } else if (shortcutPracticeRef.current === "optionToggleStopArmed") {
+          updatePractice("optionDirtyToggle");
+        }
+        return;
+      }
+
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey || event.shiftKey) {
+        updatePractice("optionDirtyIdle");
+        return;
+      }
+
+      if (shortcutPracticeRef.current === "idle") {
+        updatePractice("optionArmed");
+        optionHoldTimer = window.setTimeout(() => {
+          optionHoldTimer = null;
+          if (shortcutPracticeRef.current === "optionArmed") {
+            updatePractice("optionHolding");
+          }
+        }, optionHoldThresholdMs);
+      } else if (shortcutPracticeRef.current === "optionToggleListening") {
+        updatePractice("optionToggleStopArmed");
+      }
     };
+
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code === "Space") setShortcutPressed(false);
+      if (!usesOptionGesture) {
+        if (
+          shortcutPracticeRef.current === "customHolding" &&
+          event.code === customMainKey
+        ) {
+          customMainKey = null;
+          updatePractice("idle");
+        }
+        return;
+      }
+
+      if (event.key !== "Alt") return;
+      event.preventDefault();
+      clearOptionHoldTimer();
+      switch (shortcutPracticeRef.current) {
+        case "optionArmed":
+          updatePractice("optionToggleListening");
+          break;
+        case "optionHolding":
+        case "optionToggleStopArmed":
+        case "optionDirtyIdle":
+          updatePractice("idle");
+          break;
+        case "optionDirtyToggle":
+          updatePractice("optionToggleListening");
+          break;
+      }
     };
+
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", resetPractice);
     return () => {
+      clearOptionHoldTimer();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", resetPractice);
     };
-  }, [step]);
+  }, [settings.hotkey, step, usesOptionGesture]);
 
-  const next = () =>
+  const shortcutRecording = [
+    "optionHolding",
+    "optionToggleListening",
+    "optionToggleStopArmed",
+    "optionDirtyToggle",
+    "customHolding",
+  ].includes(shortcutPractice);
+  const shortcutPracticeTitle = shortcutRecording
+    ? "Listening…"
+    : shortcutPractice === "customMismatch"
+      ? "That wasn’t your shortcut"
+      : shortcutPractice === "optionArmed"
+        ? "Option is down…"
+        : "Try it here";
+  const shortcutPracticeHelp = usesOptionGesture
+    ? shortcutPractice === "optionHolding"
+      ? "Release Option to finish"
+      : [
+            "optionToggleListening",
+            "optionToggleStopArmed",
+            "optionDirtyToggle",
+          ].includes(shortcutPractice)
+        ? "Tap Option again to finish"
+        : shortcutPractice === "optionArmed"
+          ? "Keep holding for push-to-talk, or release to start hands-free"
+          : "Tap Option once to start and again to finish, or hold and release"
+    : shortcutPractice === "customHolding"
+      ? `Release the main key in ${settings.hotkey} to finish`
+      : shortcutPractice === "customMismatch"
+        ? `Press exactly ${settings.hotkey}; other chords stay inactive`
+        : `Hold ${settings.hotkey} to start, then release the main key`;
+
+  const resetShortcutPractice = () => {
+    shortcutPracticeRef.current = "idle";
+    setShortcutPractice("idle");
+  };
+  const next = () => {
+    resetShortcutPractice();
     setStep((current) => Math.min(totalSteps - 1, current + 1));
-  const previous = () => setStep((current) => Math.max(0, current - 1));
+  };
+  const previous = () => {
+    resetShortcutPractice();
+    setStep((current) => Math.max(0, current - 1));
+  };
 
   return (
     <main className="onboarding-shell">
@@ -112,8 +278,11 @@ export function Onboarding({
                 <em>Catch the thought.</em>
               </h1>
               <p>
-                Hold a shortcut and speak. Spick listens on this Mac, turns your
-                voice into text, and keeps it ready for you.
+                {usesOptionGesture
+                  ? "Tap or hold Option and speak. "
+                  : "Hold your saved shortcut and speak. "}
+                Spick listens on this Mac, turns your voice into text, and puts
+                it where you started.
               </p>
               <button
                 type="button"
@@ -154,7 +323,7 @@ export function Onboarding({
                 </div>
               </div>
               <div className="welcome-demo__hud">
-                <DictationHud state="listening" />
+                <DictationHud state="listening" shortcut={settings.hotkey} />
               </div>
               <div className="welcome-demo__note">
                 <Check size={13} /> Local dictation, without sending audio away
@@ -168,8 +337,16 @@ export function Onboarding({
             <SetupHeading
               icon={<LockKeyhole size={21} />}
               eyebrow="BEFORE YOU START"
-              title="Two small permissions."
-              description="Microphone lets Spick hear you. Accessibility lets it remember where you started and stay out of private fields."
+              title={
+                usesOptionGesture
+                  ? "Three small permissions."
+                  : "Two small permissions."
+              }
+              description={
+                usesOptionGesture
+                  ? "Microphone hears you, Accessibility reaches the field, and Input Monitoring notices the Option key."
+                  : "Microphone hears you, and Accessibility reaches the field where you started."
+              }
             />
             <div className="permission-list">
               <PermissionCard
@@ -182,9 +359,9 @@ export function Onboarding({
               />
               <PermissionCard
                 number="02"
-                icon={<Keyboard size={21} />}
+                icon={<LockKeyhole size={21} />}
                 title="Accessibility"
-                description="Keeps the shortcut tied to the field where you began. Automatic paste is still being hardened."
+                description="Keeps dictation tied to the field where you began and blocks protected controls."
                 ready={accessibilityStatus?.state === "granted"}
                 status={
                   accessibilityStatus?.state === "unsupported"
@@ -211,6 +388,37 @@ export function Onboarding({
                     : onRefreshAccessibility
                 }
               />
+              {usesOptionGesture && (
+                <PermissionCard
+                  number="03"
+                  icon={<Keyboard size={21} />}
+                  title="Input Monitoring"
+                  description="Lets Spick notice a tap or hold of Option without taking focus from your app."
+                  ready={shortcutStatus?.optionListenerActive === true}
+                  status={
+                    shortcutStatus?.optionListenerActive
+                      ? "Ready"
+                      : shortcutStatus?.inputMonitoringGranted
+                        ? "Ready to activate"
+                        : undefined
+                  }
+                  button={
+                    shortcutStatus?.optionListenerActive
+                      ? undefined
+                      : shortcutStatus?.inputMonitoringGranted
+                        ? "Activate Option"
+                        : shortcutPending
+                          ? "Opening…"
+                          : "Allow in System Settings"
+                  }
+                  disabled={shortcutPending}
+                  onGrant={
+                    shortcutStatus?.inputMonitoringGranted
+                      ? onRefreshShortcut
+                      : onRequestInputMonitoring
+                  }
+                />
+              )}
             </div>
             <div className="permission-note">
               <Info size={15} />
@@ -223,6 +431,11 @@ export function Onboarding({
             {accessibilityError && (
               <div className="permission-error" role="alert">
                 {accessibilityError}
+              </div>
+            )}
+            {shortcutError && (
+              <div className="permission-error" role="alert">
+                {shortcutError}
               </div>
             )}
             <StepActions
@@ -373,24 +586,34 @@ export function Onboarding({
               icon={<Keyboard size={21} />}
               eyebrow="ONE LAST THING"
               title="Give the shortcut a try."
-              description="Spick records and transcribes locally, then keeps the words ready to copy from Today."
+              description={
+                usesOptionGesture
+                  ? "Tap once to start and once to finish, or hold Option while you talk."
+                  : "Hold your saved shortcut while you talk, then release to finish."
+              }
             />
             <div
-              className={`shortcut-practice ${shortcutPressed ? "shortcut-practice--pressed" : ""}`}
+              className={`shortcut-practice ${shortcutRecording ? "shortcut-practice--pressed" : ""}`}
+              aria-label="Shortcut practice"
             >
-              <span className="shortcut-practice__label">HOLD TO RECORD</span>
+              <span className="shortcut-practice__label">
+                {usesOptionGesture ? "TAP OR HOLD" : "HOLD TO RECORD"}
+              </span>
               <div className="shortcut-practice__keys">
                 <ShortcutKeys value={settings.hotkey} />
               </div>
               <div className="shortcut-practice__pulse">
                 <Mic2 size={22} />
               </div>
-              <strong>{shortcutPressed ? "Recording…" : "Try it here"}</strong>
-              <span>
-                {shortcutPressed
-                  ? "Say something, then let go"
-                  : "Hold Space to test the animation"}
-              </span>
+              <div
+                className="shortcut-practice__status"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <strong>{shortcutPracticeTitle}</strong>
+                <span>{shortcutPracticeHelp}</span>
+              </div>
             </div>
             <div className="ready-summary">
               <span>

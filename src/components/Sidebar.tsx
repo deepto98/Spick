@@ -3,7 +3,7 @@ import {
   BookOpenText,
   Boxes,
   ChevronRight,
-  Command,
+  Keyboard,
   Settings2,
   ShieldCheck,
 } from "lucide-react";
@@ -12,6 +12,7 @@ import { ShortcutKeys, SpickLogo } from "./Ui";
 
 interface SidebarProps {
   activeView: ViewId;
+  hotkey: string;
   onNavigate: (view: ViewId) => void;
 }
 
@@ -22,7 +23,7 @@ const navItems: Array<{ id: ViewId; label: string; icon: typeof BarChart3 }> = [
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
-export function Sidebar({ activeView, onNavigate }: SidebarProps) {
+export function Sidebar({ activeView, hotkey, onNavigate }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar__top">
@@ -56,11 +57,11 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
 
       <div className="shortcut-card">
         <div className="shortcut-card__icon">
-          <Command size={16} />
+          <Keyboard size={16} />
         </div>
         <div>
           <span>Dictation shortcut</span>
-          <ShortcutKeys value="⌘+⇧+Space" />
+          <ShortcutKeys value={hotkey} />
         </div>
       </div>
 

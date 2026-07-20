@@ -7,8 +7,13 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const LEGACY_SETTINGS_SCHEMA_VERSION: u32 = 1;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub(crate) const OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
+#[cfg(target_os = "macos")]
+pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "Option";
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+pub(crate) const LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 pub const BUILTIN_READABLE_CLEANUP_MODEL: &str = "readable-v1";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,10 +172,27 @@ pub enum HudPosition {
     BottomRight,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HudPresentation {
+    #[default]
+    Expanded,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudCoordinates {
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HudSettings {
     pub position: HudPosition,
+    pub presentation: HudPresentation,
+    pub custom_position: Option<HudCoordinates>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,20 +228,33 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Upgrade settings written before cleanup required explicit consent.
+    /// Upgrade settings defaults without overwriting an explicit user choice.
     ///
     /// Schema v1 could contain a cleanup selection even though cleanup was not
-    /// connected. It therefore cannot prove the user opted into changing their
-    /// words. Migrating to v2 always disables cleanup while preserving every
-    /// unrelated setting.
+    /// connected, so that selection is disabled. Schema v2 also predates the
+    /// macOS Option default. Both migrations preserve custom accelerators and
+    /// every unrelated setting.
     pub(crate) fn migrate_legacy_schema(&mut self) -> bool {
-        if self.schema_version != LEGACY_SETTINGS_SCHEMA_VERSION {
-            return false;
+        match self.schema_version {
+            LEGACY_SETTINGS_SCHEMA_VERSION => {
+                self.cleanup_engine = None;
+                #[cfg(target_os = "macos")]
+                if self.push_to_talk_shortcut == LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT {
+                    self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
+                }
+                self.schema_version = SETTINGS_SCHEMA_VERSION;
+                true
+            }
+            OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION => {
+                #[cfg(target_os = "macos")]
+                if self.push_to_talk_shortcut == LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT {
+                    self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
+                }
+                self.schema_version = SETTINGS_SCHEMA_VERSION;
+                true
+            }
+            _ => false,
         }
-
-        self.schema_version = SETTINGS_SCHEMA_VERSION;
-        self.cleanup_engine = None;
-        true
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -352,7 +387,7 @@ mod tests {
         assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(
             settings.push_to_talk_shortcut,
-            "CommandOrControl+Shift+Space"
+            DEFAULT_PUSH_TO_TALK_SHORTCUT
         );
         assert_eq!(settings.language_policy, LanguagePolicy::Auto);
         assert_eq!(
@@ -447,5 +482,40 @@ mod tests {
         let mut current = AppSettings::default();
         assert!(!current.migrate_legacy_schema());
         assert_eq!(current, AppSettings::default());
+    }
+
+    #[test]
+    fn shortcut_default_migration_preserves_explicit_user_choices() {
+        let mut previous_default = AppSettings {
+            schema_version: OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
+            push_to_talk_shortcut: LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT.into(),
+            ..AppSettings::default()
+        };
+        assert!(previous_default.migrate_legacy_schema());
+        assert_eq!(previous_default.schema_version, SETTINGS_SCHEMA_VERSION);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            previous_default.push_to_talk_shortcut,
+            DEFAULT_PUSH_TO_TALK_SHORTCUT
+        );
+
+        let mut custom = AppSettings {
+            schema_version: OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
+            push_to_talk_shortcut: "CommandOrControl+Shift+D".into(),
+            ..AppSettings::default()
+        };
+        assert!(custom.migrate_legacy_schema());
+        assert_eq!(custom.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(custom.push_to_talk_shortcut, "CommandOrControl+Shift+D");
+
+        let mut current = AppSettings {
+            push_to_talk_shortcut: LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT.into(),
+            ..AppSettings::default()
+        };
+        assert!(!current.migrate_legacy_schema());
+        assert_eq!(
+            current.push_to_talk_shortcut,
+            LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT
+        );
     }
 }

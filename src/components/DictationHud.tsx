@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, Copy, LoaderCircle, Mic, X } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
+import {
+  AlertTriangle,
+  Check,
+  Copy,
+  GripVertical,
+  LoaderCircle,
+  Maximize2,
+  Mic,
+  Minimize2,
+  X,
+} from "lucide-react";
 import type { NativeDeliveryOutcome } from "../lib/nativeDictation";
 import type { HudState } from "../types";
 
@@ -13,6 +24,11 @@ interface DictationHudProps {
   disabled?: boolean;
   errorMessage?: string;
   delivery?: NativeDeliveryOutcome | null;
+  shortcut?: string;
+  compact?: boolean;
+  compactPending?: boolean;
+  onToggleCompact?: () => void;
+  onMovePointerDown?: () => void;
 }
 
 const sampleBars = [
@@ -29,6 +45,11 @@ export function DictationHud({
   disabled = false,
   errorMessage,
   delivery,
+  shortcut = "⌥",
+  compact = false,
+  compactPending = false,
+  onToggleCompact,
+  onMovePointerDown,
 }: DictationHudProps) {
   const [internalState, setInternalState] = useState<HudState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -73,11 +94,103 @@ export function DictationHud({
   const delivered = delivery?.status === "inserted";
   const deliveryCopy = describeHudDelivery(delivery);
 
-  if (state === "idle") {
+  const frame = (content: ReactNode) => (
+    <div
+      className={`dictation-hud-frame ${floating ? "dictation-hud-frame--floating" : ""}`}
+    >
+      {content}
+      {(onMovePointerDown || onToggleCompact) && (
+        <div className="hud-window-controls">
+          {onMovePointerDown && (
+            <button
+              type="button"
+              className="hud-window-control hud-window-control--move"
+              aria-label="Move dictation widget"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                onMovePointerDown();
+              }}
+            >
+              <GripVertical size={13} />
+            </button>
+          )}
+          {onToggleCompact && (
+            <button
+              type="button"
+              className="hud-window-control"
+              aria-label="Minimize dictation widget"
+              onClick={onToggleCompact}
+              disabled={compactPending}
+            >
+              <Minimize2 size={12} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    const compactBars = sampleBars.slice(4, 11);
     return (
+      <div
+        className={`dictation-hud-compact dictation-hud-compact--${state}`}
+        role="status"
+        aria-label={compactStatusLabel(state)}
+        aria-live="polite"
+      >
+        <button
+          type="button"
+          className="hud-compact-grip"
+          aria-label="Move dictation widget"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            onMovePointerDown?.();
+          }}
+        >
+          <GripVertical size={13} />
+        </button>
+        <div
+          className={`hud-compact-wave ${state === "listening" ? "hud-compact-wave--live" : ""}`}
+          aria-hidden="true"
+        >
+          {compactBars.map((height, index) => (
+            <i
+              key={index}
+              style={
+                {
+                  "--bar-height": `${
+                    state === "listening"
+                      ? Math.max(
+                          4,
+                          height * (0.22 + (audioLevel ?? 0.55) * 0.78),
+                        )
+                      : 4
+                  }px`,
+                  "--bar-delay": `${index * -55}ms`,
+                } as CSSProperties
+              }
+            />
+          ))}
+        </div>
+        <button
+          type="button"
+          className="hud-compact-expand"
+          aria-label="Expand dictation widget"
+          onClick={onToggleCompact}
+          disabled={compactPending || !onToggleCompact}
+        >
+          <Maximize2 size={11} />
+        </button>
+      </div>
+    );
+  }
+
+  if (state === "idle") {
+    return frame(
       <button
         type="button"
-        className={`dictation-hud dictation-hud--idle ${floating ? "dictation-hud--floating" : ""}`}
+        className="dictation-hud dictation-hud--idle"
         onClick={() => transitionTo("listening")}
         aria-label="Start recording"
         disabled={disabled}
@@ -86,20 +199,20 @@ export function DictationHud({
           <Mic size={17} />
         </span>
         <span className="hud-idle-copy">
-          <strong>Hold to record</strong>
-          <small>⌘ ⇧ Space</small>
+          <strong>Tap or hold to talk</strong>
+          <small>{shortcut}</small>
         </span>
-      </button>
+      </button>,
     );
   }
 
-  return (
+  return frame(
     <div
       className={`dictation-hud dictation-hud--${state} ${
         state === "success" && delivery && !delivered
           ? "dictation-hud--recovery"
           : ""
-      } ${floating ? "dictation-hud--floating" : ""}`}
+      }`}
       role="status"
       aria-live="polite"
       aria-busy={disabled}
@@ -130,7 +243,7 @@ export function DictationHud({
                         : Math.max(3, height * (0.22 + audioLevel * 0.78))
                     }px`,
                     "--bar-delay": `${index * -45}ms`,
-                  } as React.CSSProperties
+                  } as CSSProperties
                 }
               />
             ))}
@@ -201,8 +314,25 @@ export function DictationHud({
           </button>
         </>
       )}
-    </div>
+    </div>,
   );
+}
+
+function compactStatusLabel(state: HudState) {
+  switch (state) {
+    case "idle":
+      return "Spick is ready";
+    case "listening":
+      return "Spick is listening";
+    case "processing":
+      return "Spick is transcribing";
+    case "inserting":
+      return "Spick is typing";
+    case "success":
+      return "Dictation complete";
+    case "error":
+      return "Dictation failed";
+  }
 }
 
 function describeHudDelivery(delivery?: NativeDeliveryOutcome | null) {

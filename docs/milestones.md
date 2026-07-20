@@ -17,16 +17,17 @@ Exit criteria:
 
 Deliver the smallest complete path: hold a configurable global shortcut, capture microphone audio, show listening feedback, transcribe through one supported local `whisper.cpp` model, and insert final text into the control that was focused when dictation began.
 
-Begin compatibility testing with TextEdit, a Chromium browser, and VS Code. Permission onboarding covers microphone and Accessibility access.
+Begin compatibility testing with native and browser editors. Permission onboarding covers microphone, Accessibility, and Input Monitoring access.
 
 Current checkpoint:
 
-- The shortcut, non-activating HUD, bounded in-memory microphone capture, and cancellation path are working.
+- A bare-Option gesture supports tap/tap and hold/release modes without consuming normal Option chords. A temporary accelerator fallback remains available until Input Monitoring is granted.
+- The non-activating HUD, bounded in-memory microphone capture, and cancellation path are working. The HUD has persisted expanded/compact presentation and movable, monitor-clamped coordinates.
 - Curated models can be downloaded or cancelled, size-checked, SHA-256 verified, selected, removed, and loaded through a cached Metal-enabled `whisper.cpp` runtime.
 - Auto and fixed language settings are saved natively, and incompatible model/language combinations are rejected before recording.
 - The cleanup choice is saved natively and captured per session. As-transcribed output is the safe default; the opt-in local cleaner removes pause-marked English “um”, “uh”, and “erm” when punctuation repair is unambiguous, while preserving bare identifiers, quoted uses, and other languages.
-- Focused-field capture, live Accessibility permission handling, exact-target revalidation, secure/protected-field preflight, and structured copy recovery are working.
-- A universal InputMethodKit palette helper and versioned local protocol now exercise arm, one-use insert, disarm, expiry, exact readback, and ambiguous-delivery outcomes. The desktop and helper mutually authenticate live audit-token-bound code identities, with fail-closed signed and explicitly unsafe development build modes. The Rust client is feature-gated and normal builds still use explicit copy recovery while application compatibility and final release packaging work remain.
+- Focused-field capture retries transient app gaps, falls back through the focused UI element, and performs exact-target revalidation and secure/protected-field preflight. Debug builds replace only `AXSelectedText` and verify the exact inserted range; structured copy recovery remains available.
+- A universal InputMethodKit palette helper and versioned local protocol exercise arm, one-use insert, disarm, expiry, exact readback, and ambiguous-delivery outcomes. The desktop and helper mutually authenticate live audit-token-bound code identities. It remains the release candidate while application compatibility and final packaging work continue; the ordinary debug build uses the narrower Accessibility development path.
 - Final transcripts are kept in memory and shown on Today for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
 - A debug-only, fixed-fixture harness now measures exact controls without initializing audio, Whisper, settings, or the dashboard. Its offline browser bench, read-only preflight, exact target-app constraints, pre-capture evidence journal, and separately hashed visual review make runs repeatable without storing user content. The prototype still needs three signed hands-on passes per catalog case and a nested/notarized distribution path before it can become the default text-input primitive. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
 

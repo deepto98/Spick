@@ -68,8 +68,9 @@ A case needs three reviewed passes—cold, warm, warm—under the same clean rev
 Until those checks are complete:
 
 - the Cargo feature is off by default;
-- the product reports automatic insertion as unavailable;
-- transcripts remain available through the explicit copy recovery path; and
+- release builds report InputMethodKit insertion as unavailable;
+- ordinary debug builds may use verified `AXSelectedText` replacement for development testing;
+- transcripts remain available through the explicit copy recovery path when a control rejects insertion; and
 - no clipboard fallback runs silently.
 
 ## Development checks

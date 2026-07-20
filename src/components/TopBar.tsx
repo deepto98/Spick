@@ -1,4 +1,4 @@
-import { Bell, CircleHelp, Command, PanelLeft } from "lucide-react";
+import { Bell, CircleHelp, Keyboard, PanelLeft } from "lucide-react";
 import type { ViewId } from "../types";
 import { ShortcutKeys } from "./Ui";
 
@@ -11,10 +11,11 @@ const viewLabels: Record<ViewId, string> = {
 
 interface TopBarProps {
   activeView: ViewId;
+  hotkey: string;
   onOpenNav: () => void;
 }
 
-export function TopBar({ activeView, onOpenNav }: TopBarProps) {
+export function TopBar({ activeView, hotkey, onOpenNav }: TopBarProps) {
   return (
     <header className="topbar">
       <button
@@ -32,9 +33,9 @@ export function TopBar({ activeView, onOpenNav }: TopBarProps) {
       </div>
       <div className="topbar__actions">
         <div className="topbar__hint">
-          <Command size={14} />
-          <span>Hold to record</span>
-          <ShortcutKeys value="⌘+⇧+Space" />
+          <Keyboard size={14} />
+          <span>{hotkey === "⌥" ? "Tap or hold" : "Hold to speak"}</span>
+          <ShortcutKeys value={hotkey} />
         </div>
         <button type="button" className="icon-button" aria-label="Help">
           <CircleHelp size={18} />

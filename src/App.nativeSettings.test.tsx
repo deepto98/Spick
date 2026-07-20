@@ -50,6 +50,21 @@ vi.mock("./hooks/useAccessibilityPermission", () => ({
   }),
 }));
 
+vi.mock("./hooks/useShortcutStatus", () => ({
+  useShortcutStatus: () => ({
+    error: null,
+    pending: false,
+    refresh: vi.fn(),
+    request: vi.fn(),
+    status: {
+      optionSelected: true,
+      optionListenerActive: true,
+      inputMonitoringGranted: true,
+      fallbackShortcut: null,
+    },
+  }),
+}));
+
 vi.mock("./hooks/useAudioLevel", () => ({
   useAudioLevel: () => null,
 }));
@@ -66,8 +81,8 @@ vi.mock("./lib/nativeModels", () => ({
 }));
 
 const baseSettings: NativeAppSettings = {
-  schemaVersion: 2,
-  pushToTalkShortcut: "CommandOrControl+Shift+Space",
+  schemaVersion: 3,
+  pushToTalkShortcut: "Option",
   languagePolicy: { mode: "auto" },
   transcriptionEngine: {
     provider: "whisperCpp",
@@ -75,7 +90,11 @@ const baseSettings: NativeAppSettings = {
     location: "local",
   },
   cleanupEngine: null,
-  hud: { position: "bottomRight" },
+  hud: {
+    position: "bottomRight",
+    presentation: "expanded",
+    customPosition: null,
+  },
   allowCloudFallback: false,
   saveTranscriptHistory: false,
 };
@@ -113,6 +132,16 @@ async function openLanguageSettings(expectedLanguage = "Auto-detect") {
   );
 }
 
+async function openDictationSettings() {
+  render(<App />);
+  await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+  await waitFor(() =>
+    expect(screen.getAllByLabelText("Shortcut ⌥").length).toBeGreaterThan(1),
+  );
+}
+
 describe("native language and cleanup persistence", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -139,7 +168,7 @@ describe("native language and cleanup persistence", () => {
       expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
     );
     expect(language).toHaveValue("Auto-detect");
-    expect(screen.getByText("Saving…")).toBeInTheDocument();
+    expect(screen.getAllByText("Saving…").length).toBeGreaterThan(0);
 
     await act(async () => {
       save.resolve(settingsWith({ mode: "fixed", language: "en" }, false));
@@ -176,6 +205,76 @@ describe("native language and cleanup persistence", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("disk is read-only"),
     );
     expect(asTranscribed).toHaveClass("active");
+    expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
+  });
+
+  it("publishes a custom shortcut only after native acknowledgement", async () => {
+    const save = deferred<NativeAppSettings>();
+    nativeMocks.updateSettings.mockReturnValueOnce(save.promise);
+    await openDictationSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+    fireEvent.keyDown(window, {
+      code: "KeyD",
+      key: "D",
+      metaKey: true,
+      shiftKey: true,
+    });
+
+    await waitFor(() =>
+      expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
+    );
+    expect(nativeMocks.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      pushToTalkShortcut: "Command+Shift+KeyD",
+    });
+    expect(screen.getAllByText("Saving…").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Shortcut ⌘+⇧+D")).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText("Shortcut ⌥").length).toBeGreaterThan(1);
+
+    await act(async () => {
+      save.resolve({
+        ...baseSettings,
+        pushToTalkShortcut: "Command+Shift+KeyD",
+      });
+      await save.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("Shortcut ⌘+⇧+D").length).toBeGreaterThan(
+        1,
+      ),
+    );
+    expect(screen.queryByLabelText("Shortcut ⌥")).not.toBeInTheDocument();
+    expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
+  });
+
+  it("keeps the previous shortcut and shows a native save error", async () => {
+    const save = deferred<NativeAppSettings>();
+    nativeMocks.updateSettings.mockReturnValueOnce(save.promise);
+    await openDictationSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "Space",
+      key: " ",
+    });
+    await waitFor(() =>
+      expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
+    );
+
+    await act(async () => {
+      save.reject(new Error("that shortcut is already in use"));
+      await save.promise.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "that shortcut is already in use",
+      ),
+    );
+    expect(screen.queryByLabelText("Shortcut ⌥+Space")).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText("Shortcut ⌥").length).toBeGreaterThan(1);
     expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
   });
 
@@ -309,6 +408,25 @@ describe("native language and cleanup persistence", () => {
     expect(screen.getByRole("button", { name: /^EN English$/ })).toHaveClass(
       "active",
     );
+  });
+
+  it("uses the saved custom shortcut when setup is opened again", async () => {
+    window.localStorage.removeItem("spick-onboarding-complete");
+    nativeMocks.getSettings.mockResolvedValue({
+      ...baseSettings,
+      pushToTalkShortcut: "Command+Shift+KeyD",
+    });
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Hold your saved shortcut and speak/),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/Tap or hold Option and speak/),
+    ).not.toBeInTheDocument();
   });
 
   it("blocks personalization until saved settings can be loaded", async () => {

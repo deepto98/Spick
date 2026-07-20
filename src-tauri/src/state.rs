@@ -12,7 +12,10 @@ use tempfile::Builder as TempFileBuilder;
 
 use crate::{
     audio::AudioCaptureController,
-    domain::{AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION},
+    domain::{
+        AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
+        SETTINGS_SCHEMA_VERSION,
+    },
     engines::{DictationTranscript, WhisperCppRuntime},
     model_store::ModelStore,
     platform::{CapturedTextTarget, TextTargetController},
@@ -34,6 +37,19 @@ pub struct AppState {
     /// Serializes model selection/removal with settings writes so an active
     /// model cannot disappear between verification and persistence.
     pub model_configuration: Mutex<()>,
+    /// Serializes every settings transaction without blocking dictation.
+    ///
+    /// Shortcut replacement can stop and join the Option gesture worker. That
+    /// worker reads settings while starting a session, so this lock must stay
+    /// separate from both `settings` and `model_configuration` and must never
+    /// be acquired by the dictation path. Settings writers acquire locks in
+    /// this order: `settings_update`, optional `model_configuration`, then
+    /// `settings`.
+    pub settings_update: Mutex<()>,
+    /// Owns the fallback HUD's click-through protection. A lease prevents a
+    /// delayed worker from an older session from making a newer session's HUD
+    /// interactive and stealing its captured text focus.
+    pub hud_target_protection: Mutex<HudTargetProtection>,
     transcripts: Mutex<TranscriptStore>,
     settings_path: PathBuf,
 }
@@ -41,6 +57,47 @@ pub struct AppState {
 pub struct TranscriptionOperation {
     pub cancellation: Arc<AtomicBool>,
     pub target: Option<CapturedTextTarget>,
+    pub hud_target_lease: Option<HudTargetProtectionLease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudTargetProtectionLease {
+    session_id: String,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct HudTargetProtection {
+    next_generation: u64,
+    owner: Option<HudTargetProtectionLease>,
+}
+
+impl HudTargetProtection {
+    pub fn claim(&mut self, session_id: String) -> HudTargetProtectionLease {
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let lease = HudTargetProtectionLease {
+            session_id,
+            generation: self.next_generation,
+        };
+        self.owner = Some(lease.clone());
+        lease
+    }
+
+    pub fn is_current(&self, lease: &HudTargetProtectionLease) -> bool {
+        self.owner.as_ref() == Some(lease)
+    }
+
+    pub fn has_owner(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    pub fn release_if_current(&mut self, lease: &HudTargetProtectionLease) -> bool {
+        if !self.is_current(lease) {
+            return false;
+        }
+        self.owner = None;
+        true
+    }
 }
 
 impl AppState {
@@ -60,6 +117,8 @@ impl AppState {
             whisper: WhisperCppRuntime::default(),
             text_targets: TextTargetController::default(),
             model_configuration: Mutex::new(()),
+            settings_update: Mutex::new(()),
+            hud_target_protection: Mutex::new(HudTargetProtection::default()),
             transcripts: Mutex::new(TranscriptStore::default()),
             settings_path,
         })
@@ -80,10 +139,11 @@ impl AppState {
         &self,
         session_id: String,
         target: Option<CapturedTextTarget>,
+        hud_target_lease: Option<HudTargetProtectionLease>,
     ) -> Result<Arc<AtomicBool>, String> {
         self.transcripts
             .lock()
-            .map(|mut transcripts| transcripts.begin(session_id, target))
+            .map(|mut transcripts| transcripts.begin(session_id, target, hud_target_lease))
             .map_err(|_| "transcript store is unavailable".into())
     }
 
@@ -124,6 +184,7 @@ impl AppState {
                     .map(|active| TranscriptionOperation {
                         cancellation: Arc::clone(&active.cancellation),
                         target: active.target.clone(),
+                        hud_target_lease: active.hud_target_lease.clone(),
                     })
             })
             .map_err(|_| "transcript store is unavailable".into())
@@ -161,10 +222,16 @@ struct ActiveTranscription {
     session_id: String,
     cancellation: Arc<AtomicBool>,
     target: Option<CapturedTextTarget>,
+    hud_target_lease: Option<HudTargetProtectionLease>,
 }
 
 impl TranscriptStore {
-    fn begin(&mut self, session_id: String, target: Option<CapturedTextTarget>) -> Arc<AtomicBool> {
+    fn begin(
+        &mut self,
+        session_id: String,
+        target: Option<CapturedTextTarget>,
+        hud_target_lease: Option<HudTargetProtectionLease>,
+    ) -> Arc<AtomicBool> {
         if let Some(active) = self.active.take() {
             active.cancellation.store(true, Ordering::Relaxed);
         }
@@ -173,6 +240,7 @@ impl TranscriptStore {
             session_id,
             cancellation: Arc::clone(&cancellation),
             target,
+            hud_target_lease,
         });
         self.latest = None;
         cancellation
@@ -320,10 +388,13 @@ struct ParsedSettings {
 fn parse_settings_document(bytes: &[u8]) -> Result<ParsedSettings, SettingsParseError> {
     let mut settings: AppSettings = serde_json::from_slice(bytes)
         .map_err(|error| SettingsParseError::InvalidJson(error.to_string()))?;
-    let migrated_legacy_schema = if settings.schema_version == LEGACY_SETTINGS_SCHEMA_VERSION {
+    let migrated_legacy_schema = if matches!(
+        settings.schema_version,
+        LEGACY_SETTINGS_SCHEMA_VERSION
+            | OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION
+            | SETTINGS_SCHEMA_VERSION
+    ) {
         settings.migrate_legacy_schema()
-    } else if settings.schema_version == SETTINGS_SCHEMA_VERSION {
-        false
     } else {
         return Err(SettingsParseError::UnsupportedSchema(
             settings.schema_version,
@@ -527,6 +598,7 @@ mod tests {
             )),
             hud: HudSettings {
                 position: HudPosition::BottomRight,
+                ..HudSettings::default()
             },
             allow_cloud_fallback: true,
             save_transcript_history: true,
@@ -576,19 +648,27 @@ mod tests {
     #[test]
     fn explicit_schema_v2_builtin_cleanup_remains_selected() {
         let (_directory, path) = test_path();
-        let expected = AppSettings {
+        let previous = AppSettings {
+            schema_version: OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
+            push_to_talk_shortcut: "Control+Option+D".into(),
             cleanup_engine: Some(EngineConfig::local(
                 EngineProvider::BuiltIn,
                 BUILTIN_READABLE_CLEANUP_MODEL,
             )),
             ..AppSettings::default()
         };
-        fs::write(&path, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+        let original = serde_json::to_vec_pretty(&previous).unwrap();
+        fs::write(&path, &original).unwrap();
 
         let state = AppState::load(path.clone()).unwrap();
+        let expected = AppSettings {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            ..previous
+        };
 
         assert_eq!(state.settings_snapshot().unwrap(), expected);
-        assert!(!backup_path(&path).exists());
+        assert_eq!(parse_settings(&fs::read(&path).unwrap()).unwrap(), expected);
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
     }
 
     #[test]
@@ -704,7 +784,7 @@ mod tests {
     #[test]
     fn transcript_store_rejects_cancelled_and_stale_results() {
         let mut store = TranscriptStore::default();
-        let cancellation = store.begin("session-a".into(), None);
+        let cancellation = store.begin("session-a".into(), None, None);
         assert!(!cancellation.load(Ordering::Relaxed));
         assert!(!store.complete(transcript("session-b", "stale")));
 
@@ -713,12 +793,24 @@ mod tests {
         assert!(!store.complete(transcript("session-a", "cancelled")));
         assert!(store.latest.is_none());
 
-        store.begin("session-c".into(), None);
+        store.begin("session-c".into(), None, None);
         assert!(store.complete(transcript("session-c", "kept")));
         assert_eq!(store.latest.as_ref().unwrap().transcript.text, "kept");
 
-        store.begin("session-d".into(), None);
+        store.begin("session-d".into(), None, None);
         assert!(store.latest.is_none());
+    }
+
+    #[test]
+    fn stale_hud_lease_cannot_release_a_newer_session() {
+        let mut protection = HudTargetProtection::default();
+        let old = protection.claim("session-a".into());
+        let current = protection.claim("session-b".into());
+
+        assert!(!protection.release_if_current(&old));
+        assert!(protection.is_current(&current));
+        assert!(protection.release_if_current(&current));
+        assert!(!protection.has_owner());
     }
 
     fn transcript(session_id: &str, text: &str) -> DictationTranscript {

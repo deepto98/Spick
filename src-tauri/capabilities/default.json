@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal event capabilities for the Spick dashboard",
-  "windows": ["main"],
+  "description": "Minimal event capabilities for the Spick dashboard and HUD",
+  "windows": ["main", "hud"],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

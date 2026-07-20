@@ -5,6 +5,7 @@ import {
   languagePolicyBadge,
   languagePolicyForName,
   languagePolicyName,
+  shortcutDisplayName,
 } from "./nativeSettings";
 
 describe("native language settings", () => {
@@ -25,6 +26,17 @@ describe("native language settings", () => {
       "BN",
     );
     expect(languagePolicyBadge({ mode: "auto" })).toBe("AUTO");
+  });
+});
+
+describe("native shortcut settings", () => {
+  it("renders native accelerator names as compact Mac keys", () => {
+    expect(shortcutDisplayName("Option")).toBe("⌥");
+    expect(shortcutDisplayName("CommandOrControl+Shift+Space")).toBe(
+      "⌘+⇧+Space",
+    );
+    expect(shortcutDisplayName("Command+Option+KeyD")).toBe("⌘+⌥+D");
+    expect(shortcutDisplayName("Control+ArrowUp")).toBe("⌃+↑");
   });
 });
 

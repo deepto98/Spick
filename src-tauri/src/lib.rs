@@ -48,6 +48,11 @@ pub fn run() {
         }))
     };
 
+    // The dictation HUD is converted once to a nonactivating NSPanel. Register
+    // the native handle store before setup creates the HUD window.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
     let app = builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -105,7 +110,7 @@ pub fn run() {
 
             // A missing monitor or an unavailable global binding should not make
             // the settings window unusable. Both can be corrected after launch.
-            if let Err(error) = hud::create(app.handle(), settings.hud.position) {
+            if let Err(error) = hud::create(app.handle(), &settings.hud) {
                 eprintln!("{error}");
             }
             if platform::current_platform_capabilities().supports_global_shortcut {
@@ -125,6 +130,11 @@ pub fn run() {
             commands::update_settings,
             commands::get_dictation_session,
             commands::get_audio_capture_status,
+            commands::get_shortcut_status,
+            commands::request_input_monitoring_permission,
+            commands::get_hud_settings,
+            commands::set_hud_presentation,
+            commands::start_hud_drag,
             commands::get_last_transcript,
             commands::list_local_models,
             commands::install_local_model,

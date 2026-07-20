@@ -1,10 +1,10 @@
 # Spick
 
-Spick is a macOS-first desktop dictation app in active development. The idea is simple: hold a shortcut, speak, and put the result into the field you were already using. The current build records and transcribes locally, offers an opt-in trim for a few obvious English hesitation words, tracks the field where the shortcut began, and keeps the result ready for an explicit copy.
+Spick is a macOS-first desktop dictation app in active development. Tap Option once to start and once more to stop, or hold Option while speaking. The current development build records and transcribes locally, offers an opt-in trim for a few obvious English hesitation words, tracks the field where dictation began, and inserts the result into compatible controls.
 
 The app combines a Tauri 2 shell, a Rust application core, and a React/TypeScript interface. The native core owns the global shortcut, ephemeral microphone capture, verified model downloads, in-process `whisper.cpp` transcription, and guarded macOS field tracking. Dashboard statistics still use clearly labelled development data.
 
-> The shortcut path now works through local transcription and copy recovery for accessible macOS text fields and text areas. Automatic cross-app paste is deliberately off: macOS Accessibility does not offer an atomic replace-selection operation, and replacing a field’s whole value could erase a keystroke that arrives during the handoff.
+> Development builds use a narrow Accessibility operation that replaces only the captured selection and then reads the inserted UTF-16 range back. They never replace a field’s whole value and never retry after a write may have occurred. Unsupported controls keep the transcript available for an explicit copy.
 
 ## Prerequisites
 
@@ -25,6 +25,8 @@ npm run tauri dev
 For frontend-only work, use `npm run dev`. The browser build cannot exercise Tauri commands or native window behavior.
 
 Open **Engines** in the desktop build to download and select a local model. Downloads can be cancelled and are written to app-local data only after the declared byte length and SHA-256 both match.
+
+The Option gesture needs macOS **Input Monitoring** in addition to microphone and Accessibility access. Spick shows a temporary `⌘ ⇧ Space` fallback until Input Monitoring is allowed; returning to Spick activates Option without requiring a rebuild. Option-letter, Option-click, dual-Option, and other chords are passed through without starting dictation.
 
 Run the project checks before committing:
 
@@ -63,7 +65,7 @@ Read [the architecture](docs/architecture.md) for the pipeline, native seams, la
 - Logs and statistics omit dictated text, raw audio, clipboard contents, and credentials by default.
 - Secure fields and stale focus targets must fail safely instead of receiving inserted text.
 
-The current Mac path enforces these rules for local transcription and target tracking. It does not mutate another application yet. Future cloud and insertion paths must meet the same bar before they are enabled.
+The current development path enforces these rules for local transcription, target tracking, and selection-only Accessibility insertion. Future cloud and release insertion paths must meet the same bar before they are enabled.
 
 ## Current limitations
 
@@ -72,9 +74,9 @@ The current Mac path enforces these rules for local transcription and target tra
 - Cloud provider adapters and API-key storage are not implemented.
 - Shortcut dictation captures an accessible Mac text field or text area before recording and checks the exact application, element, selection, protection state, and change notifications again after transcription.
 - Password fields and controls marked as protected content are rejected before the microphone starts. Accessibility permission is required for shortcut-driven field tracking.
-- Automatic insertion is not enabled in the normal build. A guarded InputMethodKit prototype can arm one exact input session, consume it once, and read the inserted text back before reporting success. The desktop and helper now mutually verify live, hardened, same-team code signatures; the feature remains gated until the compatibility matrix is measured and the signed helper is nested into a notarized release. A valid transcript otherwise stays in memory on Today until the next recording, where the user can copy it explicitly.
+- Debug builds attempt selection-only Accessibility insertion and confirm the exact inserted range before reporting success. If a setter may have written but cannot be confirmed, delivery is indeterminate and is never retried. Release builds still keep automatic insertion gated behind the authenticated InputMethodKit prototype and compatibility work. A recoverable transcript remains in memory on Today when a control is unsupported.
 - macOS is the first validation target; Windows and Linux native integrations come later.
-- The transparent HUD currently uses Tauri's macOS private API and therefore targets direct signed/notarized distribution; an App Store build would need an App-Store-safe window treatment.
+- The HUD can collapse to a `56×116` vertical live-wave bar. Its physical position and presentation persist and are clamped when monitors or DPI layouts change. On macOS it is converted once to a true nonactivating `NSPanel`; the pinned community integration, fail-closed fallback, and release risks are documented in [docs/macos-hud.md](docs/macos-hud.md).
 - Development/release signing gates for the input-method pair are in place. Final nested packaging, notarization, updates, and production accessibility review remain future work.
 
 The input-method design, development commands, and remaining release gates are documented in [docs/input-method.md](docs/input-method.md). A guarded paste experiment may follow, but it will stay clearly labelled best-effort: neither event delivery nor clipboard restoration is atomic on macOS.

@@ -1331,11 +1331,110 @@ p {
   }
 }
 
-.dictation-hud--floating {
+.dictation-hud-frame {
+  position: relative;
+  display: inline-flex;
+}
+
+.dictation-hud-frame--floating {
   position: fixed;
   z-index: 40;
   right: 24px;
   bottom: 24px;
+}
+
+.hud-window-controls {
+  position: absolute;
+  top: -19px;
+  right: 5px;
+  display: flex;
+  gap: 3px;
+}
+
+.hud-window-control,
+.hud-compact-grip,
+.hud-compact-expand {
+  display: grid;
+  padding: 0;
+  place-items: center;
+  color: #aaa59b;
+  background: rgba(33, 31, 27, 0.88);
+  border: 1px solid rgba(255, 244, 227, 0.12);
+}
+
+.hud-window-control {
+  width: 24px;
+  height: 18px;
+  border-radius: 6px;
+}
+
+.hud-window-control--move,
+.hud-compact-grip {
+  cursor: grab;
+}
+
+.hud-window-control--move:active,
+.hud-compact-grip:active {
+  cursor: grabbing;
+}
+
+.dictation-hud-compact {
+  display: grid;
+  width: 42px;
+  height: 104px;
+  grid-template-rows: 24px 1fr 24px;
+  place-items: center;
+  color: #fff9ef;
+  background: #211f1b;
+  border: 1px solid rgba(255, 244, 227, 0.14);
+  border-radius: 20px;
+  box-shadow: var(--shadow-hud);
+}
+
+.hud-compact-grip,
+.hud-compact-expand {
+  width: 24px;
+  height: 20px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 7px;
+}
+
+.hud-compact-wave {
+  display: flex;
+  width: 26px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.hud-compact-wave i {
+  width: 2px;
+  height: var(--bar-height);
+  min-height: 3px;
+  background: #8e877b;
+  border-radius: 2px;
+  transition: height 70ms linear;
+}
+
+.hud-compact-wave--live i {
+  background: #d98260;
+  animation: waveform 720ms ease-in-out var(--bar-delay) infinite alternate;
+}
+
+.dictation-hud-compact--processing .hud-compact-wave i,
+.dictation-hud-compact--inserting .hud-compact-wave i {
+  background: #efb99f;
+  animation: soft-pulse 1.2s ease-in-out infinite;
+}
+
+.dictation-hud-compact--success .hud-compact-wave i {
+  background: #7fd3af;
+}
+
+.dictation-hud-compact--error .hud-compact-wave i {
+  background: #ef9a9a;
 }
 
 /* First-run setup */
@@ -1990,17 +2089,21 @@ p {
   }
 }
 
-.shortcut-practice > strong {
+.shortcut-practice__status {
   position: relative;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+}
+
+.shortcut-practice__status > strong {
   margin-top: 3px;
   font-size: 12px;
   font-weight: 650;
 }
 
-.shortcut-practice > span:last-child {
-  position: relative;
-  z-index: 1;
+.shortcut-practice__status > span {
   margin-top: 5px;
   color: #909198;
   font-size: 9px;
@@ -3103,13 +3206,52 @@ p {
 .setting-block > .field {
   width: 100%;
 }
+.shortcut-control {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+.shortcut-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  background: #f3eee7;
+  border: 1px solid #e2d8cc;
+  border-radius: 9px;
+}
+.shortcut-mode button {
+  min-height: 27px;
+  padding: 4px 8px;
+  color: #777169;
+  font: inherit;
+  font-size: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.shortcut-mode button.active {
+  color: var(--accent-text);
+  background: #fffaf4;
+  border-color: var(--accent-border);
+  box-shadow: 0 1px 3px rgba(79, 55, 39, 0.08);
+}
+.shortcut-mode button:disabled,
+.shortcut-recorder:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .shortcut-recorder {
   display: flex;
+  width: 100%;
   min-height: 48px;
   align-items: center;
   justify-content: space-between;
   padding: 7px 10px;
   color: #5f6068;
+  font: inherit;
+  cursor: pointer;
   background: #f8f8f6;
   border: 1px solid #dededb;
   border-radius: 9px;
@@ -3140,6 +3282,15 @@ p {
   background: var(--accent);
   border-radius: 50%;
   animation: soft-pulse 1s infinite;
+}
+.shortcut-capture-note {
+  min-height: 12px;
+  color: #81786e;
+  font-size: 7.5px;
+  line-height: 1.45;
+}
+.shortcut-capture-note--error {
+  color: #8a452e;
 }
 .fixed-value {
   display: inline-flex;
@@ -3278,11 +3429,14 @@ p {
 .hud-window-surface {
   position: fixed;
   inset: 0;
+  display: grid;
+  place-items: center;
   background: transparent;
 }
-.hud-window-surface .dictation-hud--floating {
-  right: 10px;
-  bottom: 10px;
+.hud-window-surface .dictation-hud-frame--floating {
+  position: relative;
+  right: auto;
+  bottom: auto;
 }
 .native-error-toast {
   position: fixed;

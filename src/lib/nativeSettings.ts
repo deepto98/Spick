@@ -23,9 +23,15 @@ export interface NativeAppSettings {
   languagePolicy: NativeLanguagePolicy;
   transcriptionEngine: NativeEngineConfig;
   cleanupEngine: NativeEngineConfig | null;
-  hud: { position: "bottomLeft" | "bottomCenter" | "bottomRight" };
+  hud: NativeHudSettings;
   allowCloudFallback: boolean;
   saveTranscriptHistory: boolean;
+}
+
+export interface NativeHudSettings {
+  position: "bottomLeft" | "bottomCenter" | "bottomRight";
+  presentation: "expanded" | "compact";
+  customPosition: { x: number; y: number } | null;
 }
 
 export type NativeCleanupLevel = "Verbatim" | "Clean";
@@ -59,6 +65,43 @@ export function getNativeSettings() {
 
 export function updateNativeSettings(settings: NativeAppSettings) {
   return invoke<NativeAppSettings>("update_settings", { settings });
+}
+
+export function shortcutDisplayName(shortcut: string) {
+  return shortcut
+    .split("+")
+    .map((token) => {
+      const normalized = token.trim();
+      const upper = normalized.toUpperCase();
+      const modifier = {
+        ALT: "⌥",
+        CMD: "⌘",
+        COMMAND: "⌘",
+        COMMANDORCONTROL: "⌘",
+        COMMANDORCTRL: "⌘",
+        CONTROL: "⌃",
+        CTRL: "⌃",
+        OPTION: "⌥",
+        SHIFT: "⇧",
+        SUPER: "⌘",
+      }[upper];
+      if (modifier) return modifier;
+      if (/^KEY[A-Z]$/.test(upper)) return upper.slice(3);
+      if (/^DIGIT[0-9]$/.test(upper)) return upper.slice(5);
+      return (
+        {
+          ARROWDOWN: "↓",
+          ARROWLEFT: "←",
+          ARROWRIGHT: "→",
+          ARROWUP: "↑",
+          BACKSPACE: "⌫",
+          ENTER: "Return",
+          SPACE: "Space",
+          TAB: "⇥",
+        }[upper] ?? normalized
+      );
+    })
+    .join("+");
 }
 
 export function languagePolicyForName(

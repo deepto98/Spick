@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AppWindow,
   BellRing,
@@ -20,7 +20,12 @@ import {
 } from "lucide-react";
 import type { AppSettings } from "../types";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
-import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
+import type { NativeShortcutStatus } from "../lib/nativeShortcut";
+import { captureMacShortcut } from "../lib/shortcutCapture";
+import {
+  shortcutDisplayName,
+  SPEECH_LANGUAGE_OPTIONS,
+} from "../lib/nativeSettings";
 import {
   PageHeader,
   SelectField,
@@ -34,11 +39,17 @@ interface SettingsViewProps {
   accessibilityStatus: AccessibilityPermissionStatus | null;
   accessibilityPending: boolean;
   accessibilityError?: string;
+  shortcutStatus: NativeShortcutStatus | null;
+  shortcutPending: boolean;
+  shortcutError?: string;
   settingsSaving: boolean;
   nativeError?: string;
   onChange: (next: AppSettings) => void;
+  onShortcutChange: (shortcut: string) => void;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
+  onRefreshShortcut: () => void;
+  onRequestInputMonitoring: () => void;
   onRestartOnboarding: () => void;
 }
 
@@ -70,29 +81,90 @@ function accessibilityPermissionDescription(
   }
 }
 
+function optionShortcutDescription(status: NativeShortcutStatus | null) {
+  if (status?.optionListenerActive) {
+    return "Tap Option to start and stop, or hold it while you speak.";
+  }
+  if (status?.inputMonitoringGranted) {
+    return "Input Monitoring is allowed. Activate Option to replace the temporary fallback.";
+  }
+  if (status?.fallbackShortcut) {
+    return `Allow Input Monitoring for Option. Until then, ${shortcutDisplayName(status.fallbackShortcut)} still works.`;
+  }
+  return "Tap Option to start and stop, or hold it while you speak.";
+}
+
 export function SettingsView({
   settings,
   accessibilityStatus,
   accessibilityPending,
   accessibilityError,
+  shortcutStatus,
+  shortcutPending,
+  shortcutError,
   settingsSaving,
   nativeError,
   onChange,
+  onShortcutChange,
   onRequestAccessibility,
   onRefreshAccessibility,
+  onRefreshShortcut,
+  onRequestInputMonitoring,
   onRestartOnboarding,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("general");
   const [recordingShortcut, setRecordingShortcut] = useState(false);
+  const [shortcutCaptureError, setShortcutCaptureError] = useState<
+    string | null
+  >(null);
+  const usesOptionGesture = settings.hotkey === "⌥";
+  const shortcutControlsDisabled = settingsSaving || shortcutPending;
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
-  const recordShortcut = () => {
-    setRecordingShortcut(true);
-    window.setTimeout(() => {
-      update("hotkey", settings.hotkey === "⌘+⇧+Space" ? "⌘+⇧+D" : "⌘+⇧+Space");
+  useEffect(() => {
+    if (!recordingShortcut) return;
+
+    const capture = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const result = captureMacShortcut(event);
+      if (result.kind === "waiting") return;
+      if (result.kind === "cancelled") {
+        setRecordingShortcut(false);
+        setShortcutCaptureError(null);
+        return;
+      }
+      if (result.kind === "invalid") {
+        setShortcutCaptureError(result.message);
+        return;
+      }
+
       setRecordingShortcut(false);
-    }, 900);
+      setShortcutCaptureError(null);
+      onShortcutChange(result.shortcut);
+    };
+
+    window.addEventListener("keydown", capture, true);
+    return () => window.removeEventListener("keydown", capture, true);
+  }, [onShortcutChange, recordingShortcut]);
+
+  const beginShortcutCapture = () => {
+    if (shortcutControlsDisabled) return;
+    setShortcutCaptureError(null);
+    setRecordingShortcut(true);
+  };
+
+  const useOptionShortcut = () => {
+    setRecordingShortcut(false);
+    setShortcutCaptureError(null);
+    if (!usesOptionGesture) onShortcutChange("Option");
+  };
+
+  const changeSection = (next: SettingsSection) => {
+    setRecordingShortcut(false);
+    setShortcutCaptureError(null);
+    setSection(next);
   };
 
   return (
@@ -123,6 +195,13 @@ export function SettingsView({
         </div>
       )}
 
+      {shortcutError && (
+        <div className="engine-inline-error" role="alert">
+          <strong>Couldn’t check the Option shortcut</strong>
+          <span>{shortcutError}</span>
+        </div>
+      )}
+
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">
           {sectionItems.map((item) => {
@@ -132,7 +211,7 @@ export function SettingsView({
                 type="button"
                 key={item.id}
                 className={section === item.id ? "active" : ""}
-                onClick={() => setSection(item.id)}
+                onClick={() => changeSection(item.id)}
               >
                 <Icon size={16} />
                 <span>{item.label}</span>
@@ -225,22 +304,69 @@ export function SettingsView({
                       <p>The shortcut Spick listens for across your Mac.</p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className={`shortcut-recorder ${recordingShortcut ? "recording" : ""}`}
-                    onClick={recordShortcut}
-                  >
-                    {recordingShortcut ? (
-                      <span>
-                        <i /> Press your shortcut…
-                      </span>
-                    ) : (
-                      <>
-                        <ShortcutKeys value={settings.hotkey} />
-                        <small>Click to change</small>
-                      </>
+                  <div className="shortcut-control">
+                    <div
+                      className="shortcut-mode"
+                      role="group"
+                      aria-label="Shortcut type"
+                    >
+                      <button
+                        type="button"
+                        className={usesOptionGesture ? "active" : ""}
+                        aria-pressed={usesOptionGesture}
+                        disabled={shortcutControlsDisabled}
+                        onClick={useOptionShortcut}
+                      >
+                        Option
+                      </button>
+                      <button
+                        type="button"
+                        className={!usesOptionGesture ? "active" : ""}
+                        aria-pressed={!usesOptionGesture}
+                        disabled={shortcutControlsDisabled}
+                        onClick={beginShortcutCapture}
+                      >
+                        Custom
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className={`shortcut-recorder ${recordingShortcut ? "recording" : ""}`}
+                      aria-label={
+                        recordingShortcut
+                          ? "Recording shortcut"
+                          : "Record a custom shortcut"
+                      }
+                      disabled={shortcutControlsDisabled}
+                      onClick={beginShortcutCapture}
+                    >
+                      {recordingShortcut ? (
+                        <span>
+                          <i /> Press your shortcut…
+                        </span>
+                      ) : (
+                        <>
+                          <ShortcutKeys value={settings.hotkey} />
+                          <small>
+                            {settingsSaving
+                              ? "Saving…"
+                              : usesOptionGesture
+                                ? "Tap once or hold"
+                                : "Click to change"}
+                          </small>
+                        </>
+                      )}
+                    </button>
+                    {(recordingShortcut || shortcutCaptureError) && (
+                      <small
+                        className={`shortcut-capture-note ${shortcutCaptureError ? "shortcut-capture-note--error" : ""}`}
+                        role="status"
+                      >
+                        {shortcutCaptureError ??
+                          "Press a shortcut. Escape cancels."}
+                      </small>
                     )}
-                  </button>
+                  </div>
                 </div>
                 <div className="setting-block">
                   <div className="setting-block__heading">
@@ -265,12 +391,44 @@ export function SettingsView({
                 </div>
                 <SettingRow
                   icon={<BellRing size={17} />}
-                  title="Hold to speak"
-                  description="Spick records while the shortcut is held, then keeps the latest text ready on Today."
+                  title={
+                    usesOptionGesture ? "Option-key gesture" : "Custom shortcut"
+                  }
+                  description={
+                    usesOptionGesture
+                      ? optionShortcutDescription(shortcutStatus)
+                      : "Your saved shortcut records while held and finishes when released."
+                  }
                   control={
-                    <span className="fixed-value">
-                      <Check size={14} /> Ready
-                    </span>
+                    !usesOptionGesture ? (
+                      <span className="fixed-value permission-value--granted">
+                        <Check size={14} /> Ready
+                      </span>
+                    ) : shortcutStatus?.optionListenerActive ? (
+                      <span className="fixed-value permission-value--granted">
+                        <Check size={14} /> Ready
+                      </span>
+                    ) : shortcutStatus?.inputMonitoringGranted ? (
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={onRefreshShortcut}
+                        disabled={shortcutPending}
+                      >
+                        {shortcutPending ? "Activating…" : "Activate Option"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        onClick={onRequestInputMonitoring}
+                        disabled={shortcutPending}
+                      >
+                        {shortcutPending
+                          ? "Opening…"
+                          : "Allow Input Monitoring"}
+                      </button>
+                    )
                   }
                 />
                 <SettingRow
@@ -310,10 +468,11 @@ export function SettingsView({
               <div className="settings-callout">
                 <Gauge size={17} />
                 <div>
-                  <strong>A careful handoff</strong>
+                  <strong>Two ways to speak</strong>
                   <span>
-                    This checkpoint never pastes automatically. Your latest
-                    words stay in Spick for an explicit copy.
+                    {usesOptionGesture
+                      ? "Tap Option once to start and once more to finish. Or hold it down, speak, and release."
+                      : "Hold your shortcut, speak, and release when you’re done."}
                   </span>
                 </div>
               </div>

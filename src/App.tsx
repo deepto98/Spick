@@ -9,6 +9,8 @@ import { initialEngines, initialVocabulary } from "./data/mockData";
 import { useAudioLevel } from "./hooks/useAudioLevel";
 import { useAccessibilityPermission } from "./hooks/useAccessibilityPermission";
 import { useDictationController } from "./hooks/useDictationController";
+import { useHudWindow } from "./hooks/useHudWindow";
+import { useShortcutStatus } from "./hooks/useShortcutStatus";
 import {
   activateLocalModel,
   cancelLocalModelInstall,
@@ -27,6 +29,7 @@ import {
   languagePolicyBadge,
   languagePolicyForName,
   languagePolicyName,
+  shortcutDisplayName,
   updateNativeSettings,
   type NativeAppSettings,
   type NativeLanguagePolicy,
@@ -38,7 +41,7 @@ import { TodayView } from "./views/TodayView";
 import { VocabularyView } from "./views/VocabularyView";
 
 const defaultSettings: AppSettings = {
-  hotkey: "⌘+⇧+Space",
+  hotkey: "⌥",
   language: "Auto-detect",
   microphone: "System default microphone",
   launchAtLogin: false,
@@ -87,6 +90,8 @@ function App() {
   const accessibility = useAccessibilityPermission(
     dictation.native && !hudOnly,
   );
+  const shortcut = useShortcutStatus(dictation.native && !hudOnly);
+  const hudWindow = useHudWindow(hudOnly && dictation.native);
   const audioFrame = useAudioLevel(dictation.state === "listening");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(
@@ -108,6 +113,7 @@ function App() {
       setNativeSettings(saved);
       setSettings((current) => ({
         ...current,
+        hotkey: shortcutDisplayName(saved.pushToTalkShortcut),
         cloudFallback: saved.allowCloudFallback,
         keepHistory: saved.saveTranscriptHistory,
         language,
@@ -308,6 +314,57 @@ function App() {
       });
   };
 
+  const changeShortcut = (pushToTalkShortcut: string) => {
+    const displayedShortcut = shortcutDisplayName(pushToTalkShortcut);
+    if (!dictation.native) {
+      setSettings((current) => ({
+        ...current,
+        hotkey: displayedShortcut,
+      }));
+      return;
+    }
+
+    const acknowledged = nativeSettingsRef.current;
+    if (!acknowledged) {
+      setSettingsError("Saved settings are still loading.");
+      return;
+    }
+    if (acknowledged.pushToTalkShortcut === pushToTalkShortcut) return;
+
+    const requestRevision = ++settingsSaveRevision.current;
+    setSettingsSaving(true);
+    setSettingsError(null);
+    settingsSaveQueue.current = settingsSaveQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        const current = nativeSettingsRef.current;
+        if (!current) throw new Error("saved settings are unavailable");
+        const saved = await updateNativeSettings({
+          ...current,
+          pushToTalkShortcut,
+        });
+        acceptNativeSettings(
+          saved,
+          requestRevision === settingsSaveRevision.current,
+        );
+        if (requestRevision === settingsSaveRevision.current) {
+          void shortcut.refresh();
+        }
+      })
+      .catch((reason) => {
+        if (requestRevision === settingsSaveRevision.current) {
+          const current = nativeSettingsRef.current;
+          if (current) acceptNativeSettings(current);
+          setSettingsError(`Couldn’t save that setting: ${reason}`);
+        }
+      })
+      .finally(() => {
+        if (requestRevision === settingsSaveRevision.current) {
+          setSettingsSaving(false);
+        }
+      });
+  };
+
   const hudLanguage = nativeSettings
     ? languagePolicyBadge(nativeSettings.languagePolicy)
     : dictation.language;
@@ -405,12 +462,16 @@ function App() {
           autoAdvance={false}
           audioLevel={audioFrame?.level}
           disabled={dictation.pending}
-          errorMessage={dictation.error ?? undefined}
+          errorMessage={dictation.error ?? hudWindow.error ?? undefined}
           delivery={dictation.delivery}
           floating
           state={dictation.state}
           onStateChange={dictation.transitionTo}
           language={dictation.language}
+          compact={hudWindow.compact}
+          compactPending={hudWindow.pending}
+          onMovePointerDown={hudWindow.beginDrag}
+          onToggleCompact={() => void hudWindow.togglePresentation()}
         />
       </div>
     );
@@ -423,12 +484,17 @@ function App() {
         accessibilityError={accessibility.error ?? undefined}
         accessibilityPending={accessibility.pending}
         accessibilityStatus={accessibility.status}
+        shortcutError={shortcut.error ?? undefined}
+        shortcutPending={shortcut.pending}
+        shortcutStatus={shortcut.status}
         settings={settings}
         settingsError={settingsError ?? undefined}
         settingsReady={settingsReady}
         settingsSaving={settingsSaving}
         onRefreshAccessibility={() => void accessibility.refresh()}
         onRequestAccessibility={() => void accessibility.request()}
+        onRefreshShortcut={() => void shortcut.refresh()}
+        onRequestInputMonitoring={() => void shortcut.request()}
         onRetrySettings={() => {
           setSettingsError(null);
           setSettingsLoadRevision((revision) => revision + 1);
@@ -455,11 +521,16 @@ function App() {
         >
           <X size={18} />
         </button>
-        <Sidebar activeView={activeView} onNavigate={navigate} />
+        <Sidebar
+          activeView={activeView}
+          hotkey={settings.hotkey}
+          onNavigate={navigate}
+        />
       </div>
       <div className="app-main">
         <TopBar
           activeView={activeView}
+          hotkey={settings.hotkey}
           onOpenNav={() => setMobileNavOpen(true)}
         />
         <main className="content" id="main-content">
@@ -508,11 +579,17 @@ function App() {
               accessibilityError={accessibility.error ?? undefined}
               accessibilityPending={accessibility.pending}
               accessibilityStatus={accessibility.status}
+              shortcutError={shortcut.error ?? undefined}
+              shortcutPending={shortcut.pending}
+              shortcutStatus={shortcut.status}
               settingsSaving={settingsSaving}
               nativeError={settingsError ?? undefined}
               onChange={changeSettings}
+              onShortcutChange={changeShortcut}
               onRefreshAccessibility={() => void accessibility.refresh()}
               onRequestAccessibility={() => void accessibility.request()}
+              onRefreshShortcut={() => void shortcut.refresh()}
+              onRequestInputMonitoring={() => void shortcut.request()}
               onRestartOnboarding={restartOnboarding}
             />
           )}
@@ -529,6 +606,7 @@ function App() {
           state={dictation.state}
           onStateChange={dictation.transitionTo}
           language={hudLanguage}
+          shortcut={settings.hotkey}
         />
       )}
       {dictation.error && (

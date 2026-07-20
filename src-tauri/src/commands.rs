@@ -1,4 +1,11 @@
-use std::{sync::Arc, thread, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
@@ -9,8 +16,8 @@ use crate::{
     },
     domain::{
         AppSettings, DictationDelivery, DictationDeliveryStatus, DictationSession,
-        DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, LanguagePolicy,
-        SessionState, SessionTrigger,
+        DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, HudPresentation,
+        HudSettings, LanguagePolicy, SessionState, SessionTrigger,
     },
     engines::{
         resolve_curated_whisper_model, validate_whisper_model_policy, AudioInput, CleanupEngine,
@@ -21,7 +28,7 @@ use crate::{
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
     platform::{self, TextTargetError, TextTargetErrorKind},
     shortcut,
-    state::AppState,
+    state::{AppState, HudTargetProtectionLease},
 };
 
 pub const DICTATION_STATE_EVENT: &str = "dictation://state";
@@ -29,6 +36,11 @@ pub const DICTATION_TRANSCRIPT_EVENT: &str = "dictation://transcript";
 const MAIN_WINDOW_LABEL: &str = "main";
 const SUCCESS_HUD_DWELL: Duration = Duration::from_millis(650);
 const FAILURE_HUD_DWELL: Duration = Duration::from_secs(2);
+const HUD_DRAG_INITIAL_SETTLE: Duration = Duration::from_millis(300);
+const HUD_DRAG_POLL: Duration = Duration::from_millis(100);
+const HUD_DRAG_STABLE_POLLS: usize = 3;
+const HUD_DRAG_MAX_POLLS: usize = 50;
+static HUD_DRAG_REVISION: AtomicU64 = AtomicU64::new(0);
 
 struct PendingDictationTranscript {
     session_id: String,
@@ -61,26 +73,37 @@ pub fn update_settings(
     window: WebviewWindow,
     app: AppHandle,
     state: State<'_, AppState>,
-    settings: AppSettings,
+    mut settings: AppSettings,
 ) -> Result<AppSettings, String> {
     require_main_window(&window)?;
     settings.validate()?;
     shortcut::validate(&settings.push_to_talk_shortcut)?;
 
-    let _model_configuration = state
-        .model_configuration
+    // Dashboard saves are serialized by a lock the dictation worker never
+    // acquires. Do not hold either the settings or model locks while replacing
+    // a shortcut: stopping Option joins a worker which may be reading both.
+    let _settings_update = state
+        .settings_update
         .lock()
-        .map_err(|_| "model configuration is unavailable".to_string())?;
-
-    let mut current = state
-        .settings
-        .write()
-        .map_err(|_| "settings lock is poisoned".to_string())?;
-    if settings.transcription_engine != current.transcription_engine {
-        return Err("choose transcription models from Engines".into());
-    }
-    validate_selected_transcription(&settings)?;
-    let previous = current.clone();
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let previous = {
+        let _model_configuration = state
+            .model_configuration
+            .lock()
+            .map_err(|_| "model configuration is unavailable".to_string())?;
+        let current = state
+            .settings
+            .read()
+            .map_err(|_| "settings lock is poisoned".to_string())?;
+        // HUD geometry is owned by the HUD webview. Ignore the dashboard's
+        // potentially stale copy and begin with the latest native state.
+        settings.hud = current.hud.clone();
+        if settings.transcription_engine != current.transcription_engine {
+            return Err("choose transcription models from Engines".into());
+        }
+        validate_selected_transcription(&settings)?;
+        current.clone()
+    };
     let shortcut_changed = previous.push_to_talk_shortcut != settings.push_to_talk_shortcut;
 
     if shortcut_changed {
@@ -97,33 +120,42 @@ pub fn update_settings(
         )?;
     }
 
-    if let Err(error) = state.persist_settings(&settings) {
-        if shortcut_changed {
-            let rollback = shortcut::replace(
-                &app,
-                &settings.push_to_talk_shortcut,
-                &previous.push_to_talk_shortcut,
-            );
-            if let Err(rollback_error) = rollback {
-                return Err(format!(
-                    "{error}; shortcut rollback also failed: {rollback_error}"
-                ));
+    let commit = (|| {
+        let _model_configuration = state
+            .model_configuration
+            .lock()
+            .map_err(|_| "model configuration is unavailable".to_string())?;
+        let mut current = state
+            .settings
+            .write()
+            .map_err(|_| "settings lock is poisoned".to_string())?;
+        let next = rebase_settings_update(&previous, &settings, &current)?;
+        validate_selected_transcription(&next)?;
+        state.persist_settings(&next)?;
+        *current = next.clone();
+        Ok::<AppSettings, String>(next)
+    })();
+
+    match commit {
+        Ok(next) => Ok(next),
+        Err(error) => {
+            // All AppState guards from the commit attempt are gone before a
+            // rollback can stop and join an Option worker.
+            if shortcut_changed {
+                let rollback = shortcut::replace(
+                    &app,
+                    &settings.push_to_talk_shortcut,
+                    &previous.push_to_talk_shortcut,
+                );
+                if let Err(rollback_error) = rollback {
+                    return Err(format!(
+                        "{error}; shortcut rollback also failed: {rollback_error}"
+                    ));
+                }
             }
-        }
-        return Err(error);
-    }
-
-    let hud_position_changed = previous.hud.position != settings.hud.position;
-    *current = settings.clone();
-    drop(current);
-
-    if hud_position_changed {
-        if let Err(error) = hud::reposition(&app, settings.hud.position) {
-            eprintln!("saved HUD position but could not move its window: {error}");
+            Err(error)
         }
     }
-
-    Ok(settings)
 }
 
 #[tauri::command]
@@ -142,6 +174,72 @@ pub fn get_audio_capture_status(state: State<'_, AppState>) -> Result<AudioCaptu
         .lock()
         .map(|audio| audio.status())
         .map_err(|_| "microphone capture lock is poisoned".into())
+}
+
+#[tauri::command]
+pub fn get_shortcut_status(window: WebviewWindow) -> Result<shortcut::ShortcutStatus, String> {
+    require_main_window(&window)?;
+    shortcut::status(window.app_handle())
+}
+
+#[tauri::command]
+pub fn get_hud_settings(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<HudSettings, String> {
+    require_hud_window(&window)?;
+    Ok(state.settings_snapshot()?.hud)
+}
+
+#[tauri::command]
+pub fn set_hud_presentation(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    presentation: HudPresentation,
+) -> Result<HudSettings, String> {
+    require_hud_window(&window)?;
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let mut current = state
+        .settings
+        .write()
+        .map_err(|_| "settings lock is poisoned".to_string())?;
+    let previous_hud = current.hud.clone();
+    let mut next = current.clone();
+    next.hud.presentation = presentation;
+
+    hud::apply(&app, &next.hud)?;
+    if let Err(error) = state.persist_settings(&next) {
+        if let Err(rollback_error) = hud::apply(&app, &previous_hud) {
+            return Err(format!(
+                "{error}; the HUD geometry rollback also failed: {rollback_error}"
+            ));
+        }
+        return Err(error);
+    }
+
+    *current = next.clone();
+    Ok(next.hud)
+}
+
+#[tauri::command]
+pub fn start_hud_drag(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_hud_window(&window)?;
+    hud::start_drag(&app)?;
+    schedule_hud_position_save(app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn request_input_monitoring_permission(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<bool, String> {
+    require_main_window(&window)?;
+    Ok(shortcut::request_input_monitoring_permission(&app))
 }
 
 #[tauri::command]
@@ -216,23 +314,9 @@ pub async fn activate_local_model(
             .whisper
             .load(&model, &model_path)
             .map_err(engine_error_message)?;
-        let _model_configuration = state
-            .model_configuration
-            .lock()
-            .map_err(|_| "model configuration is unavailable".to_string())?;
-        let mut updated = state.settings_snapshot()?;
-        updated.language_policy = policy_for_model_activation(&updated.language_policy, &model);
-        updated.transcription_engine =
-            EngineConfig::local(EngineProvider::WhisperCpp, model.id.clone());
-        updated.validate()?;
-        validate_selected_transcription(&updated)?;
-        state.models.verified_model_path(&model.id)?;
-        state.persist_settings(&updated)?;
-        *state
-            .settings
-            .write()
-            .map_err(|_| "settings lock is poisoned".to_string())? = updated.clone();
-        Ok(updated)
+        commit_local_model_activation(state.inner(), &model, || {
+            state.models.verified_model_path(&model.id).map(|_| ())
+        })
     })
     .await
     .map_err(|error| format!("local model activation worker failed: {error}"))?
@@ -305,16 +389,26 @@ pub fn cancel_dictation_session(
     state: State<'_, AppState>,
     reason: Option<String>,
 ) -> Result<DictationStateEvent, String> {
-    let (event, cleanup, target) = {
+    cancel_session(&app, state.inner(), reason)
+}
+
+pub(crate) fn cancel_session<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    reason: Option<String>,
+) -> Result<DictationStateEvent, String> {
+    let (event, cleanup, target, hud_target_lease) = {
         let mut session = state
             .session
             .lock()
             .map_err(|_| "dictation session lock is poisoned".to_string())?;
         let session_id = active_session_id(&session.snapshot())?;
-        let target = state
-            .transcription_operation(&session_id)?
-            .and_then(|operation| operation.target)
+        let operation = state.transcription_operation(&session_id)?;
+        let target = operation
+            .as_ref()
+            .and_then(|operation| operation.target.as_ref())
             .map(|target| target.token);
+        let hud_target_lease = operation.and_then(|operation| operation.hud_target_lease);
         // This transition is the cancellation linearization point. Once a
         // worker has claimed Inserting, cancellation returns an error and must
         // not clear its target or claim that no text was written.
@@ -326,16 +420,17 @@ pub fn cancel_dictation_session(
         let cleanup = audio.take_matching(&session_id);
         state.cancel_transcription(&session_id)?;
         state.finish_transcription(&session_id)?;
-        (event, cleanup, target)
+        (event, cleanup, target, hud_target_lease)
     };
 
     if let Some(target) = target {
         state.text_targets.discard(target);
     }
+    release_hud_target(app, state, hud_target_lease.as_ref());
     discard_on_worker(cleanup);
 
-    emit_state(&app, &event)?;
-    if let Err(error) = hud::hide(&app) {
+    emit_state(app, &event)?;
+    if let Err(error) = hide_hud_for_revision(app, state, event.revision) {
         eprintln!("dictation was cancelled but the HUD could not be hidden: {error}");
     }
     Ok(event)
@@ -375,6 +470,121 @@ fn require_main_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
+fn require_hud_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == hud::HUD_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("this command is only available to the dictation HUD".into())
+    }
+}
+
+fn schedule_hud_position_save<R: Runtime>(app: AppHandle<R>) {
+    let revision = HUD_DRAG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    let spawn_result = thread::Builder::new()
+        .name("spick-hud-position".into())
+        .spawn(move || {
+            thread::sleep(HUD_DRAG_INITIAL_SETTLE);
+            let mut last_position = None;
+            let mut stable_polls = 0;
+
+            for _ in 0..HUD_DRAG_MAX_POLLS {
+                if HUD_DRAG_REVISION.load(Ordering::Acquire) != revision {
+                    return;
+                }
+                thread::sleep(HUD_DRAG_POLL);
+                let Ok(position) = hud::current_position(&app) else {
+                    continue;
+                };
+                if last_position == Some(position) {
+                    stable_polls += 1;
+                } else {
+                    last_position = Some(position);
+                    stable_polls = 0;
+                }
+                if stable_polls >= HUD_DRAG_STABLE_POLLS {
+                    break;
+                }
+            }
+
+            let Some(position) = last_position else {
+                return;
+            };
+            if HUD_DRAG_REVISION.load(Ordering::Acquire) != revision {
+                return;
+            }
+            if let Err(error) = persist_hud_position(&app, position) {
+                eprintln!("could not save the dictation HUD position: {error}");
+            }
+        });
+
+    if let Err(error) = spawn_result {
+        eprintln!("could not watch the dictation HUD drag: {error}");
+    }
+}
+
+fn persist_hud_position<R: Runtime>(
+    app: &AppHandle<R>,
+    position: crate::domain::HudCoordinates,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    persist_hud_position_for_state(state.inner(), position)
+}
+
+fn persist_hud_position_for_state(
+    state: &AppState,
+    position: crate::domain::HudCoordinates,
+) -> Result<(), String> {
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let mut current = state
+        .settings
+        .write()
+        .map_err(|_| "settings lock is poisoned".to_string())?;
+    if current.hud.custom_position == Some(position) {
+        return Ok(());
+    }
+    let mut next = current.clone();
+    next.hud.custom_position = Some(position);
+    state.persist_settings(&next)?;
+    *current = next;
+    Ok(())
+}
+
+fn commit_local_model_activation<F>(
+    state: &AppState,
+    model: &crate::engines::WhisperModelManifest,
+    verify_installed: F,
+) -> Result<AppSettings, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let _model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
+    verify_installed()?;
+
+    let mut current = state
+        .settings
+        .write()
+        .map_err(|_| "settings lock is poisoned".to_string())?;
+    let mut updated = current.clone();
+    updated.language_policy = policy_for_model_activation(&updated.language_policy, model);
+    updated.transcription_engine =
+        EngineConfig::local(EngineProvider::WhisperCpp, model.id.clone());
+    updated.validate()?;
+    validate_selected_transcription(&updated)?;
+    state.persist_settings(&updated)?;
+    *current = updated.clone();
+    Ok(updated)
+}
+
 fn policy_for_model_activation(
     current: &LanguagePolicy,
     model: &crate::engines::WhisperModelManifest,
@@ -386,6 +596,28 @@ fn policy_for_model_activation(
     } else {
         current.clone()
     }
+}
+
+/// Rebases a dashboard settings edit onto native-owned HUD state.
+///
+/// Every production settings writer holds `settings_update`, so `current`
+/// should remain stable while the shortcut backend is replaced. The comparison
+/// remains a defensive guard, and the HUD copy is always native-owned rather
+/// than trusted from a potentially stale dashboard payload.
+fn rebase_settings_update(
+    previous: &AppSettings,
+    requested: &AppSettings,
+    current: &AppSettings,
+) -> Result<AppSettings, String> {
+    let mut comparable = current.clone();
+    comparable.hud = previous.hud.clone();
+    if comparable != *previous {
+        return Err("settings changed while this update was being applied; try again".into());
+    }
+
+    let mut next = requested.clone();
+    next.hud = current.hud.clone();
+    Ok(next)
 }
 
 fn validate_selected_transcription(settings: &AppSettings) -> Result<(), String> {
@@ -461,7 +693,7 @@ pub(crate) fn start_session<R: Runtime>(
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
     let cleanup_engine = settings.cleanup_engine;
-    let hud_position = settings.hud.position;
+    let hud_settings = settings.hud.clone();
     let level_app = app.clone();
     let level_sink: LevelSink = Arc::new(move |payload| {
         if let Err(error) = level_app.emit(AUDIO_LEVEL_EVENT, payload) {
@@ -475,6 +707,7 @@ pub(crate) fn start_session<R: Runtime>(
 
     // These locks are held only while creating the session and spawning the
     // microphone owner thread. Accessibility calls completed above.
+    let mut claimed_hud_target_lease = None;
     let transaction = (|| -> Result<(DictationStateEvent, Option<String>), String> {
         let mut session = state
             .session
@@ -493,7 +726,29 @@ pub(crate) fn start_session<R: Runtime>(
             )
             .map_err(|error| error.to_string())?;
         let session_id = active_session_id(&listening)?;
-        if let Err(error) = state.begin_transcription(session_id.clone(), captured_target.clone()) {
+        let hud_target_lease = if captured_target.is_some() {
+            match state.hud_target_protection.lock() {
+                Ok(mut protection) => {
+                    let lease = protection.claim(session_id.clone());
+                    claimed_hud_target_lease = Some(lease.clone());
+                    Some(lease)
+                }
+                Err(_) => {
+                    let error = "HUD target protection is unavailable".to_string();
+                    let failed = session
+                        .fail(error.clone())
+                        .map_err(|transition| transition.to_string())?;
+                    return Ok((failed, Some(error)));
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(error) = state.begin_transcription(
+            session_id.clone(),
+            captured_target.clone(),
+            hud_target_lease.clone(),
+        ) {
             let failed = session
                 .fail(error.clone())
                 .map_err(|transition| transition.to_string())?;
@@ -518,6 +773,7 @@ pub(crate) fn start_session<R: Runtime>(
             if let Some(target) = target_token {
                 state.text_targets.discard(target);
             }
+            release_hud_target(app, state, claimed_hud_target_lease.as_ref());
             return Err(error);
         }
     };
@@ -526,7 +782,8 @@ pub(crate) fn start_session<R: Runtime>(
         if let Some(target) = target_token {
             state.text_targets.discard(target);
         }
-        if let Err(show_error) = hud::show(app, hud_position) {
+        release_hud_target(app, state, claimed_hud_target_lease.as_ref());
+        if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
             eprintln!("dictation failed but the HUD could not be shown: {show_error}");
         }
         let _ = emit_state(app, &event);
@@ -534,7 +791,9 @@ pub(crate) fn start_session<R: Runtime>(
         return Err(error);
     }
 
-    if let Err(error) = hud::show(app, hud_position) {
+    if let Err(error) =
+        show_hud_for_target(app, state, &hud_settings, claimed_hud_target_lease.as_ref())
+    {
         eprintln!("dictation started but the HUD could not be shown: {error}");
     }
     if let Err(error) = emit_state(app, &event) {
@@ -550,7 +809,7 @@ fn fail_target_preflight<R: Runtime>(
     error: TextTargetError,
 ) -> Result<DictationStateEvent, String> {
     let settings = state.settings_snapshot()?;
-    let hud_position = settings.hud.position;
+    let hud_settings = settings.hud.clone();
     let delivery = delivery_for_target_error(&error, false, None);
     let failed = {
         let mut session = state
@@ -568,7 +827,7 @@ fn fail_target_preflight<R: Runtime>(
             .map_err(|transition| transition.to_string())?
     };
 
-    if let Err(show_error) = hud::show(app, hud_position) {
+    if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
         eprintln!("target check failed but the HUD could not be shown: {show_error}");
     }
     if let Err(emit_error) = emit_state(app, &failed) {
@@ -600,6 +859,10 @@ pub(crate) fn stop_session<R: Runtime>(
     if let Err(error) = emit_state(app, &processing) {
         eprintln!("could not emit processing state: {error}");
     }
+    let processing_session_id = active_session_id(&processing)?;
+    let hud_target_lease = state
+        .transcription_operation(&processing_session_id)?
+        .and_then(|operation| operation.hud_target_lease);
 
     // Permission waits, stream teardown, resampling handoff, and the terminal
     // transition all run off the shortcut callback. The response above remains
@@ -611,7 +874,8 @@ pub(crate) fn stop_session<R: Runtime>(
         .spawn(move || finalize_capture(&worker_app, worker_processing, finalizer));
     if let Err(error) = spawn_result {
         let message = format!("could not start microphone finalization: {error}");
-        discard_target_for_session(state, &active_session_id(&processing)?);
+        discard_target_for_session(state, &processing_session_id);
+        release_hud_target(app, state, hud_target_lease.as_ref());
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
             let _ = emit_state(app, &failed);
             hide_after(app, FAILURE_HUD_DWELL, failed.revision);
@@ -646,6 +910,12 @@ fn finalize_capture<R: Runtime>(
             return;
         }
     };
+    let state = app.state::<AppState>();
+    let hud_target_lease = state
+        .transcription_operation(&session_id)
+        .ok()
+        .flatten()
+        .and_then(|operation| operation.hud_target_lease);
     let capture_result = finalizer.and_then(CaptureFinalizer::finalize);
     match capture_result {
         Ok(capture) => {
@@ -669,7 +939,6 @@ fn finalize_capture<R: Runtime>(
                 );
                 return;
             };
-            let state = app.state::<AppState>();
             let result = transcribe_capture(state.inner(), session, capture.pcm_16khz());
 
             match result {
@@ -686,6 +955,7 @@ fn finalize_capture<R: Runtime>(
                         Ok(Some(inserting)) => inserting,
                         Ok(None) => {
                             discard_target_for_session(state.inner(), &session_id);
+                            release_hud_target(app, state.inner(), hud_target_lease.as_ref());
                             return;
                         }
                         Err(error) => {
@@ -699,6 +969,7 @@ fn finalize_capture<R: Runtime>(
 
                     let delivery =
                         deliver_transcript(state.inner(), &session_id, &transcript.transcript.text);
+                    release_hud_target(app, state.inner(), hud_target_lease.as_ref());
                     let transcript = transcript.finish(delivery.clone());
                     match complete_session_with_transcript(state.inner(), &session_id, transcript) {
                         Ok(Some((completed, transcript))) => {
@@ -942,7 +1213,13 @@ fn delivery_for_target_error(
 
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
     let state = app.state::<AppState>();
+    let hud_target_lease = state
+        .transcription_operation(&failure.session_id)
+        .ok()
+        .flatten()
+        .and_then(|operation| operation.hud_target_lease);
     discard_target_for_session(state.inner(), &failure.session_id);
+    release_hud_target(app, state.inner(), hud_target_lease.as_ref());
     let transition =
         (|| -> Result<Option<(DictationStateEvent, Option<CaptureFinalizer>)>, String> {
             let mut session = state
@@ -1042,7 +1319,13 @@ fn fail_session_if_matching(
 
 fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, error: String) {
     let state = app.state::<AppState>();
+    let hud_target_lease = state
+        .transcription_operation(session_id)
+        .ok()
+        .flatten()
+        .and_then(|operation| operation.hud_target_lease);
     discard_target_for_session(state.inner(), session_id);
+    release_hud_target(app, state.inner(), hud_target_lease.as_ref());
     let expected = state.session.lock().map(|session| session.snapshot());
     let event = match expected {
         Ok(expected) if session_matches(&expected, session_id) => {
@@ -1075,6 +1358,77 @@ fn discard_target_for_session(state: &AppState, session_id: &str) {
     }
 }
 
+fn show_hud_for_target<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    settings: &HudSettings,
+    lease: Option<&HudTargetProtectionLease>,
+) -> Result<bool, String> {
+    let protection = state
+        .hud_target_protection
+        .lock()
+        .map_err(|_| "HUD target protection is unavailable".to_string())?;
+    match lease {
+        Some(lease) if protection.is_current(lease) => {
+            hud::show(app, settings, true)?;
+            Ok(true)
+        }
+        Some(_) => Ok(false),
+        None if !protection.has_owner() => {
+            hud::show(app, settings, false)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+fn release_hud_target<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    lease: Option<&HudTargetProtectionLease>,
+) {
+    let Some(lease) = lease else {
+        return;
+    };
+    let Ok(mut protection) = state.hud_target_protection.lock() else {
+        eprintln!("could not release fallback HUD target protection: ownership is unavailable");
+        return;
+    };
+    if !protection.is_current(lease) {
+        return;
+    }
+    if let Err(error) = hud::protect_target(app, false) {
+        eprintln!("could not release fallback HUD target protection: {error}");
+        return;
+    }
+    protection.release_if_current(lease);
+}
+
+fn hide_hud_for_revision<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    revision: u64,
+) -> Result<bool, String> {
+    // Keep this check and the native hide in the same session critical section
+    // so a new session cannot start between them.
+    let session = state
+        .session
+        .lock()
+        .map_err(|_| "dictation session lock is poisoned".to_string())?;
+    if !should_hide_for_revision(&session.snapshot(), revision) {
+        return Ok(false);
+    }
+    let protection = state
+        .hud_target_protection
+        .lock()
+        .map_err(|_| "HUD target protection is unavailable".to_string())?;
+    if protection.has_owner() {
+        return Ok(false);
+    }
+    hud::hide(app)?;
+    Ok(true)
+}
+
 fn discard_on_worker(finalizer: Option<CaptureFinalizer>) {
     let Some(finalizer) = finalizer else {
         return;
@@ -1099,18 +1453,11 @@ fn hide_after<R: Runtime>(app: &AppHandle<R>, delay: Duration, revision: u64) {
         .spawn(move || {
             thread::sleep(delay);
 
-            // Do not let an old completion timer hide a newly-started session.
-            let should_hide = app
-                .state::<AppState>()
-                .session
-                .lock()
-                .map(|session| should_hide_for_revision(&session.snapshot(), revision))
-                .unwrap_or(false);
-
-            if should_hide {
-                if let Err(error) = hud::hide(&app) {
-                    eprintln!("could not hide the dictation HUD: {error}");
-                }
+            // Do not let an old completion timer hide or unprotect a
+            // newly-started session.
+            let state = app.state::<AppState>();
+            if let Err(error) = hide_hud_for_revision(&app, state.inner(), revision) {
+                eprintln!("could not hide the dictation HUD: {error}");
             }
         });
 
@@ -1129,8 +1476,12 @@ fn should_hide_for_revision(event: &DictationStateEvent, revision: u64) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
-    use crate::domain::{AppSettings, DictationSession, LanguagePolicy};
+    use crate::domain::{
+        AppSettings, DictationSession, HudCoordinates, HudPresentation, LanguagePolicy,
+    };
 
     fn event(id: &str, state: SessionState, revision: u64) -> DictationStateEvent {
         DictationStateEvent {
@@ -1181,6 +1532,88 @@ mod tests {
             &event("session-b", SessionState::Listening, 5),
             4
         ));
+    }
+
+    #[test]
+    fn settings_update_keeps_hud_changes_committed_during_shortcut_replacement() {
+        let previous = AppSettings::default();
+        let mut requested = previous.clone();
+        requested.save_transcript_history = true;
+        let mut current = previous.clone();
+        current.hud.presentation = HudPresentation::Compact;
+        current.hud.custom_position = Some(HudCoordinates { x: -320, y: 84 });
+
+        let rebased = rebase_settings_update(&previous, &requested, &current).unwrap();
+
+        assert!(rebased.save_transcript_history);
+        assert_eq!(rebased.hud, current.hud);
+    }
+
+    #[test]
+    fn settings_update_rejects_a_concurrent_non_hud_change() {
+        let previous = AppSettings::default();
+        let mut requested = previous.clone();
+        requested.save_transcript_history = true;
+        let mut current = previous.clone();
+        current.allow_cloud_fallback = true;
+
+        let error = rebase_settings_update(&previous, &requested, &current).unwrap_err();
+
+        assert!(error.contains("settings changed"));
+    }
+
+    #[test]
+    fn model_activation_and_hud_position_writes_serialize_without_lost_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings_path = directory.path().join("settings.json");
+        let state = Arc::new(AppState::load(settings_path.clone()).unwrap());
+        let model = resolve_curated_whisper_model("whisper-tiny-multilingual-f16").unwrap();
+        let position = HudCoordinates { x: -420, y: 96 };
+
+        let (model_has_gate_tx, model_has_gate_rx) = mpsc::channel();
+        let (release_model_tx, release_model_rx) = mpsc::channel();
+        let model_state = Arc::clone(&state);
+        let model_worker = thread::spawn(move || {
+            commit_local_model_activation(model_state.as_ref(), &model, || {
+                model_has_gate_tx.send(()).unwrap();
+                release_model_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        model_has_gate_rx.recv().unwrap();
+
+        let (position_started_tx, position_started_rx) = mpsc::channel();
+        let (position_done_tx, position_done_rx) = mpsc::channel();
+        let position_state = Arc::clone(&state);
+        let position_worker = thread::spawn(move || {
+            position_started_tx.send(()).unwrap();
+            let result = persist_hud_position_for_state(position_state.as_ref(), position);
+            position_done_tx.send(result).unwrap();
+        });
+        position_started_rx.recv().unwrap();
+        assert!(matches!(
+            position_done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_model_tx.send(()).unwrap();
+        let activated = model_worker.join().unwrap().unwrap();
+        position_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        position_worker.join().unwrap();
+
+        let current = state.settings_snapshot().unwrap();
+        assert_eq!(
+            current.transcription_engine.model,
+            "whisper-tiny-multilingual-f16"
+        );
+        assert_eq!(current.hud.custom_position, Some(position));
+        assert_eq!(activated.transcription_engine, current.transcription_engine);
+
+        let reloaded = AppState::load(settings_path).unwrap();
+        assert_eq!(reloaded.settings_snapshot().unwrap(), current);
     }
 
     #[test]
