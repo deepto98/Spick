@@ -26,6 +26,13 @@ const latency: NativeDictationLatencyEvent = {
   sessionId: "opaque-session",
   revision: 4,
   outcome: "completed",
+  targetCaptureMs: 10,
+  startToTargetCaptureReturnMs: 12,
+  startToAudioOwnerSpawnMs: 18,
+  startToStartingEmittedMs: 19,
+  startToHudShowReturnMs: 27,
+  startToMicrophoneReadyMs: 24,
+  startToListeningEmittedMs: 29,
   audioDurationMs: 2_400,
   stopToProcessingMs: 3,
   captureFinalizeMs: 10,
@@ -95,9 +102,27 @@ describe("native dictation state mapping", () => {
     expect(
       isValidDictationLatencyEvent({
         ...latency,
-        deliveryMs: latency.processingTotalMs + 1,
+        deliveryMs: latency.processingTotalMs! + 1,
       }),
     ).toBe(false);
+    expect(
+      isValidDictationLatencyEvent({
+        ...latency,
+        startToListeningEmittedMs: latency.startToHudShowReturnMs! - 1,
+      }),
+    ).toBe(false);
+    expect(
+      isValidDictationLatencyEvent({
+        ...latency,
+        outcome: "cancelled",
+        stopToProcessingMs: null,
+        captureFinalizeMs: null,
+        transcriptionMs: null,
+        deliveryMs: null,
+        stopToDeliveryMs: null,
+        processingTotalMs: null,
+      }),
+    ).toBe(true);
     expect(
       isValidDictationLatencyEvent({
         ...latency,

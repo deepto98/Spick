@@ -73,19 +73,27 @@ export interface NativeDictationTranscript {
   delivery: NativeDeliveryOutcome;
 }
 
-export type NativeDictationLatencyOutcome = "completed" | "failed";
+export type NativeDictationLatencyOutcome =
+  "completed" | "failed" | "cancelled";
 
 export interface NativeDictationLatencyEvent {
   sessionId: string;
   revision: number;
   outcome: NativeDictationLatencyOutcome;
+  targetCaptureMs: number | null;
+  startToTargetCaptureReturnMs: number | null;
+  startToAudioOwnerSpawnMs: number | null;
+  startToStartingEmittedMs: number | null;
+  startToHudShowReturnMs: number | null;
+  startToMicrophoneReadyMs: number | null;
+  startToListeningEmittedMs: number | null;
   audioDurationMs: number | null;
-  stopToProcessingMs: number;
+  stopToProcessingMs: number | null;
   captureFinalizeMs: number | null;
   transcriptionMs: number | null;
   deliveryMs: number | null;
   stopToDeliveryMs: number | null;
-  processingTotalMs: number;
+  processingTotalMs: number | null;
 }
 
 function isDuration(value: unknown): value is number {
@@ -101,15 +109,25 @@ export function isValidDictationLatencyEvent(
 ): event is NativeDictationLatencyEvent {
   if (typeof event !== "object" || event === null) return false;
   const candidate = event as Record<string, unknown>;
-  const processingTotalMs = candidate.processingTotalMs;
+  const validOutcome =
+    candidate.outcome === "completed" ||
+    candidate.outcome === "failed" ||
+    candidate.outcome === "cancelled";
   if (
     typeof candidate.sessionId !== "string" ||
     !candidate.sessionId ||
     candidate.sessionId.length > 160 ||
     !isDuration(candidate.revision) ||
-    (candidate.outcome !== "completed" && candidate.outcome !== "failed") ||
-    !isDuration(candidate.stopToProcessingMs) ||
-    !isDuration(processingTotalMs) ||
+    !validOutcome ||
+    !isOptionalDuration(candidate.targetCaptureMs) ||
+    !isOptionalDuration(candidate.startToTargetCaptureReturnMs) ||
+    !isOptionalDuration(candidate.startToAudioOwnerSpawnMs) ||
+    !isOptionalDuration(candidate.startToStartingEmittedMs) ||
+    !isOptionalDuration(candidate.startToHudShowReturnMs) ||
+    !isOptionalDuration(candidate.startToMicrophoneReadyMs) ||
+    !isOptionalDuration(candidate.startToListeningEmittedMs) ||
+    !isOptionalDuration(candidate.stopToProcessingMs) ||
+    !isOptionalDuration(candidate.processingTotalMs) ||
     !isOptionalDuration(candidate.audioDurationMs) ||
     !isOptionalDuration(candidate.captureFinalizeMs) ||
     !isOptionalDuration(candidate.transcriptionMs) ||
@@ -119,13 +137,50 @@ export function isValidDictationLatencyEvent(
     return false;
   }
 
-  return [
-    candidate.stopToProcessingMs,
-    candidate.captureFinalizeMs,
-    candidate.transcriptionMs,
-    candidate.deliveryMs,
-    candidate.stopToDeliveryMs,
-  ].every((duration) => duration === null || duration <= processingTotalMs);
+  const targetCaptureMs = candidate.targetCaptureMs as number | null;
+  const targetReturnMs = candidate.startToTargetCaptureReturnMs as
+    number | null;
+  const audioSpawnMs = candidate.startToAudioOwnerSpawnMs as number | null;
+  const startingMs = candidate.startToStartingEmittedMs as number | null;
+  const hudReturnMs = candidate.startToHudShowReturnMs as number | null;
+  const microphoneReadyMs = candidate.startToMicrophoneReadyMs as number | null;
+  const listeningMs = candidate.startToListeningEmittedMs as number | null;
+  const processingTotalMs = candidate.processingTotalMs as number | null;
+  const processingStages = [
+    candidate.stopToProcessingMs as number | null,
+    candidate.captureFinalizeMs as number | null,
+    candidate.transcriptionMs as number | null,
+    candidate.deliveryMs as number | null,
+    candidate.stopToDeliveryMs as number | null,
+  ];
+
+  if (
+    (targetCaptureMs !== null &&
+      targetReturnMs !== null &&
+      targetCaptureMs > targetReturnMs) ||
+    (targetReturnMs !== null &&
+      audioSpawnMs !== null &&
+      targetReturnMs > audioSpawnMs) ||
+    (audioSpawnMs !== null &&
+      startingMs !== null &&
+      audioSpawnMs > startingMs) ||
+    (startingMs !== null && hudReturnMs !== null && startingMs > hudReturnMs) ||
+    (audioSpawnMs !== null &&
+      microphoneReadyMs !== null &&
+      audioSpawnMs > microphoneReadyMs) ||
+    (microphoneReadyMs !== null &&
+      listeningMs !== null &&
+      microphoneReadyMs > listeningMs) ||
+    (hudReturnMs !== null && listeningMs !== null && hudReturnMs > listeningMs)
+  ) {
+    return false;
+  }
+
+  return processingTotalMs === null
+    ? processingStages.every((duration) => duration === null)
+    : processingStages.every(
+        (duration) => duration === null || duration <= processingTotalMs,
+      );
 }
 
 export function hasNativeRuntime() {

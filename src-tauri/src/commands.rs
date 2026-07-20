@@ -29,7 +29,7 @@ use crate::{
     hud,
     latency::{
         DictationLatencyEvent, DictationLatencyOutcome, ProcessingLatencyTrace,
-        DICTATION_LATENCY_EVENT,
+        StartupLatencyTrace, DICTATION_LATENCY_EVENT,
     },
     local_data::{
         ClearLocalDataResult, ClearLocalDataScope, CompletedDictationRecord,
@@ -692,7 +692,7 @@ pub(crate) fn cancel_session<R: Runtime>(
     state: &AppState,
     reason: Option<String>,
 ) -> Result<DictationStateEvent, String> {
-    let (event, cleanup, target, hud_target_lease) = {
+    let (event, cleanup, target, hud_target_lease, session_id) = {
         let mut session = state
             .session
             .lock()
@@ -715,7 +715,7 @@ pub(crate) fn cancel_session<R: Runtime>(
         let cleanup = audio.take_matching(&session_id);
         state.cancel_transcription(&session_id)?;
         state.finish_transcription(&session_id)?;
-        (event, cleanup, target, hud_target_lease)
+        (event, cleanup, target, hud_target_lease, session_id)
     };
 
     if let Some(target) = target {
@@ -724,8 +724,16 @@ pub(crate) fn cancel_session<R: Runtime>(
     release_hud_target(app, state, hud_target_lease.as_ref());
     discard_on_worker(cleanup);
 
-    emit_state(app, &event)?;
+    let emit_result = emit_state(app, &event);
+    finish_dictation_latency(
+        app,
+        &session_id,
+        event.revision,
+        DictationLatencyOutcome::Cancelled,
+        None,
+    );
     settle_after(app, Duration::ZERO, event.revision);
+    emit_result?;
     Ok(event)
 }
 
@@ -1182,17 +1190,23 @@ pub(crate) fn start_session<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
 ) -> Result<DictationStateEvent, String> {
+    let startup_latency = StartupLatencyTrace::start();
     if let Err(error) = microphone_permission::ensure_capture_allowed() {
-        return fail_microphone_preflight(app, state, trigger, error);
+        return fail_microphone_preflight(app, state, trigger, error, startup_latency);
     }
 
     // External-target sessions must prove a concrete, non-secure editable
     // target before any session state or audio capture is created. The HUD is
     // nonactivating, so a click there still leaves the other app focused.
     let captured_target = if trigger_uses_external_target(trigger) {
-        match state.text_targets.capture() {
+        startup_latency.mark_target_capture_started();
+        let capture = state.text_targets.capture();
+        startup_latency.mark_target_capture_returned();
+        match capture {
             Ok(target) => Some(target),
-            Err(error) => return fail_target_preflight(app, state, trigger, error),
+            Err(error) => {
+                return fail_target_preflight(app, state, trigger, error, startup_latency)
+            }
         }
     } else {
         // The dashboard owns focus for UI-triggered recordings. Those remain
@@ -1243,7 +1257,12 @@ pub(crate) fn start_session<R: Runtime>(
     });
     let ready_app = app.clone();
     let ready_publication = Arc::clone(&start_publication);
+    let ready_latency = startup_latency.clone();
     let ready_sink: ReadySink = Arc::new(move |ready| {
+        // Preserve the native play-return timestamp before waiting for HUD
+        // publication. This trace is bound to this session only; a late
+        // callback can neither update a replacement nor mutate a finished one.
+        ready_latency.mark_microphone_ready_at(ready.stream_play_returned_at);
         ready_publication.wait();
         handle_audio_capture_ready(&ready_app, ready);
     });
@@ -1269,6 +1288,11 @@ pub(crate) fn start_session<R: Runtime>(
             )
             .map_err(|error| error.to_string())?;
         let session_id = active_session_id(&starting)?;
+        if !startup_latency.bind_session(&session_id) {
+            eprintln!("could not bind dictation startup latency diagnostics");
+        } else if let Err(error) = state.register_dictation_latency(startup_latency.clone()) {
+            eprintln!("could not start dictation latency diagnostics: {error}");
+        }
         let hud_target_lease = if captured_target.is_some() {
             match state.hud_target_protection.lock() {
                 Ok(mut protection) => {
@@ -1307,7 +1331,10 @@ pub(crate) fn start_session<R: Runtime>(
             ready_sink,
             error_sink,
         ) {
-            Ok(_) => Ok((starting, None)),
+            Ok(_) => {
+                startup_latency.mark_audio_owner_spawned();
+                Ok((starting, None))
+            }
             Err(error) => {
                 state.finish_transcription(&active_session_id(&starting)?)?;
                 let failed = session
@@ -1335,22 +1362,37 @@ pub(crate) fn start_session<R: Runtime>(
             state.text_targets.discard(target);
         }
         release_hud_target(app, state, claimed_hud_target_lease.as_ref());
-        if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
-            eprintln!("dictation failed but the HUD could not be shown: {show_error}");
+        match show_hud_for_target(app, state, &hud_settings, None) {
+            Ok(true) => startup_latency.mark_hud_show_returned(),
+            Ok(false) => {}
+            Err(show_error) => {
+                eprintln!("dictation failed but the HUD could not be shown: {show_error}")
+            }
         }
         let _ = emit_state(app, &event);
         start_publication.publish();
+        if let Ok(session_id) = active_session_id(&event) {
+            finish_dictation_latency(
+                app,
+                &session_id,
+                event.revision,
+                DictationLatencyOutcome::Failed,
+                None,
+            );
+        }
         settle_after(app, FAILURE_HUD_DWELL, event.revision);
         return Err(error);
     }
 
-    if let Err(error) =
-        show_hud_for_target(app, state, &hud_settings, claimed_hud_target_lease.as_ref())
-    {
-        eprintln!("dictation started but the HUD could not be shown: {error}");
-    }
     if let Err(error) = emit_state(app, &event) {
         eprintln!("could not emit microphone starting state: {error}");
+    } else {
+        startup_latency.mark_starting_emitted();
+    }
+    match show_hud_for_target(app, state, &hud_settings, claimed_hud_target_lease.as_ref()) {
+        Ok(true) => startup_latency.mark_hud_show_returned(),
+        Ok(false) => {}
+        Err(error) => eprintln!("dictation started but the HUD could not be shown: {error}"),
     }
     // Ready, failure, and timeout callbacks wait on this publication boundary,
     // so none can overtake the user-visible Starting revision.
@@ -1363,6 +1405,7 @@ fn fail_microphone_preflight<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
     error: String,
+    startup_latency: StartupLatencyTrace,
 ) -> Result<DictationStateEvent, String> {
     let settings = state.settings_snapshot()?;
     let hud_settings = settings.hud.clone();
@@ -1381,13 +1424,27 @@ fn fail_microphone_preflight<R: Runtime>(
             .and_then(|_| session.fail(error.clone()))
             .map_err(|transition| transition.to_string())?
     };
+    let session_id = active_session_id(&failed)?;
+    if !startup_latency.bind_session(&session_id) {
+        eprintln!("could not bind microphone preflight latency diagnostics");
+    }
 
-    if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
-        eprintln!("microphone check failed but the HUD could not be shown: {show_error}");
+    match show_hud_for_target(app, state, &hud_settings, None) {
+        Ok(true) => startup_latency.mark_hud_show_returned(),
+        Ok(false) => {}
+        Err(show_error) => {
+            eprintln!("microphone check failed but the HUD could not be shown: {show_error}")
+        }
     }
     if let Err(emit_error) = emit_state(app, &failed) {
         eprintln!("could not emit microphone permission failure: {emit_error}");
     }
+    emit_unregistered_dictation_latency(
+        app,
+        &startup_latency,
+        failed.revision,
+        DictationLatencyOutcome::Failed,
+    );
     settle_after(app, FAILURE_HUD_DWELL, failed.revision);
     Err(error)
 }
@@ -1412,6 +1469,7 @@ fn fail_target_preflight<R: Runtime>(
     state: &AppState,
     trigger: SessionTrigger,
     error: TextTargetError,
+    startup_latency: StartupLatencyTrace,
 ) -> Result<DictationStateEvent, String> {
     let settings = state.settings_snapshot()?;
     let hud_settings = settings.hud.clone();
@@ -1431,13 +1489,27 @@ fn fail_target_preflight<R: Runtime>(
             .and_then(|_| session.fail_with_delivery(error.to_string(), delivery))
             .map_err(|transition| transition.to_string())?
     };
+    let session_id = active_session_id(&failed)?;
+    if !startup_latency.bind_session(&session_id) {
+        eprintln!("could not bind text-target preflight latency diagnostics");
+    }
 
-    if let Err(show_error) = show_hud_for_target(app, state, &hud_settings, None) {
-        eprintln!("target check failed but the HUD could not be shown: {show_error}");
+    match show_hud_for_target(app, state, &hud_settings, None) {
+        Ok(true) => startup_latency.mark_hud_show_returned(),
+        Ok(false) => {}
+        Err(show_error) => {
+            eprintln!("target check failed but the HUD could not be shown: {show_error}")
+        }
     }
     if let Err(emit_error) = emit_state(app, &failed) {
         eprintln!("could not emit text-target failure: {emit_error}");
     }
+    emit_unregistered_dictation_latency(
+        app,
+        &startup_latency,
+        failed.revision,
+        DictationLatencyOutcome::Failed,
+    );
     settle_after(app, FAILURE_HUD_DWELL, failed.revision);
     Err(error.to_string())
 }
@@ -1505,9 +1577,12 @@ pub(crate) fn stop_session<R: Runtime>(
         release_hud_target(app, state, hud_target_lease.as_ref());
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
             let _ = emit_state(app, &failed);
-            emit_dictation_latency(
+            finish_dictation_latency(
                 app,
-                latency.finish(failed.revision, DictationLatencyOutcome::Failed),
+                &processing_session_id,
+                failed.revision,
+                DictationLatencyOutcome::Failed,
+                Some(latency),
             );
             settle_after(app, FAILURE_HUD_DWELL, failed.revision);
         }
@@ -1519,6 +1594,49 @@ pub(crate) fn stop_session<R: Runtime>(
 fn emit_state<R: Runtime>(app: &AppHandle<R>, event: &DictationStateEvent) -> Result<(), String> {
     app.emit(DICTATION_STATE_EVENT, event)
         .map_err(|error| format!("could not emit dictation state: {error}"))
+}
+
+fn emit_unregistered_dictation_latency<R: Runtime>(
+    app: &AppHandle<R>,
+    startup: &StartupLatencyTrace,
+    revision: u64,
+    outcome: DictationLatencyOutcome,
+) {
+    if let Some(event) = startup.finish(revision, outcome, None) {
+        emit_dictation_latency(app, event);
+    }
+}
+
+/// Atomically claims the startup trace for this exact session before building
+/// its terminal event. A stale worker or callback cannot take a replacement
+/// trace, and `StartupLatencyTrace::finish` provides a second at-most-once
+/// boundary for any outstanding Arc clone.
+fn finish_dictation_latency<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    revision: u64,
+    outcome: DictationLatencyOutcome,
+    processing: Option<ProcessingLatencyTrace>,
+) {
+    if processing
+        .as_ref()
+        .is_some_and(|processing| processing.session_id() != session_id)
+    {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let startup = match state.take_dictation_latency_trace(session_id) {
+        Ok(Some(startup)) => startup,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("could not finish dictation latency diagnostics: {error}");
+            return;
+        }
+    };
+    let processing = processing.map(ProcessingLatencyTrace::finish);
+    if let Some(event) = startup.finish(revision, outcome, processing) {
+        emit_dictation_latency(app, event);
+    }
 }
 
 fn emit_dictation_latency<R: Runtime>(app: &AppHandle<R>, latency: DictationLatencyEvent) {
@@ -1663,10 +1781,12 @@ fn finalize_capture<R: Runtime>(
                             if let Err(error) = emit_state(app, &completed) {
                                 eprintln!("could not emit transcription completion: {error}");
                             }
-                            emit_dictation_latency(
+                            finish_dictation_latency(
                                 app,
-                                latency
-                                    .finish(completed.revision, DictationLatencyOutcome::Completed),
+                                &session_id,
+                                completed.revision,
+                                DictationLatencyOutcome::Completed,
+                                Some(latency),
                             );
                             match delivery.status {
                                 DictationDeliveryStatus::Inserted => {
@@ -1983,7 +2103,7 @@ fn delivery_for_target_error(
 
 fn handle_audio_capture_ready<R: Runtime>(app: &AppHandle<R>, ready: AudioCaptureReady) {
     let state = app.state::<AppState>();
-    let event = {
+    let (event, startup_latency) = {
         let mut session = match state.session.lock() {
             Ok(session) => session,
             Err(_) => {
@@ -1993,8 +2113,18 @@ fn handle_audio_capture_ready<R: Runtime>(app: &AppHandle<R>, ready: AudioCaptur
                 return;
             }
         };
+        if !starting_session_matches(&session.snapshot(), &ready.session_id) {
+            return;
+        }
+        let startup_latency = match state.dictation_latency_trace(&ready.session_id) {
+            Ok(trace) => trace,
+            Err(error) => {
+                eprintln!("could not read microphone startup diagnostics: {error}");
+                None
+            }
+        };
         match mark_session_ready_if_matching(&mut session, &ready.session_id) {
-            Ok(Some(event)) => event,
+            Ok(Some(event)) => (event, startup_latency),
             Ok(None) => return,
             Err(error) => {
                 eprintln!("could not mark the microphone ready: {error}");
@@ -2005,6 +2135,8 @@ fn handle_audio_capture_ready<R: Runtime>(app: &AppHandle<R>, ready: AudioCaptur
 
     if let Err(error) = emit_state(app, &event) {
         eprintln!("could not emit listening state: {error}");
+    } else if let Some(trace) = startup_latency {
+        trace.mark_listening_emitted();
     }
 }
 
@@ -2040,6 +2172,7 @@ fn audio_failure_matches_session(
 
 fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCaptureFailure) {
     let state = app.state::<AppState>();
+    let failure_session_id = failure.session_id.clone();
     let transition = (|| -> Result<Option<AudioFailureTransition>, String> {
         let mut session = state
             .session
@@ -2088,6 +2221,13 @@ fn handle_audio_capture_failure<R: Runtime>(app: &AppHandle<R>, failure: AudioCa
             if let Err(emit_error) = emit_state(app, &transition.event) {
                 eprintln!("could not emit microphone failure: {emit_error}");
             }
+            finish_dictation_latency(
+                app,
+                &failure_session_id,
+                transition.event.revision,
+                DictationLatencyOutcome::Failed,
+                None,
+            );
             settle_after(app, FAILURE_HUD_DWELL, transition.event.revision);
         }
         Ok(None) => {}
@@ -2262,9 +2402,12 @@ fn fail_processing_with_latency<R: Runtime>(
     let Some(failed) = fail_and_emit_if_matching(app, session_id, error) else {
         return;
     };
-    emit_dictation_latency(
+    finish_dictation_latency(
         app,
-        latency.finish(failed.revision, DictationLatencyOutcome::Failed),
+        session_id,
+        failed.revision,
+        DictationLatencyOutcome::Failed,
+        Some(latency),
     );
     settle_after(app, FAILURE_HUD_DWELL, failed.revision);
 }

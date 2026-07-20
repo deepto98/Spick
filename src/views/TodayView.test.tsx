@@ -96,6 +96,13 @@ const lastLatency: NativeDictationLatencyEvent = {
   sessionId: "opaque-session",
   revision: 4,
   outcome: "completed",
+  targetCaptureMs: 120,
+  startToTargetCaptureReturnMs: 124,
+  startToAudioOwnerSpawnMs: 140,
+  startToStartingEmittedMs: 142,
+  startToHudShowReturnMs: 165,
+  startToMicrophoneReadyMs: 155,
+  startToListeningEmittedMs: 170,
   audioDurationMs: 2_400,
   stopToProcessingMs: 3,
   captureFinalizeMs: 10,
@@ -200,10 +207,13 @@ describe("local usage and transcript history", () => {
     expect(screen.getByText("Last handoff")).toBeInTheDocument();
     expect(screen.getByText("1.26 s")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Last handoff"));
+    expect(screen.getByText("Text field check")).toBeInTheDocument();
+    expect(screen.getByText("Widget ready")).toBeInTheDocument();
+    expect(screen.getByText("Microphone ready")).toBeInTheDocument();
     expect(screen.getByText("Transcription")).toBeInTheDocument();
     expect(screen.getByText("1.24 s")).toBeInTheDocument();
     expect(
-      screen.getByText(/No recording, dictated text, or app name is included/i),
+      screen.getByText(/no recording, dictated text, or app name is included/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(lastLatency.sessionId)).toBeNull();
   });
@@ -220,6 +230,8 @@ describe("local usage and transcript history", () => {
         lastLatency={{
           ...lastLatency,
           outcome: "failed",
+          startToMicrophoneReadyMs: null,
+          startToListeningEmittedMs: null,
           transcriptionMs: null,
           deliveryMs: null,
           stopToDeliveryMs: null,
@@ -231,6 +243,34 @@ describe("local usage and transcript history", () => {
     expect(screen.getByText("824 ms")).toBeInTheDocument();
     expect(screen.queryByText("Transcription")).toBeNull();
     expect(screen.queryByText("Text handoff")).toBeNull();
+  });
+
+  it("labels a cancelled startup without inventing a total or later stages", () => {
+    render(
+      <TodayView
+        {...baseProps}
+        lastLatency={{
+          ...lastLatency,
+          outcome: "cancelled",
+          startToMicrophoneReadyMs: null,
+          startToListeningEmittedMs: null,
+          audioDurationMs: null,
+          stopToProcessingMs: null,
+          captureFinalizeMs: null,
+          transcriptionMs: null,
+          deliveryMs: null,
+          stopToDeliveryMs: null,
+          processingTotalMs: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Last attempt cancelled")).toBeInTheDocument();
+    expect(screen.getByText("Startup details")).toBeInTheDocument();
+    expect(screen.getByText("Text field check")).toBeInTheDocument();
+    expect(screen.queryByText("Microphone ready")).toBeNull();
+    expect(screen.queryByText("Listening signal sent")).toBeNull();
+    expect(screen.queryByText("Processing signal")).toBeNull();
   });
 
   it("shows loading, empty, and retryable error states without sample rows", () => {

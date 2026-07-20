@@ -97,6 +97,12 @@ function formatLatency(milliseconds: number) {
   return `${Number(seconds)} s`;
 }
 
+function latencyHeadline(latency: NativeDictationLatencyEvent) {
+  return latency.processingTotalMs === null
+    ? "Startup details"
+    : formatLatency(latency.processingTotalMs);
+}
+
 function languageCode(languageTag: string | null | undefined) {
   return languageTag?.split("-", 1)[0]?.toUpperCase() || "AUTO";
 }
@@ -578,11 +584,41 @@ export function TodayView({
                   <Timer size={13} />
                   {lastLatency.outcome === "completed"
                     ? "Last handoff"
-                    : "Last attempt stopped"}
+                    : lastLatency.outcome === "cancelled"
+                      ? "Last attempt cancelled"
+                      : "Last attempt stopped"}
                 </span>
-                <strong>{formatLatency(lastLatency.processingTotalMs)}</strong>
+                <strong>{latencyHeadline(lastLatency)}</strong>
               </summary>
               <dl>
+                <LatencyValue
+                  label="Text field check"
+                  value={lastLatency.targetCaptureMs}
+                />
+                <LatencyValue
+                  label="Text field check finished"
+                  value={lastLatency.startToTargetCaptureReturnMs}
+                />
+                <LatencyValue
+                  label="Microphone setup began"
+                  value={lastLatency.startToAudioOwnerSpawnMs}
+                />
+                <LatencyValue
+                  label="Start signal sent"
+                  value={lastLatency.startToStartingEmittedMs}
+                />
+                <LatencyValue
+                  label="Widget ready"
+                  value={lastLatency.startToHudShowReturnMs}
+                />
+                <LatencyValue
+                  label="Microphone ready"
+                  value={lastLatency.startToMicrophoneReadyMs}
+                />
+                <LatencyValue
+                  label="Listening signal sent"
+                  value={lastLatency.startToListeningEmittedMs}
+                />
                 <LatencyValue
                   label="Processing signal"
                   value={lastLatency.stopToProcessingMs}
@@ -601,8 +637,11 @@ export function TodayView({
                 />
               </dl>
               <small>
-                Elapsed times only, kept in memory until Spick quits. No
-                recording, dictated text, or app name is included.
+                Startup milestones are measured from the start request; target
+                capture is the call itself. “Widget ready” records the native
+                show call returning, not a painted frame. Timings stay in memory
+                until Spick quits—no recording, dictated text, or app name is
+                included.
               </small>
             </details>
           )}

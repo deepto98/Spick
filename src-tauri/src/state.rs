@@ -19,7 +19,7 @@ use crate::{
         TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
-    latency::DictationLatencyEvent,
+    latency::{DictationLatencyEvent, StartupLatencyTrace},
     local_data::LocalDataStore,
     model_store::ModelStore,
     platform::{CapturedTextTarget, TextTargetController},
@@ -57,6 +57,7 @@ pub struct AppState {
     /// interactive and stealing its captured text focus.
     pub hud_target_protection: Mutex<HudTargetProtection>,
     transcripts: Mutex<TranscriptStore>,
+    active_dictation_latency: Mutex<Option<StartupLatencyTrace>>,
     latest_dictation_latency: RwLock<Option<DictationLatencyEvent>>,
     local_data_revision: AtomicU64,
     settings_path: PathBuf,
@@ -138,6 +139,7 @@ impl AppState {
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),
             transcripts: Mutex::new(TranscriptStore::default()),
+            active_dictation_latency: Mutex::new(None),
             latest_dictation_latency: RwLock::new(None),
             local_data_revision: AtomicU64::new(0),
             settings_path,
@@ -246,6 +248,53 @@ impl AppState {
                     .map(|transcript| transcript.session_id)
             })
             .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    /// Register the one startup trace owned by the active dictation. A newer
+    /// session replaces an orphaned older trace, while exact-id lookups below
+    /// ensure stale native callbacks can never mutate or finish the replacement.
+    pub fn register_dictation_latency(&self, trace: StartupLatencyTrace) -> Result<(), String> {
+        if trace.session_id().is_none() {
+            return Err("dictation latency session identity is unavailable".into());
+        }
+        self.active_dictation_latency
+            .lock()
+            .map(|mut active| *active = Some(trace))
+            .map_err(|_| "dictation latency diagnostics are unavailable".into())
+    }
+
+    pub fn dictation_latency_trace(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<StartupLatencyTrace>, String> {
+        self.active_dictation_latency
+            .lock()
+            .map(|active| {
+                active
+                    .as_ref()
+                    .filter(|trace| trace.session_id().as_deref() == Some(session_id))
+                    .cloned()
+            })
+            .map_err(|_| "dictation latency diagnostics are unavailable".into())
+    }
+
+    pub fn take_dictation_latency_trace(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<StartupLatencyTrace>, String> {
+        self.active_dictation_latency
+            .lock()
+            .map(|mut active| {
+                if active
+                    .as_ref()
+                    .is_some_and(|trace| trace.session_id().as_deref() == Some(session_id))
+                {
+                    active.take()
+                } else {
+                    None
+                }
+            })
+            .map_err(|_| "dictation latency diagnostics are unavailable".into())
     }
 
     pub fn record_dictation_latency(&self, event: DictationLatencyEvent) -> Result<bool, String> {
@@ -1030,6 +1079,32 @@ mod tests {
     }
 
     #[test]
+    fn active_latency_trace_is_taken_only_by_its_exact_session() {
+        let (_directory, path) = test_path();
+        let state = AppState::load(path).unwrap();
+        let trace = StartupLatencyTrace::start();
+        assert!(trace.bind_session("session-a"));
+        state.register_dictation_latency(trace).unwrap();
+
+        assert!(state
+            .take_dictation_latency_trace("session-b")
+            .unwrap()
+            .is_none());
+        assert!(state
+            .dictation_latency_trace("session-a")
+            .unwrap()
+            .is_some());
+        assert!(state
+            .take_dictation_latency_trace("session-a")
+            .unwrap()
+            .is_some());
+        assert!(state
+            .dictation_latency_trace("session-a")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn cloud_fallback_permission_is_snapshotted_per_session() {
         let (_directory, path) = test_path();
         let state = AppState::load(path).unwrap();
@@ -1085,13 +1160,20 @@ mod tests {
             session_id: format!("session-{revision}"),
             revision,
             outcome: crate::latency::DictationLatencyOutcome::Completed,
+            target_capture_ms: Some(1),
+            start_to_target_capture_return_ms: Some(2),
+            start_to_audio_owner_spawn_ms: Some(4),
+            start_to_starting_emitted_ms: Some(5),
+            start_to_hud_show_return_ms: Some(7),
+            start_to_microphone_ready_ms: Some(6),
+            start_to_listening_emitted_ms: Some(8),
             audio_duration_ms: Some(1_000),
-            stop_to_processing_ms: 2,
+            stop_to_processing_ms: Some(2),
             capture_finalize_ms: Some(3),
             transcription_ms: Some(80),
             delivery_ms: Some(4),
             stop_to_delivery_ms: Some(91),
-            processing_total_ms: 94,
+            processing_total_ms: Some(94),
         }
     }
 }

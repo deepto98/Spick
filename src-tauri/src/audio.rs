@@ -50,6 +50,10 @@ pub(crate) type ErrorSink = Arc<dyn Fn(AudioCaptureFailure) + Send + Sync>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AudioCaptureReady {
     pub session_id: String,
+    /// Private monotonic marker captured immediately after `Stream::play`
+    /// returned. It is converted to a relative duration before diagnostics
+    /// cross the native boundary.
+    pub stream_play_returned_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,11 +760,17 @@ fn run_capture_owner(
             return;
         }
     }
+    let stream_play_returned_at = Instant::now();
 
     if let Ok(mut shared) = shared_metadata.lock() {
         *shared = Some(metadata.clone());
     }
-    if !notify_ready(&session_id, &phase, &lifecycle_sender) {
+    if !notify_ready(
+        &session_id,
+        stream_play_returned_at,
+        &phase,
+        &lifecycle_sender,
+    ) {
         drop(stream);
         return;
     }
@@ -936,6 +946,7 @@ fn notify_failure(
 
 fn notify_ready(
     session_id: &str,
+    stream_play_returned_at: Instant,
     phase: &AtomicU8,
     lifecycle_sender: &mpsc::Sender<AudioCaptureLifecycleEvent>,
 ) -> bool {
@@ -944,6 +955,7 @@ fn notify_ready(
     }
     let _ = lifecycle_sender.send(AudioCaptureLifecycleEvent::Ready(AudioCaptureReady {
         session_id: session_id.to_string(),
+        stream_play_returned_at,
     }));
     true
 }
@@ -1282,7 +1294,7 @@ mod tests {
         assert!(mark_start_timed_out(&phase, &shutdown));
         assert!(shutdown.load(Ordering::Acquire));
         mark_capture_stopped_if_active(&phase);
-        assert!(!notify_ready("session-a", &phase, &sender));
+        assert!(!notify_ready("session-a", Instant::now(), &phase, &sender));
         notify_failure("session-a", "late failure".into(), &phase, &sender);
         assert!(receiver.try_recv().is_err());
         assert!(matches!(
@@ -1299,7 +1311,12 @@ mod tests {
 
         assert!(!mark_start_timed_out(&capture.phase, &shutdown));
         mark_capture_stopped_if_active(&capture.phase);
-        assert!(!notify_ready("session-a", &capture.phase, &sender));
+        assert!(!notify_ready(
+            "session-a",
+            Instant::now(),
+            &capture.phase,
+            &sender,
+        ));
         notify_failure("session-a", "late failure".into(), &capture.phase, &sender);
         assert!(receiver.try_recv().is_err());
         assert!(matches!(
@@ -1486,8 +1503,14 @@ mod tests {
     fn readiness_is_session_bound_and_marks_capture_before_notification() {
         let (sender, receiver) = mpsc::channel();
         let phase = AtomicU8::new(InternalCapturePhase::Starting as u8);
+        let stream_play_returned_at = Instant::now();
 
-        assert!(notify_ready("session-a", &phase, &sender));
+        assert!(notify_ready(
+            "session-a",
+            stream_play_returned_at,
+            &phase,
+            &sender,
+        ));
 
         assert!(matches!(
             InternalCapturePhase::load(&phase),
@@ -1497,6 +1520,7 @@ mod tests {
             receiver.recv().unwrap(),
             AudioCaptureLifecycleEvent::Ready(AudioCaptureReady {
                 session_id: "session-a".into(),
+                stream_play_returned_at,
             })
         );
     }

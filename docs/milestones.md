@@ -54,7 +54,7 @@ Exit criteria:
 - Stage timings are visible in diagnostics without exposing transcript or audio content.
 - Compatibility results identify supported controls and known limitations rather than claiming application-wide support.
 
-Current development checkpoint: the Today view can expand the last processing attempt into microphone handoff, transcription, and text-handoff timings. These measurements stay in process memory, use monotonic elapsed time, and omit speech, transcripts, target-app names, model/provider identifiers, errors, paths, and wall-clock timestamps.
+Current development checkpoint: the Today view can expand the last attempt into target capture, microphone startup, state-signal, successful native widget-call, microphone-ready, microphone handoff, transcription, and text-handoff timings. The native widget milestone records the show call returning rather than claiming a painted frame. Failed and cancelled attempts leave unreached or unsuccessful stages blank. Measurements stay in process memory, use monotonic elapsed time, and omit speech, transcripts, target-app and device names, model/provider identifiers, errors, paths, and wall-clock timestamps.
 
 ## Milestone 3: multilingual local models
 

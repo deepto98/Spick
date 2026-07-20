@@ -26,7 +26,7 @@ For frontend-only work, use `npm run dev`. The browser build cannot exercise Tau
 
 Open **Engines** in the desktop build to download, import, and select a local model, or save a provider key and select OpenAI, xAI, or Gemini. Downloads can be cancelled and are written to app-local data only after the declared byte length and SHA-256 both match. **Import model** accepts a trusted whisper.cpp GGML `.bin` file selected through the native file picker. Spick copies it into app-local storage, checks it with the bundled runtime, and never sends or retains its original path.
 
-After a dictation attempt, **Today → Last handoff** shows coarse processing timings. They live only in memory until Spick quits and never include the recording, transcript, target app, language, model/provider identity, or error text.
+After a dictation attempt, **Today → Last handoff** shows coarse startup and processing timings. Startup milestones cover target capture, microphone setup, state-event delivery, the native widget show call succeeding, and the microphone stream becoming ready. The widget measurement does not claim that a WebView frame was painted. Diagnostics live only in memory until Spick quits and never include the recording, transcript, target app, device, language, model/provider identity, or error text. Failed and cancelled starts keep unreached stages blank.
 
 ### Local development data
 
