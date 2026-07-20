@@ -24,6 +24,7 @@ import type {
 import type {
   NativeDeliveryOutcome,
   NativeDeliveryStatus,
+  NativeDictationLatencyEvent,
   NativeDictationTranscript,
 } from "../lib/nativeDictation";
 import type { HudState } from "../types";
@@ -36,6 +37,7 @@ interface TodayViewProps {
   dictationError?: string;
   delivery: NativeDeliveryOutcome | null;
   lastTranscript: NativeDictationTranscript | null;
+  lastLatency?: NativeDictationLatencyEvent | null;
   hiddenEphemeralSessionId?: string | null;
   language: string;
   native: boolean;
@@ -83,6 +85,12 @@ function formatRelativeTime(timestamp: number) {
     day: "numeric",
     month: "short",
   }).format(new Date(timestamp));
+}
+
+function formatLatency(milliseconds: number) {
+  if (milliseconds < 1_000) return `${milliseconds} ms`;
+  const seconds = (milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 2 : 1);
+  return `${Number(seconds)} s`;
 }
 
 function languageCode(languageTag: string | null | undefined) {
@@ -141,6 +149,7 @@ export function TodayView({
   dictationPending,
   dictationError,
   delivery,
+  lastLatency = null,
   lastTranscript,
   hiddenEphemeralSessionId,
   language,
@@ -533,8 +542,59 @@ export function TodayView({
                 : "Development app required"}
             </strong>
           </div>
+          {native && lastLatency && (
+            <details className="latency-details">
+              <summary>
+                <span>
+                  <Timer size={13} />
+                  {lastLatency.outcome === "completed"
+                    ? "Last handoff"
+                    : "Last attempt stopped"}
+                </span>
+                <strong>{formatLatency(lastLatency.processingTotalMs)}</strong>
+              </summary>
+              <dl>
+                <LatencyValue
+                  label="Processing signal"
+                  value={lastLatency.stopToProcessingMs}
+                />
+                <LatencyValue
+                  label="Mic handoff"
+                  value={lastLatency.captureFinalizeMs}
+                />
+                <LatencyValue
+                  label="Transcription"
+                  value={lastLatency.transcriptionMs}
+                />
+                <LatencyValue
+                  label="Text handoff"
+                  value={lastLatency.deliveryMs}
+                />
+              </dl>
+              <small>
+                Elapsed times only, kept in memory until Spick quits. No
+                recording, dictated text, or app name is included.
+              </small>
+            </details>
+          )}
         </section>
       </div>
+    </div>
+  );
+}
+
+function LatencyValue({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | null;
+}) {
+  if (value === null) return null;
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{formatLatency(value)}</dd>
     </div>
   );
 }

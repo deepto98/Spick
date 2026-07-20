@@ -52,6 +52,8 @@ Exit criteria:
 - Stage timings are visible in diagnostics without exposing transcript or audio content.
 - Compatibility results identify supported controls and known limitations rather than claiming application-wide support.
 
+Current development checkpoint: the Today view can expand the last processing attempt into microphone handoff, transcription, and text-handoff timings. These measurements stay in process memory, use monotonic elapsed time, and omit speech, transcripts, target-app names, model/provider identifiers, errors, paths, and wall-clock timestamps.
+
 ## Milestone 3: multilingual local models
 
 Expand the curated model manager introduced in Milestone 1. Add disk-space preflight, RAM and speed guidance, model migration, and measured recommendations while keeping the distinction between multilingual and English-only models clear.

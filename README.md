@@ -26,6 +26,8 @@ For frontend-only work, use `npm run dev`. The browser build cannot exercise Tau
 
 Open **Engines** in the desktop build to download, import, and select a local model, or save a provider key and select OpenAI, xAI, or Gemini. Downloads can be cancelled and are written to app-local data only after the declared byte length and SHA-256 both match. **Import model** accepts a trusted whisper.cpp GGML `.bin` file selected through the native file picker. Spick copies it into app-local storage, checks it with the bundled runtime, and never sends or retains its original path.
 
+After a dictation attempt, **Today → Last handoff** shows coarse processing timings. They live only in memory until Spick quits and never include the recording, transcript, target app, language, model/provider identity, or error text.
+
 ### Local development data
 
 `npm run tauri dev` uses the same OS application directories as other builds with the `app.spick.desktop` identifier. On macOS, the files are in:

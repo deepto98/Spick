@@ -806,6 +806,7 @@ function App() {
               dictationPending={dictation.pending}
               dictationError={dictation.error ?? undefined}
               delivery={dictation.delivery}
+              lastLatency={dictation.lastLatency}
               lastTranscript={dictation.lastTranscript}
               hiddenEphemeralSessionId={hiddenEphemeralSessionId}
               language={hudLanguage}

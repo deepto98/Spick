@@ -66,6 +66,8 @@ One push-to-talk session follows this sequence:
 
 The user-visible session state is limited to idle, listening, transcribing, cleaning, inserting, success, and error. Cancellation can win before the insertion claim. Once a future insertion begins, the result must be reported as inserted, failed, or indeterminate instead of claiming that nothing was typed.
 
+The processing worker also emits one optional, in-memory latency trace when it owns a completed or failed terminal transition. The trace uses monotonic elapsed durations for the stop-to-processing handoff, microphone finalization, the full transcription operation, and text delivery. It contains no speech or transcript content, target application, language, model/provider identity, path, error message, absolute timestamp, or audio samples, and it is never written to settings or SQLite. Cancelled and superseded workers emit nothing. The Today view listens for this event only in the main window and treats it as optional diagnostics rather than recorder state.
+
 The development build now reaches step 8 through two debug-only paths. Controls with settable selected text receive an element-addressed selection replacement, followed by exact content readback or exact-caret confirmation when parameterized readback is unavailable. Controls such as some Notes versions can receive one target-PID Unicode event after a second exact target check. PID event delivery has an unavoidable focus micro-race because macOS does not bind it atomically to an Accessibility element; Spick therefore posts at most once and requires the original element to confirm the expected result. Release insertion remains gated while the InputMethodKit compatibility work continues.
 
 ## Transcription and cleanup engines

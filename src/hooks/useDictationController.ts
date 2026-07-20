@@ -4,14 +4,18 @@ import { languagePolicyBadge } from "../lib/nativeSettings";
 import {
   cancelDictationSession,
   getDictationSession,
+  getLastDictationLatency,
   getLastTranscript,
   hasNativeRuntime,
+  isValidDictationLatencyEvent,
   startDictationSession,
   stopDictationSession,
+  subscribeToDictationLatency,
   subscribeToDictationState,
   subscribeToDictationTranscript,
   toHudState,
   type NativeDeliveryOutcome,
+  type NativeDictationLatencyEvent,
   type NativeDictationStateEvent,
   type NativeDictationTranscript,
 } from "../lib/nativeDictation";
@@ -24,10 +28,13 @@ export function useDictationController(includeTranscripts = true) {
   const [lastTranscript, setLastTranscript] =
     useState<NativeDictationTranscript | null>(null);
   const [delivery, setDelivery] = useState<NativeDeliveryOutcome | null>(null);
+  const [lastLatency, setLastLatency] =
+    useState<NativeDictationLatencyEvent | null>(null);
   const [language, setLanguage] = useState("AUTO");
   const pendingRef = useRef(false);
   const revisionRef = useRef(-1);
   const transcriptEventSeenRef = useRef(false);
+  const latencyRevisionRef = useRef(-1);
 
   const applyNativeState = useCallback((event: NativeDictationStateEvent) => {
     if (
@@ -59,7 +66,20 @@ export function useDictationController(includeTranscripts = true) {
     let disposed = false;
     let unsubscribeState: (() => void) | undefined;
     let unsubscribeTranscript: (() => void) | undefined;
+    let unsubscribeLatency: (() => void) | undefined;
     transcriptEventSeenRef.current = false;
+
+    const applyLatency = (candidate: unknown) => {
+      if (
+        disposed ||
+        !isValidDictationLatencyEvent(candidate) ||
+        candidate.revision <= latencyRevisionRef.current
+      ) {
+        return;
+      }
+      latencyRevisionRef.current = candidate.revision;
+      setLastLatency(candidate);
+    };
 
     const connect = async () => {
       try {
@@ -72,6 +92,22 @@ export function useDictationController(includeTranscripts = true) {
         }
         unsubscribeState = stopListening;
         if (includeTranscripts) {
+          // Latency diagnostics are optional and must never make the recorder
+          // look disconnected if their listener cannot be installed.
+          try {
+            const stopLatency = await subscribeToDictationLatency(applyLatency);
+            if (disposed) {
+              stopLatency();
+              return;
+            }
+            unsubscribeLatency = stopLatency;
+          } catch {
+            // Best-effort, process-memory-only diagnostics.
+          }
+
+          getLastDictationLatency()
+            .catch(() => null)
+            .then(applyLatency);
           const stopTranscripts = await subscribeToDictationTranscript(
             (transcript) => {
               if (!disposed) {
@@ -110,6 +146,7 @@ export function useDictationController(includeTranscripts = true) {
       disposed = true;
       unsubscribeState?.();
       unsubscribeTranscript?.();
+      unsubscribeLatency?.();
     };
   }, [applyNativeState, includeTranscripts, native]);
 
@@ -185,6 +222,7 @@ export function useDictationController(includeTranscripts = true) {
     error,
     delivery,
     language,
+    lastLatency,
     lastTranscript,
     native,
     pending,

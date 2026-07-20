@@ -19,6 +19,7 @@ use crate::{
         TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
+    latency::DictationLatencyEvent,
     local_data::LocalDataStore,
     model_store::ModelStore,
     platform::{CapturedTextTarget, TextTargetController},
@@ -56,6 +57,7 @@ pub struct AppState {
     /// interactive and stealing its captured text focus.
     pub hud_target_protection: Mutex<HudTargetProtection>,
     transcripts: Mutex<TranscriptStore>,
+    latest_dictation_latency: RwLock<Option<DictationLatencyEvent>>,
     local_data_revision: AtomicU64,
     settings_path: PathBuf,
 }
@@ -136,6 +138,7 @@ impl AppState {
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),
             transcripts: Mutex::new(TranscriptStore::default()),
+            latest_dictation_latency: RwLock::new(None),
             local_data_revision: AtomicU64::new(0),
             settings_path,
         })
@@ -243,6 +246,29 @@ impl AppState {
                     .map(|transcript| transcript.session_id)
             })
             .map_err(|_| "transcript store is unavailable".into())
+    }
+
+    pub fn record_dictation_latency(&self, event: DictationLatencyEvent) -> Result<bool, String> {
+        self.latest_dictation_latency
+            .write()
+            .map(|mut latest| {
+                if latest
+                    .as_ref()
+                    .is_some_and(|current| current.revision >= event.revision)
+                {
+                    return false;
+                }
+                *latest = Some(event);
+                true
+            })
+            .map_err(|_| "dictation latency diagnostics are unavailable".into())
+    }
+
+    pub fn latest_dictation_latency(&self) -> Result<Option<DictationLatencyEvent>, String> {
+        self.latest_dictation_latency
+            .read()
+            .map(|latest| latest.clone())
+            .map_err(|_| "dictation latency diagnostics are unavailable".into())
     }
 
     pub fn next_local_data_revision(&self) -> u64 {
@@ -988,6 +1014,22 @@ mod tests {
     }
 
     #[test]
+    fn latency_cache_keeps_only_the_newest_terminal_revision_in_memory() {
+        let (_directory, path) = test_path();
+        let state = AppState::load(path).unwrap();
+
+        assert_eq!(state.latest_dictation_latency().unwrap(), None);
+        assert!(state.record_dictation_latency(latency_event(8)).unwrap());
+        assert!(!state.record_dictation_latency(latency_event(7)).unwrap());
+        assert!(!state.record_dictation_latency(latency_event(8)).unwrap());
+        assert!(state.record_dictation_latency(latency_event(9)).unwrap());
+        assert_eq!(
+            state.latest_dictation_latency().unwrap().unwrap().revision,
+            9
+        );
+    }
+
+    #[test]
     fn cloud_fallback_permission_is_snapshotted_per_session() {
         let (_directory, path) = test_path();
         let state = AppState::load(path).unwrap();
@@ -1035,6 +1077,21 @@ mod tests {
                 target_app: None,
                 caret_repositioned: None,
             },
+        }
+    }
+
+    fn latency_event(revision: u64) -> DictationLatencyEvent {
+        DictationLatencyEvent {
+            session_id: format!("session-{revision}"),
+            revision,
+            outcome: crate::latency::DictationLatencyOutcome::Completed,
+            audio_duration_ms: Some(1_000),
+            stop_to_processing_ms: 2,
+            capture_finalize_ms: Some(3),
+            transcription_ms: Some(80),
+            delivery_ms: Some(4),
+            stop_to_delivery_ms: Some(91),
+            processing_total_ms: 94,
         }
     }
 }

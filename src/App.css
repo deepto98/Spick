@@ -1151,6 +1151,74 @@ p {
   font-weight: 550;
 }
 
+.latency-details {
+  position: relative;
+  padding-top: 10px;
+  margin-top: 10px;
+  color: #aaa49a;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.latency-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 8px;
+  list-style: none;
+}
+
+.latency-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.latency-details summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.latency-details summary strong {
+  color: #e1d9cc;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.latency-details dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 14px;
+  padding: 9px 0 0;
+  margin: 0;
+}
+
+.latency-details dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.latency-details dt,
+.latency-details dd {
+  margin: 0;
+  font-size: 8px;
+}
+
+.latency-details dd {
+  color: #ddd4c7;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-details > small {
+  display: block;
+  margin-top: 9px;
+  color: #817b73;
+  font-size: 7px;
+  line-height: 1.45;
+}
+
 .dictation-hud {
   display: flex;
   min-width: 194px;

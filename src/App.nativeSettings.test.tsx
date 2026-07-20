@@ -66,6 +66,7 @@ vi.mock("./hooks/useDictationController", () => ({
     delivery: null,
     error: null,
     language: "AUTO",
+    lastLatency: null,
     lastTranscript: localDataMocks.lastTranscript,
     native: true,
     pending: false,

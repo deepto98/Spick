@@ -17,6 +17,7 @@ pub mod compatibility;
 pub mod domain;
 pub mod engines;
 mod hud;
+mod latency;
 mod local_data;
 mod model_store;
 pub mod platform;
@@ -164,6 +165,7 @@ pub fn run() {
             commands::set_hud_presentation,
             commands::start_hud_drag,
             commands::get_last_transcript,
+            commands::get_last_dictation_latency,
             commands::list_local_models,
             commands::import_local_model,
             commands::install_local_model,

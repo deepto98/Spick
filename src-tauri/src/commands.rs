@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, TryLockError,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
@@ -27,6 +27,10 @@ use crate::{
         TranscriptResult, TranscriptionRequest,
     },
     hud,
+    latency::{
+        DictationLatencyEvent, DictationLatencyOutcome, ProcessingLatencyTrace,
+        DICTATION_LATENCY_EVENT,
+    },
     local_data::{
         ClearLocalDataResult, ClearLocalDataScope, CompletedDictationRecord,
         DeleteVocabularyResult, HistoryCursor, HistoryPage, LocalDataChangedEvent, LocalDataDomain,
@@ -450,6 +454,15 @@ pub fn get_last_transcript(
 ) -> Result<Option<DictationTranscript>, String> {
     require_main_window(&window)?;
     state.latest_transcript()
+}
+
+#[tauri::command]
+pub fn get_last_dictation_latency(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<DictationLatencyEvent>, String> {
+    require_main_window(&window)?;
+    state.latest_dictation_latency()
 }
 
 #[tauri::command]
@@ -1268,6 +1281,9 @@ pub(crate) fn stop_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
 ) -> Result<DictationStateEvent, String> {
+    // Start at the user's stop gesture, before locks, stream teardown, or the
+    // worker handoff, so the total matches the delay they actually feel.
+    let stop_requested_at = Instant::now();
     let (processing, finalizer) = {
         let mut session = state
             .session
@@ -1287,6 +1303,9 @@ pub(crate) fn stop_session<R: Runtime>(
         eprintln!("could not emit processing state: {error}");
     }
     let processing_session_id = active_session_id(&processing)?;
+    let mut latency =
+        ProcessingLatencyTrace::start(processing_session_id.clone(), stop_requested_at);
+    latency.mark_processing_emitted();
     let hud_target_lease = state
         .transcription_operation(&processing_session_id)?
         .and_then(|operation| operation.hud_target_lease);
@@ -1296,15 +1315,20 @@ pub(crate) fn stop_session<R: Runtime>(
     // Processing; the emitted terminal revision is authoritative.
     let worker_app = app.clone();
     let worker_processing = processing.clone();
+    let worker_latency = latency.clone();
     let spawn_result = thread::Builder::new()
         .name("spick-capture-finalize".into())
-        .spawn(move || finalize_capture(&worker_app, worker_processing, finalizer));
+        .spawn(move || finalize_capture(&worker_app, worker_processing, finalizer, worker_latency));
     if let Err(error) = spawn_result {
         let message = format!("could not start microphone finalization: {error}");
         discard_target_for_session(state, &processing_session_id);
         release_hud_target(app, state, hud_target_lease.as_ref());
         if let Some(failed) = fail_session_if_matching(state, &processing, message)? {
             let _ = emit_state(app, &failed);
+            emit_dictation_latency(
+                app,
+                latency.finish(failed.revision, DictationLatencyOutcome::Failed),
+            );
             settle_after(app, FAILURE_HUD_DWELL, failed.revision);
         }
     }
@@ -1315,6 +1339,22 @@ pub(crate) fn stop_session<R: Runtime>(
 fn emit_state<R: Runtime>(app: &AppHandle<R>, event: &DictationStateEvent) -> Result<(), String> {
     app.emit(DICTATION_STATE_EVENT, event)
         .map_err(|error| format!("could not emit dictation state: {error}"))
+}
+
+fn emit_dictation_latency<R: Runtime>(app: &AppHandle<R>, latency: DictationLatencyEvent) {
+    let state = app.state::<AppState>();
+    match state.record_dictation_latency(latency.clone()) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            // Diagnostics are best-effort and must never change dictation's
+            // terminal result. The live event can still reach an open window.
+            eprintln!("could not cache dictation latency diagnostics: {error}");
+        }
+    }
+    if let Err(error) = app.emit_to(MAIN_WINDOW_LABEL, DICTATION_LATENCY_EVENT, latency) {
+        eprintln!("could not emit dictation latency diagnostics: {error}");
+    }
 }
 
 fn emit_local_data_changed<R: Runtime>(
@@ -1346,6 +1386,7 @@ fn finalize_capture<R: Runtime>(
     app: &AppHandle<R>,
     processing: DictationStateEvent,
     finalizer: Result<CaptureFinalizer, String>,
+    mut latency: ProcessingLatencyTrace,
 ) {
     let session_id = match active_session_id(&processing) {
         Ok(session_id) => session_id,
@@ -1360,41 +1401,49 @@ fn finalize_capture<R: Runtime>(
         .ok()
         .flatten()
         .and_then(|operation| operation.hud_target_lease);
+    let capture_finalize_started = Instant::now();
     let capture_result = finalizer.and_then(CaptureFinalizer::finalize);
+    latency.mark_capture_finalize(capture_finalize_started);
     match capture_result {
         Ok(capture) => {
             let status = capture.status();
+            latency.set_audio_duration(status.captured_ms);
             let sample_count = capture.pcm_16khz().len();
 
             if sample_count == 0 || status.sample_count == 0 {
-                fail_and_emit_if_matching(
+                fail_processing_with_latency(
                     app,
                     &session_id,
                     "no microphone audio was captured".into(),
+                    latency,
                 );
                 return;
             }
 
             let Some(session) = processing.session.as_ref() else {
-                fail_and_emit_if_matching(
+                fail_processing_with_latency(
                     app,
                     &session_id,
                     "dictation settings were unavailable".into(),
+                    latency,
                 );
                 return;
             };
+            let transcription_started = Instant::now();
             let result = transcribe_capture(state.inner(), session, capture.pcm_16khz());
+            latency.mark_transcription(transcription_started);
             // The decoder is finished. Wipe and release raw PCM before text
             // delivery, event emission, or optional SQLite accounting.
             drop(capture);
 
             match result {
                 Ok(transcript) if transcript.transcript.text.trim().is_empty() => {
-                    fail_and_emit_if_matching(
+                    fail_processing_with_latency(
                         app,
                         &session_id,
                         "No speech was recognized. Try again a little closer to the microphone."
                             .into(),
+                        latency,
                     );
                 }
                 Ok(transcript) => {
@@ -1406,7 +1455,7 @@ fn finalize_capture<R: Runtime>(
                             return;
                         }
                         Err(error) => {
-                            fail_and_emit_if_matching(app, &session_id, error);
+                            fail_processing_with_latency(app, &session_id, error, latency);
                             return;
                         }
                     };
@@ -1414,8 +1463,10 @@ fn finalize_capture<R: Runtime>(
                         eprintln!("could not emit insertion state: {error}");
                     }
 
+                    let delivery_started = Instant::now();
                     let delivery =
                         deliver_transcript(state.inner(), &session_id, &transcript.transcript.text);
+                    latency.mark_delivery(delivery_started);
                     release_hud_target(app, state.inner(), hud_target_lease.as_ref());
                     let transcript = transcript.finish(delivery.clone());
                     match complete_session_with_transcript(state.inner(), &session_id, transcript) {
@@ -1432,6 +1483,11 @@ fn finalize_capture<R: Runtime>(
                             if let Err(error) = emit_state(app, &completed) {
                                 eprintln!("could not emit transcription completion: {error}");
                             }
+                            emit_dictation_latency(
+                                app,
+                                latency
+                                    .finish(completed.revision, DictationLatencyOutcome::Completed),
+                            );
                             match delivery.status {
                                 DictationDeliveryStatus::Inserted => {
                                     settle_after(app, SUCCESS_HUD_DWELL, completed.revision)
@@ -1464,12 +1520,15 @@ fn finalize_capture<R: Runtime>(
                     }
                 }
                 Err(EngineError::Cancelled) => {}
-                Err(error) => {
-                    fail_and_emit_if_matching(app, &session_id, engine_error_message(error))
-                }
+                Err(error) => fail_processing_with_latency(
+                    app,
+                    &session_id,
+                    engine_error_message(error),
+                    latency,
+                ),
             }
         }
-        Err(error) => fail_and_emit_if_matching(app, &session_id, error),
+        Err(error) => fail_processing_with_latency(app, &session_id, error, latency),
     }
 }
 
@@ -1942,7 +2001,27 @@ fn fail_session_if_matching(
         .map_err(|error| error.to_string())
 }
 
-fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, error: String) {
+fn fail_processing_with_latency<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    error: String,
+    latency: ProcessingLatencyTrace,
+) {
+    let Some(failed) = fail_and_emit_if_matching(app, session_id, error) else {
+        return;
+    };
+    emit_dictation_latency(
+        app,
+        latency.finish(failed.revision, DictationLatencyOutcome::Failed),
+    );
+    settle_after(app, FAILURE_HUD_DWELL, failed.revision);
+}
+
+fn fail_and_emit_if_matching<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    error: String,
+) -> Option<DictationStateEvent> {
     let state = app.state::<AppState>();
     let hud_target_lease = state
         .transcription_operation(session_id)
@@ -1956,7 +2035,7 @@ fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, e
         Ok(expected) if session_matches(&expected, session_id) => {
             fail_session_if_matching(state.inner(), &expected, error)
         }
-        Ok(_) => return,
+        Ok(_) => return None,
         Err(_) => Err("dictation session lock is poisoned".into()),
     };
 
@@ -1965,10 +2044,13 @@ fn fail_and_emit_if_matching<R: Runtime>(app: &AppHandle<R>, session_id: &str, e
             if let Err(emit_error) = emit_state(app, &failed) {
                 eprintln!("could not emit capture failure: {emit_error}");
             }
-            settle_after(app, FAILURE_HUD_DWELL, failed.revision);
+            Some(failed)
         }
-        Ok(None) => {}
-        Err(error) => eprintln!("could not fail capture session: {error}"),
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!("could not fail capture session: {error}");
+            None
+        }
     }
 }
 

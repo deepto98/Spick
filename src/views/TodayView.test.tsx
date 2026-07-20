@@ -5,7 +5,10 @@ import type {
   UsageDashboard,
   UsageMetrics,
 } from "../lib/nativeLocalData";
-import type { NativeDictationTranscript } from "../lib/nativeDictation";
+import type {
+  NativeDictationLatencyEvent,
+  NativeDictationTranscript,
+} from "../lib/nativeDictation";
 import { percentageChange } from "../lib/localDataPresentation";
 import { TodayView } from "./TodayView";
 
@@ -89,6 +92,19 @@ const lastTranscript: NativeDictationTranscript = {
   },
 };
 
+const lastLatency: NativeDictationLatencyEvent = {
+  sessionId: "opaque-session",
+  revision: 4,
+  outcome: "completed",
+  audioDurationMs: 2_400,
+  stopToProcessingMs: 3,
+  captureFinalizeMs: 10,
+  transcriptionMs: 1_240,
+  deliveryMs: 6,
+  stopToDeliveryMs: 1_260,
+  processingTotalMs: 1_264,
+};
+
 const baseProps = {
   dashboard,
   dashboardLoading: false,
@@ -145,6 +161,45 @@ describe("local usage and transcript history", () => {
     expect(screen.getByText("DESKTOP DICTATION")).toBeVisible();
     expect(screen.getByText("Waiting for your shortcut")).toBeVisible();
     expect(screen.queryByText(/mic connected/i)).toBeNull();
+  });
+
+  it("shows the last processing breakdown without exposing content metadata", () => {
+    render(<TodayView {...baseProps} lastLatency={lastLatency} />);
+
+    expect(screen.getByText("Last handoff")).toBeInTheDocument();
+    expect(screen.getByText("1.26 s")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Last handoff"));
+    expect(screen.getByText("Transcription")).toBeInTheDocument();
+    expect(screen.getByText("1.24 s")).toBeInTheDocument();
+    expect(
+      screen.getByText(/No recording, dictated text, or app name is included/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(lastLatency.sessionId)).toBeNull();
+  });
+
+  it("omits latency diagnostics and stages that have not been reached", () => {
+    const { rerender } = render(
+      <TodayView {...baseProps} lastLatency={null} />,
+    );
+    expect(screen.queryByText(/Last handoff|Last attempt stopped/)).toBeNull();
+
+    rerender(
+      <TodayView
+        {...baseProps}
+        lastLatency={{
+          ...lastLatency,
+          outcome: "failed",
+          transcriptionMs: null,
+          deliveryMs: null,
+          stopToDeliveryMs: null,
+          processingTotalMs: 824,
+        }}
+      />,
+    );
+    expect(screen.getByText("Last attempt stopped")).toBeInTheDocument();
+    expect(screen.getByText("824 ms")).toBeInTheDocument();
+    expect(screen.queryByText("Transcription")).toBeNull();
+    expect(screen.queryByText("Text handoff")).toBeNull();
   });
 
   it("shows loading, empty, and retryable error states without sample rows", () => {

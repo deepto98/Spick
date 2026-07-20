@@ -5,6 +5,7 @@ import type { NativeLanguagePolicy } from "./nativeSettings";
 
 export const DICTATION_STATE_EVENT = "dictation://state";
 export const DICTATION_TRANSCRIPT_EVENT = "dictation://transcript";
+export const DICTATION_LATENCY_EVENT = "dictation://latency";
 
 export type NativeSessionState =
   | "idle"
@@ -71,6 +72,61 @@ export interface NativeDictationTranscript {
   delivery: NativeDeliveryOutcome;
 }
 
+export type NativeDictationLatencyOutcome = "completed" | "failed";
+
+export interface NativeDictationLatencyEvent {
+  sessionId: string;
+  revision: number;
+  outcome: NativeDictationLatencyOutcome;
+  audioDurationMs: number | null;
+  stopToProcessingMs: number;
+  captureFinalizeMs: number | null;
+  transcriptionMs: number | null;
+  deliveryMs: number | null;
+  stopToDeliveryMs: number | null;
+  processingTotalMs: number;
+}
+
+function isDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isOptionalDuration(value: unknown) {
+  return value === null || isDuration(value);
+}
+
+export function isValidDictationLatencyEvent(
+  event: unknown,
+): event is NativeDictationLatencyEvent {
+  if (typeof event !== "object" || event === null) return false;
+  const candidate = event as Record<string, unknown>;
+  const processingTotalMs = candidate.processingTotalMs;
+  if (
+    typeof candidate.sessionId !== "string" ||
+    !candidate.sessionId ||
+    candidate.sessionId.length > 160 ||
+    !isDuration(candidate.revision) ||
+    (candidate.outcome !== "completed" && candidate.outcome !== "failed") ||
+    !isDuration(candidate.stopToProcessingMs) ||
+    !isDuration(processingTotalMs) ||
+    !isOptionalDuration(candidate.audioDurationMs) ||
+    !isOptionalDuration(candidate.captureFinalizeMs) ||
+    !isOptionalDuration(candidate.transcriptionMs) ||
+    !isOptionalDuration(candidate.deliveryMs) ||
+    !isOptionalDuration(candidate.stopToDeliveryMs)
+  ) {
+    return false;
+  }
+
+  return [
+    candidate.stopToProcessingMs,
+    candidate.captureFinalizeMs,
+    candidate.transcriptionMs,
+    candidate.deliveryMs,
+    candidate.stopToDeliveryMs,
+  ].every((duration) => duration === null || duration <= processingTotalMs);
+}
+
 export function hasNativeRuntime() {
   return isTauri();
 }
@@ -101,6 +157,10 @@ export function getLastTranscript() {
   return invoke<NativeDictationTranscript | null>("get_last_transcript");
 }
 
+export function getLastDictationLatency(): Promise<unknown> {
+  return invoke<unknown>("get_last_dictation_latency");
+}
+
 export function startDictationSession() {
   return invoke<NativeDictationStateEvent>("start_dictation_session");
 }
@@ -129,5 +189,13 @@ export function subscribeToDictationTranscript(
   return listen<NativeDictationTranscript>(
     DICTATION_TRANSCRIPT_EVENT,
     (event) => handler(event.payload),
+  );
+}
+
+export function subscribeToDictationLatency(
+  handler: (latency: unknown) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>(DICTATION_LATENCY_EVENT, (event) =>
+    handler(event.payload),
   );
 }
