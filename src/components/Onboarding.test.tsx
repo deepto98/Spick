@@ -19,18 +19,21 @@ const optionSettings: AppSettings = {
   cleanupLevel: "Verbatim",
 };
 
-function renderPractice(settings: AppSettings = optionSettings) {
+function renderPractice(
+  settings: AppSettings = optionSettings,
+  shortcutStatus = {
+    optionSelected: settings.hotkey === "⌥",
+    optionListenerActive: settings.hotkey === "⌥",
+    inputMonitoringGranted: true,
+    fallbackShortcut: null as string | null,
+  },
+) {
   render(
     <Onboarding
       accessibilityPending={false}
       accessibilityStatus={{ state: "granted", canRequest: true }}
       shortcutPending={false}
-      shortcutStatus={{
-        optionSelected: settings.hotkey === "⌥",
-        optionListenerActive: settings.hotkey === "⌥",
-        inputMonitoringGranted: true,
-        fallbackShortcut: null,
-      }}
+      shortcutStatus={shortcutStatus}
       settings={settings}
       settingsReady
       settingsSaving={false}
@@ -141,6 +144,79 @@ describe("onboarding shortcut practice", () => {
       shiftKey: true,
     });
     expect(status).toHaveTextContent("Try it here");
+  });
+
+  it("practices the registered fallback when Option is not active", () => {
+    const status = renderPractice(optionSettings, {
+      optionSelected: true,
+      optionListenerActive: false,
+      inputMonitoringGranted: false,
+      fallbackShortcut: "CommandOrControl+Shift+Space",
+    });
+
+    expect(status).toHaveTextContent("Hold ⌘+⇧+Space to start");
+
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "AltLeft",
+      key: "Alt",
+    });
+    expect(status).toHaveTextContent("Try it here");
+
+    fireEvent.keyDown(window, {
+      code: "Space",
+      key: " ",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(status).toHaveTextContent("Listening");
+    expect(status).toHaveTextContent(
+      "Release the main key in ⌘+⇧+Space to finish",
+    );
+
+    fireEvent.keyUp(window, {
+      code: "Space",
+      key: " ",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(status).toHaveTextContent("Try it here");
+  });
+
+  it("does not advance past permissions without Option or a fallback", () => {
+    render(
+      <Onboarding
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: false,
+          inputMonitoringGranted: false,
+          fallbackShortcut: null,
+        }}
+        settings={optionSettings}
+        settingsReady
+        settingsSaving={false}
+        transcriptionSource="local"
+        engineName="Whisper Small"
+        engineReady
+        onRequestAccessibility={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRetrySettings={vi.fn()}
+        onSettingsChange={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Allow in System Settings/ }),
+    ).toBeVisible();
   });
 
   it("describes cloud transcription without claiming audio stays local", () => {

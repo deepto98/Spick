@@ -27,6 +27,8 @@ import type {
   NativeDictationLatencyEvent,
   NativeDictationTranscript,
 } from "../lib/nativeDictation";
+import type { NativeShortcutStatus } from "../lib/nativeShortcut";
+import { shortcutDisplayName } from "../lib/nativeSettings";
 import type { HudState } from "../types";
 
 interface TodayViewProps {
@@ -41,6 +43,8 @@ interface TodayViewProps {
   hiddenEphemeralSessionId?: string | null;
   language: string;
   native: boolean;
+  shortcut: string;
+  shortcutStatus: NativeShortcutStatus | null;
   dashboard: UsageDashboard | null;
   dashboardLoading: boolean;
   dashboardError?: string | null;
@@ -154,6 +158,8 @@ export function TodayView({
   hiddenEphemeralSessionId,
   language,
   native,
+  shortcut,
+  shortcutStatus,
   dashboard,
   dashboardLoading,
   dashboardError,
@@ -171,6 +177,18 @@ export function TodayView({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [checkedFieldId, setCheckedFieldId] = useState<string | null>(null);
   const latestDelivery = lastTranscript?.delivery ?? delivery;
+  const optionSelected = shortcut === "⌥";
+  const fallbackShortcut =
+    optionSelected && shortcutStatus?.optionListenerActive !== true
+      ? shortcutStatus?.fallbackShortcut
+      : null;
+  const activeShortcut = shortcutDisplayName(fallbackShortcut ?? shortcut);
+  const optionNeedsPermission =
+    native &&
+    optionSelected &&
+    shortcutStatus !== null &&
+    !shortcutStatus.optionListenerActive &&
+    !fallbackShortcut;
   const lifetimeWpm = dashboard?.lifetime.averageWpm;
   const days = dashboard?.days ?? [];
   const maxWords = Math.max(0, ...days.map((item) => item.words));
@@ -511,7 +529,11 @@ export function TodayView({
           <h2>Try the shortcut</h2>
           <p>
             {native
-              ? "Use your shortcut and speak. Spick will type into the field where you started when it can do so safely."
+              ? fallbackShortcut
+                ? `Option needs Input Monitoring. ${activeShortcut} works for now.`
+                : optionNeedsPermission
+                  ? "Option needs Input Monitoring before it can start dictation."
+                  : "Use your shortcut and speak. Spick will type into the field where you started when it can do so safely."
               : "Recording is available in the Tauri development app."}
           </p>
           <div className="try-panel__hud">
@@ -522,6 +544,7 @@ export function TodayView({
               errorMessage={dictationError}
               delivery={latestDelivery}
               language={language}
+              shortcut={activeShortcut}
               state={hudState}
               onStateChange={onHudStateChange}
             />
@@ -538,7 +561,13 @@ export function TodayView({
                     : latestDelivery.transcriptAvailable
                       ? "Ready to copy"
                       : "Field left alone"
-                  : "Waiting for your shortcut"
+                  : optionNeedsPermission
+                    ? "Option needs Input Monitoring"
+                    : fallbackShortcut
+                      ? `Ready on ${activeShortcut}`
+                      : shortcutStatus === null && optionSelected
+                        ? "Checking the Option shortcut"
+                        : `Waiting for ${activeShortcut}`
                 : "Development app required"}
             </strong>
           </div>

@@ -173,7 +173,7 @@ function App() {
   );
 
   useEffect(() => {
-    if (!dictation.native || hudOnly) return;
+    if (!dictation.native) return;
     let disposed = false;
     void getNativeSettings()
       .then((saved) => {
@@ -188,7 +188,7 @@ function App() {
         }
       })
       .finally(() => {
-        if (!disposed) setSettingsLoading(false);
+        if (!disposed && !hudOnly) setSettingsLoading(false);
       });
     return () => {
       disposed = true;
@@ -732,6 +732,7 @@ function App() {
           language={dictation.language}
           compact={hudWindow.compact}
           compactPending={hudWindow.pending}
+          shortcut={settings.hotkey}
           onMovePointerDown={hudWindow.beginDrag}
           onToggleCompact={() => void hudWindow.togglePresentation()}
         />
@@ -811,6 +812,8 @@ function App() {
               hiddenEphemeralSessionId={hiddenEphemeralSessionId}
               language={hudLanguage}
               native={dictation.native}
+              shortcut={settings.hotkey}
+              shortcutStatus={shortcut.status}
               dashboard={localData.dashboard}
               dashboardLoading={localData.dashboardLoading}
               dashboardError={localData.dashboardError}

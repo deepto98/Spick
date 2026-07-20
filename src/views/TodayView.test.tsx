@@ -117,6 +117,13 @@ const baseProps = {
   language: "EN",
   lastTranscript,
   native: true,
+  shortcut: "⌥",
+  shortcutStatus: {
+    optionSelected: true,
+    optionListenerActive: true,
+    inputMonitoringGranted: true,
+    fallbackShortcut: null,
+  },
   onHudStateChange: vi.fn(),
   onLoadOlderHistory: vi.fn(),
   onOpenEngines: vi.fn(),
@@ -159,8 +166,32 @@ describe("local usage and transcript history", () => {
     render(<TodayView {...baseProps} delivery={null} lastTranscript={null} />);
 
     expect(screen.getByText("DESKTOP DICTATION")).toBeVisible();
-    expect(screen.getByText("Waiting for your shortcut")).toBeVisible();
+    expect(screen.getByText("Waiting for ⌥")).toBeVisible();
     expect(screen.queryByText(/mic connected/i)).toBeNull();
+  });
+
+  it("shows the working fallback instead of pretending Option is ready", () => {
+    render(
+      <TodayView
+        {...baseProps}
+        delivery={null}
+        lastTranscript={null}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: false,
+          inputMonitoringGranted: false,
+          fallbackShortcut: "CommandOrControl+Shift+Space",
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Option needs Input Monitoring. ⌘+⇧+Space works for now.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("Ready on ⌘+⇧+Space")).toBeVisible();
+    expect(screen.getByText("⌘+⇧+Space")).toBeVisible();
   });
 
   it("shows the last processing breakdown without exposing content metadata", () => {

@@ -18,7 +18,10 @@ import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
 import type { AppSettings, TranscriptionSource } from "../types";
 import { DictationHud } from "./DictationHud";
-import { SPEECH_LANGUAGE_OPTIONS } from "../lib/nativeSettings";
+import {
+  shortcutDisplayName,
+  SPEECH_LANGUAGE_OPTIONS,
+} from "../lib/nativeSettings";
 import { captureMacShortcut, matchesMacShortcut } from "../lib/shortcutCapture";
 import { SelectField, ShortcutKeys, SpickLogo } from "./Ui";
 
@@ -90,6 +93,23 @@ export function Onboarding({
     accessibilityStatus?.state === "granted" ||
     accessibilityStatus?.state === "unsupported";
   const usesOptionGesture = settings.hotkey === "⌥";
+  const browserPreview = accessibilityStatus?.state === "unsupported";
+  const optionListenerReady = shortcutStatus?.optionListenerActive === true;
+  const fallbackShortcut =
+    usesOptionGesture && !optionListenerReady
+      ? shortcutStatus?.fallbackShortcut
+      : null;
+  const fallbackShortcutLabel = fallbackShortcut
+    ? shortcutDisplayName(fallbackShortcut)
+    : null;
+  const practicesOptionGesture =
+    usesOptionGesture && (optionListenerReady || browserPreview);
+  const practiceShortcut = fallbackShortcutLabel ?? settings.hotkey;
+  const shortcutPathReady =
+    !usesOptionGesture ||
+    browserPreview ||
+    optionListenerReady ||
+    fallbackShortcut !== null;
   const sourceCopy = onboardingSourceCopy(transcriptionSource, engineName);
 
   useEffect(() => {
@@ -117,12 +137,12 @@ export function Onboarding({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;
 
-      if (!usesOptionGesture) {
+      if (!practicesOptionGesture) {
         const captured = captureMacShortcut(event);
         if (captured.kind === "waiting") return;
 
         event.preventDefault();
-        if (matchesMacShortcut(event, settings.hotkey)) {
+        if (matchesMacShortcut(event, practiceShortcut)) {
           customMainKey = event.code;
           updatePractice("customHolding");
         } else {
@@ -166,7 +186,7 @@ export function Onboarding({
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (!usesOptionGesture) {
+      if (!practicesOptionGesture) {
         if (
           shortcutPracticeRef.current === "customHolding" &&
           event.code === customMainKey
@@ -204,7 +224,7 @@ export function Onboarding({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", resetPractice);
     };
-  }, [settings.hotkey, step, usesOptionGesture]);
+  }, [practiceShortcut, practicesOptionGesture, step]);
 
   const shortcutRecording = [
     "optionHolding",
@@ -220,7 +240,7 @@ export function Onboarding({
       : shortcutPractice === "optionArmed"
         ? "Option is down…"
         : "Try it here";
-  const shortcutPracticeHelp = usesOptionGesture
+  const shortcutPracticeHelp = practicesOptionGesture
     ? shortcutPractice === "optionHolding"
       ? "Release Option to finish"
       : [
@@ -233,10 +253,10 @@ export function Onboarding({
           ? "Keep holding for push-to-talk, or release to start hands-free"
           : "Tap Option once to start and again to finish, or hold and release"
     : shortcutPractice === "customHolding"
-      ? `Release the main key in ${settings.hotkey} to finish`
+      ? `Release the main key in ${practiceShortcut} to finish`
       : shortcutPractice === "customMismatch"
-        ? `Press exactly ${settings.hotkey}; other chords stay inactive`
-        : `Hold ${settings.hotkey} to start, then release the main key`;
+        ? `Press exactly ${practiceShortcut}; other chords stay inactive`
+        : `Hold ${practiceShortcut} to start, then release the main key`;
 
   const resetShortcutPractice = () => {
     shortcutPracticeRef.current = "idle";
@@ -399,22 +419,26 @@ export function Onboarding({
                   number="03"
                   icon={<Keyboard size={21} />}
                   title="Input Monitoring"
-                  description="Lets Spick notice a tap or hold of Option without taking focus from your app."
-                  ready={shortcutStatus?.optionListenerActive === true}
+                  description={
+                    fallbackShortcutLabel
+                      ? `Option isn’t ready yet. ${fallbackShortcutLabel} works for now.`
+                      : "Lets Spick notice a tap or hold of Option without taking focus from your app."
+                  }
+                  ready={optionListenerReady}
                   status={
-                    shortcutStatus?.optionListenerActive
+                    optionListenerReady
                       ? "Ready"
                       : shortcutStatus?.inputMonitoringGranted
-                        ? "Ready to activate"
+                        ? "Access is on; retry the listener"
                         : undefined
                   }
                   button={
-                    shortcutStatus?.optionListenerActive
+                    optionListenerReady
                       ? undefined
                       : shortcutStatus?.inputMonitoringGranted
-                        ? "Activate Option"
+                        ? "Try Option again"
                         : shortcutPending
-                          ? "Opening…"
+                          ? "Requesting…"
                           : "Allow in System Settings"
                   }
                   disabled={shortcutPending}
@@ -447,7 +471,7 @@ export function Onboarding({
             <StepActions
               onBack={previous}
               onNext={next}
-              nextDisabled={!accessibilityReady}
+              nextDisabled={!accessibilityReady || !shortcutPathReady}
             />
           </section>
         )}
@@ -570,9 +594,11 @@ export function Onboarding({
               eyebrow="ONE LAST THING"
               title="Give the shortcut a try."
               description={
-                usesOptionGesture
+                practicesOptionGesture
                   ? "Tap once to start and once to finish, or hold Option while you talk."
-                  : "Hold your saved shortcut while you talk, then release to finish."
+                  : fallbackShortcutLabel
+                    ? `Option still needs permission. Hold ${fallbackShortcutLabel} while you talk for now.`
+                    : "Hold your saved shortcut while you talk, then release to finish."
               }
             />
             <div
@@ -580,10 +606,10 @@ export function Onboarding({
               aria-label="Shortcut practice"
             >
               <span className="shortcut-practice__label">
-                {usesOptionGesture ? "TAP OR HOLD" : "HOLD TO RECORD"}
+                {practicesOptionGesture ? "TAP OR HOLD" : "HOLD TO RECORD"}
               </span>
               <div className="shortcut-practice__keys">
-                <ShortcutKeys value={settings.hotkey} />
+                <ShortcutKeys value={practiceShortcut} />
               </div>
               <div className="shortcut-practice__pulse">
                 <Mic2 size={22} />
