@@ -104,6 +104,19 @@ describe("useCloudProviders", () => {
 
   afterEach(cleanup);
 
+  it("does not inspect the credential store while cloud management is disabled", async () => {
+    const { result } = renderHook(() => useCloudProviders(false));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+    await expect(result.current.refresh()).resolves.toBe(false);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
   it("loads providers in deterministic fallback order", async () => {
     const { result } = renderHook(() => useCloudProviders(true));
 

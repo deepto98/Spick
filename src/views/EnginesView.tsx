@@ -50,6 +50,7 @@ interface EnginesViewProps {
   onImport: () => void;
   onRemove: (id: string) => void;
   onLocalRefresh: () => void;
+  onCloudOpen: () => void;
   onCloudRefresh: () => void;
   onCloudConfigure: (
     provider: CloudProviderId,
@@ -133,6 +134,7 @@ export function EnginesView({
   onImport,
   onRemove,
   onLocalRefresh,
+  onCloudOpen,
   onCloudRefresh,
   onCloudConfigure,
   onCloudDelete,
@@ -293,7 +295,10 @@ export function EnginesView({
           role="tab"
           aria-selected={kind === "cloud"}
           className={kind === "cloud" ? "active" : ""}
-          onClick={() => setKind("cloud")}
+          onClick={() => {
+            setKind("cloud");
+            onCloudOpen();
+          }}
         >
           <Cloud size={17} />
           <span>

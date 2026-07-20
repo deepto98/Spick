@@ -127,7 +127,10 @@ function App() {
   >(null);
   const audioInputDevicesRequest = useRef(0);
   const localData = useLocalData(dictation.native && !hudOnly);
-  const cloudProviders = useCloudProviders(dictation.native && !hudOnly);
+  const [cloudManagementEnabled, setCloudManagementEnabled] = useState(false);
+  const cloudProviders = useCloudProviders(
+    dictation.native && !hudOnly && cloudManagementEnabled,
+  );
   const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
     string | null
   >(null);
@@ -890,6 +893,7 @@ function App() {
               onRemove={removeEngine}
               onLocalRefresh={retryLocalModels}
               onCloudRefresh={() => void cloudProviders.refresh()}
+              onCloudOpen={() => setCloudManagementEnabled(true)}
               onCloudConfigure={cloudProviders.configure}
               onCloudDelete={cloudProviders.removeCredential}
               onCloudActivate={activateCloudEngine}

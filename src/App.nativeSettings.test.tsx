@@ -29,6 +29,7 @@ const localDataMocks = vi.hoisted(() => ({
 const cloudMocks = vi.hoisted(() => ({
   activate: vi.fn(),
   configure: vi.fn(),
+  enabled: vi.fn(),
   providers: [] as CloudProviderStatus[],
   refresh: vi.fn(),
   removeCredential: vi.fn(),
@@ -104,16 +105,19 @@ vi.mock("./hooks/useLocalData", () => ({
 }));
 
 vi.mock("./hooks/useCloudProviders", () => ({
-  useCloudProviders: () => ({
-    activate: cloudMocks.activate,
-    configure: cloudMocks.configure,
-    error: null,
-    loading: false,
-    pending: null,
-    providers: cloudMocks.providers,
-    refresh: cloudMocks.refresh,
-    removeCredential: cloudMocks.removeCredential,
-  }),
+  useCloudProviders: (enabled: boolean) => {
+    cloudMocks.enabled(enabled);
+    return {
+      activate: cloudMocks.activate,
+      configure: cloudMocks.configure,
+      error: null,
+      loading: false,
+      pending: null,
+      providers: cloudMocks.providers,
+      refresh: cloudMocks.refresh,
+      removeCredential: cloudMocks.removeCredential,
+    };
+  },
 }));
 
 vi.mock("./hooks/useAccessibilityPermission", () => ({
@@ -254,6 +258,7 @@ describe("native language and cleanup persistence", () => {
     localDataMocks.lastTranscript = null;
     cloudMocks.activate.mockReset();
     cloudMocks.configure.mockReset();
+    cloudMocks.enabled.mockReset();
     cloudMocks.providers = [];
     cloudMocks.refresh.mockReset();
     cloudMocks.refresh.mockResolvedValue(true);
@@ -271,6 +276,18 @@ describe("native language and cleanup persistence", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("does not enable credential reads on startup, Today, or local engine setup", async () => {
+    render(<App />);
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+
+    expect(cloudMocks.enabled).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "Engines" }));
+    expect(cloudMocks.enabled).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Cloud providers/i }));
+    expect(cloudMocks.enabled).toHaveBeenLastCalledWith(true);
   });
 
   it("keeps a partial imported-model removal warning after refreshing", async () => {

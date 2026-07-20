@@ -93,6 +93,7 @@ function props(
     onImport: vi.fn(),
     onRemove: vi.fn(),
     onLocalRefresh: vi.fn(),
+    onCloudOpen: vi.fn(),
     onCloudRefresh: vi.fn(),
     onCloudConfigure: vi.fn(async () => true),
     onCloudDelete: vi.fn(async () => true),
@@ -114,6 +115,15 @@ function providerCard(name: string) {
 
 describe("EnginesView cloud providers", () => {
   afterEach(cleanup);
+
+  it("loads credential status only after the cloud surface is opened", () => {
+    const onCloudOpen = vi.fn();
+    render(<EnginesView {...props({ onCloudOpen })} />);
+
+    expect(onCloudOpen).not.toHaveBeenCalled();
+    openCloudTab();
+    expect(onCloudOpen).toHaveBeenCalledOnce();
+  });
 
   it("finishes first-run setup only after the selected engine is ready", () => {
     const onFinishSetup = vi.fn();
