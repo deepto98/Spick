@@ -266,6 +266,24 @@ impl CloudRuntime {
         })
     }
 
+    /// Checks only local credential state. Dictation startup uses this before
+    /// it captures another app's focused field or opens the microphone; it
+    /// must never make a provider request.
+    pub(crate) fn ensure_credential_configured(
+        &self,
+        provider: CloudProviderId,
+    ) -> Result<(), String> {
+        let credential = self.credential(provider)?;
+        if is_configured_secret(credential.as_ref()) {
+            Ok(())
+        } else {
+            Err(format!(
+                "No API key is saved for {}.",
+                provider_spec(provider).provider_name
+            ))
+        }
+    }
+
     pub(crate) fn first_configured_compatible(
         &self,
         language_policy: &LanguagePolicy,
@@ -1249,10 +1267,29 @@ mod tests {
         assert!(!runtime.statuses(&AppSettings::default()).unwrap()[0].configured);
         assert_eq!(
             runtime
+                .ensure_credential_configured(CloudProviderId::OpenAi)
+                .unwrap_err(),
+            "No API key is saved for OpenAI."
+        );
+        assert_eq!(
+            runtime
                 .first_configured_compatible(&LanguagePolicy::Auto)
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn configured_credential_preflight_is_local_and_accepts_a_saved_key() {
+        let credentials = Arc::new(MemoryCredentials::default());
+        credentials
+            .set(CloudProviderId::OpenAi, "sk-super-secret")
+            .unwrap();
+        let runtime = CloudRuntime::with_credentials(credentials);
+
+        assert!(runtime
+            .ensure_credential_configured(CloudProviderId::OpenAi)
+            .is_ok());
     }
 
     #[test]
@@ -1263,6 +1300,11 @@ mod tests {
         }));
         let error = runtime.statuses(&AppSettings::default()).unwrap_err();
         assert!(error.contains("could not be read"));
+        let preflight_error = runtime
+            .ensure_credential_configured(CloudProviderId::OpenAi)
+            .unwrap_err();
+        assert!(preflight_error.contains("could not be read"));
+        assert!(!preflight_error.contains("No API key"));
     }
 
     #[test]

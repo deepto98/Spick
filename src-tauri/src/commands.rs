@@ -15,7 +15,9 @@ use crate::{
         self, AudioCaptureFailure, AudioCaptureReady, AudioCaptureStatus, AudioInputDevice,
         CaptureFinalizer, ErrorSink, LevelSink, ReadySink, AUDIO_LEVEL_EVENT,
     },
-    cloud::{provider_for_engine, validate_provider_language_policy, CloudTranscription},
+    cloud::{
+        provider_for_engine, validate_provider_language_policy, CloudProviderId, CloudTranscription,
+    },
     domain::{
         AppSettings, DictationDelivery, DictationDeliveryStatus, DictationSession,
         DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, HudPresentation,
@@ -24,7 +26,7 @@ use crate::{
     engines::{
         validate_whisper_model_policy, AudioInput, CleanupEngine, CleanupRequest,
         DictationTranscript, EngineError, ModelLanguageSet, RuleBasedCleanupEngine,
-        TranscriptResult, TranscriptionRequest,
+        TranscriptResult, TranscriptionRequest, WhisperModelManifest,
     },
     hud,
     latency::{
@@ -1167,6 +1169,78 @@ fn validate_selected_transcription(
     })
 }
 
+fn validate_dictation_engine_readiness<CloudReady, LocalReady>(
+    models: &crate::model_store::ModelStore,
+    settings: &AppSettings,
+    ensure_cloud_ready: CloudReady,
+    ensure_local_ready: LocalReady,
+) -> Result<(), String>
+where
+    CloudReady: FnOnce(CloudProviderId) -> Result<(), String>,
+    LocalReady: FnOnce(&WhisperModelManifest) -> Result<(), String>,
+{
+    if let Some(provider) = provider_for_engine(&settings.transcription_engine) {
+        validate_provider_language_policy(provider, &settings.language_policy)?;
+        return ensure_cloud_ready(provider);
+    }
+    if settings.transcription_engine.location == EngineLocation::Cloud {
+        return Err("The selected cloud transcription engine is not supported.".into());
+    }
+    if settings.transcription_engine.provider != EngineProvider::WhisperCpp
+        || settings.transcription_engine.location != EngineLocation::Local
+    {
+        return Err("The selected transcription engine is not supported.".into());
+    }
+
+    let model = models
+        .resolve(&settings.transcription_engine.model)
+        .ok_or_else(|| {
+            format!(
+                "unknown local model: {}",
+                settings.transcription_engine.model
+            )
+        })?;
+    validate_whisper_model_policy(&settings.language_policy, &model).map_err(|error| {
+        format!(
+            "{} can’t use the current language setting: {}",
+            model.display_name,
+            engine_error_message(error)
+        )
+    })?;
+    ensure_local_ready(model.as_ref())
+}
+
+fn ensure_local_whisper_engine_ready<Verify, Load>(
+    model: &WhisperModelManifest,
+    verify: Verify,
+    load: Load,
+) -> Result<(), String>
+where
+    Verify: FnOnce(&str) -> Result<std::path::PathBuf, String>,
+    Load: FnOnce(&WhisperModelManifest, &std::path::Path) -> Result<(), EngineError>,
+{
+    let model_path = verify(&model.id)?;
+    load(model, &model_path).map_err(engine_error_message)
+}
+
+fn preflight_selected_transcription_engine(
+    state: &AppState,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    validate_dictation_engine_readiness(
+        &state.models,
+        settings,
+        |provider| state.cloud.ensure_credential_configured(provider),
+        |model| {
+            ensure_local_whisper_engine_ready(
+                model,
+                |model_id| state.models.verified_model_path(model_id),
+                |model, path| state.whisper.load(model, path),
+            )
+        },
+    )
+}
+
 fn session_uses_model(
     models: &crate::model_store::ModelStore,
     event: &DictationStateEvent,
@@ -1195,6 +1269,19 @@ pub(crate) fn start_session<R: Runtime>(
         return fail_microphone_preflight(app, state, trigger, error, startup_latency);
     }
 
+    // Keep the selected engine stable from this snapshot through microphone
+    // ownership. A missing model or API key must fail before Spick observes an
+    // external field, much less starts recording into a doomed session.
+    let model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
+    let settings = state.settings_snapshot()?;
+    if let Err(error) = preflight_selected_transcription_engine(state, &settings) {
+        drop(model_configuration);
+        return fail_engine_preflight(app, state, trigger, settings, error, startup_latency);
+    }
+
     // External-target sessions must prove a concrete, non-secure editable
     // target before any session state or audio capture is created. The HUD is
     // nonactivating, so a click there still leaves the other app focused.
@@ -1214,25 +1301,6 @@ pub(crate) fn start_session<R: Runtime>(
         None
     };
     let target_token = captured_target.as_ref().map(|target| target.token);
-
-    let model_configuration = match state.model_configuration.lock() {
-        Ok(configuration) => configuration,
-        Err(_) => {
-            if let Some(target) = target_token {
-                state.text_targets.discard(target);
-            }
-            return Err("model configuration is unavailable".into());
-        }
-    };
-    let settings = match state.settings_snapshot() {
-        Ok(settings) => settings,
-        Err(error) => {
-            if let Some(target) = target_token {
-                state.text_targets.discard(target);
-            }
-            return Err(error);
-        }
-    };
     let input_device_name = settings.input_device_name.clone();
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
@@ -1267,8 +1335,9 @@ pub(crate) fn start_session<R: Runtime>(
         handle_audio_capture_ready(&ready_app, ready);
     });
 
-    // These locks are held only while creating the session and spawning the
-    // microphone owner thread. Accessibility calls completed above.
+    // The session/audio guards begin here and live only through microphone
+    // owner startup. `model_configuration` began before target capture so the
+    // engine proven ready above cannot be removed or replaced in between.
     let mut claimed_hud_target_lease = None;
     let transaction = (|| -> Result<(DictationStateEvent, Option<String>), String> {
         let mut session = state
@@ -1398,6 +1467,55 @@ pub(crate) fn start_session<R: Runtime>(
     // so none can overtake the user-visible Starting revision.
     start_publication.publish();
     Ok(event)
+}
+
+fn fail_engine_preflight<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    trigger: SessionTrigger,
+    settings: AppSettings,
+    error: String,
+    startup_latency: StartupLatencyTrace,
+) -> Result<DictationStateEvent, String> {
+    let hud_settings = settings.hud.clone();
+    let failed = {
+        let mut session = state
+            .session
+            .lock()
+            .map_err(|_| "dictation session lock is poisoned".to_string())?;
+        session
+            .start(
+                trigger,
+                settings.language_policy,
+                settings.transcription_engine,
+                settings.cleanup_engine,
+            )
+            .and_then(|_| session.fail(error.clone()))
+            .map_err(|transition| transition.to_string())?
+    };
+    let session_id = active_session_id(&failed)?;
+    if !startup_latency.bind_session(&session_id) {
+        eprintln!("could not bind engine preflight latency diagnostics");
+    }
+
+    match show_hud_for_target(app, state, &hud_settings, None) {
+        Ok(true) => startup_latency.mark_hud_show_returned(),
+        Ok(false) => {}
+        Err(show_error) => {
+            eprintln!("engine check failed but the HUD could not be shown: {show_error}")
+        }
+    }
+    if let Err(emit_error) = emit_state(app, &failed) {
+        eprintln!("could not emit transcription engine failure: {emit_error}");
+    }
+    emit_unregistered_dictation_latency(
+        app,
+        &startup_latency,
+        failed.revision,
+        DictationLatencyOutcome::Failed,
+    );
+    settle_after(app, FAILURE_HUD_DWELL, failed.revision);
+    Err(error)
 }
 
 fn fail_microphone_preflight<R: Runtime>(
@@ -2660,7 +2778,7 @@ fn should_settle_for_revision(event: &DictationStateEvent, revision: u64) -> boo
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{cell::Cell, sync::mpsc};
 
     use super::*;
     use crate::domain::{
@@ -3296,6 +3414,174 @@ mod tests {
             ..AppSettings::default()
         };
         assert!(validate_selected_transcription(&state.models, &unknown).is_err());
+    }
+
+    #[test]
+    fn dictation_readiness_checks_the_selected_cloud_key_without_touching_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
+        let settings = AppSettings {
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::OpenAi,
+                model: "gpt-4o-transcribe".into(),
+                location: EngineLocation::Cloud,
+            },
+            ..AppSettings::default()
+        };
+        let checked_provider = Cell::new(None);
+        let local_checked = Cell::new(false);
+
+        let error = validate_dictation_engine_readiness(
+            &state.models,
+            &settings,
+            |provider| {
+                checked_provider.set(Some(provider));
+                Err("No API key is saved for OpenAI.".into())
+            },
+            |_| {
+                local_checked.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(checked_provider.get(), Some(CloudProviderId::OpenAi));
+        assert!(!local_checked.get());
+        assert_eq!(error, "No API key is saved for OpenAI.");
+    }
+
+    #[test]
+    fn dictation_readiness_rejects_cloud_language_policy_before_key_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
+        let settings = AppSettings {
+            language_policy: LanguagePolicy::Fixed {
+                language: "bn-IN".into(),
+            },
+            transcription_engine: EngineConfig {
+                provider: EngineProvider::XAi,
+                model: "speech-to-text".into(),
+                location: EngineLocation::Cloud,
+            },
+            ..AppSettings::default()
+        };
+        let credential_checked = Cell::new(false);
+
+        let error = validate_dictation_engine_readiness(
+            &state.models,
+            &settings,
+            |_| {
+                credential_checked.set(true);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(!credential_checked.get());
+        assert!(error.contains("xAI"));
+    }
+
+    #[test]
+    fn dictation_readiness_verifies_only_the_selected_local_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
+        let settings = AppSettings::default();
+        let cloud_checked = Cell::new(false);
+        let checked_model = std::cell::RefCell::new(None);
+
+        let error = validate_dictation_engine_readiness(
+            &state.models,
+            &settings,
+            |_| {
+                cloud_checked.set(true);
+                Ok(())
+            },
+            |model| {
+                *checked_model.borrow_mut() = Some(model.id.clone());
+                Err("selected model is unavailable".into())
+            },
+        )
+        .unwrap_err();
+
+        assert!(!cloud_checked.get());
+        assert_eq!(
+            checked_model.borrow().as_deref(),
+            Some("whisper-small-multilingual-q5-1")
+        );
+        assert_eq!(error, "selected model is unavailable");
+    }
+
+    #[test]
+    fn production_local_preflight_rejects_an_uninstalled_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
+        let settings = state.settings_snapshot().unwrap();
+
+        let error = preflight_selected_transcription_engine(&state, &settings).unwrap_err();
+
+        assert!(error.contains("is not installed"));
+        assert!(error.contains("Download it from Engines first"));
+    }
+
+    #[test]
+    fn local_engine_readiness_surfaces_a_load_failure_after_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = resolve_curated_whisper_model("whisper-small-multilingual-q5-1").unwrap();
+        let verified_id = std::cell::RefCell::new(None);
+        let loaded_id = std::cell::RefCell::new(None);
+        let verified_path = directory.path().join("verified-model.bin");
+
+        let error = ensure_local_whisper_engine_ready(
+            &model,
+            |model_id| {
+                *verified_id.borrow_mut() = Some(model_id.to_owned());
+                Ok(verified_path.clone())
+            },
+            |loaded_model, path| {
+                *loaded_id.borrow_mut() = Some(loaded_model.id.clone());
+                assert_eq!(path, verified_path);
+                Err(EngineError::Backend(
+                    "whisper.cpp could not load the selected model".into(),
+                ))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(verified_id.borrow().as_deref(), Some(model.id.as_str()));
+        assert_eq!(loaded_id.borrow().as_deref(), Some(model.id.as_str()));
+        assert_eq!(
+            error,
+            "whisper.cpp could not load the selected model".to_string()
+        );
+    }
+
+    #[test]
+    fn dictation_readiness_rejects_an_unknown_local_manifest_before_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::load(directory.path().join("settings.json")).unwrap();
+        let settings = AppSettings {
+            transcription_engine: EngineConfig::local(
+                EngineProvider::WhisperCpp,
+                "whisper-does-not-exist",
+            ),
+            ..AppSettings::default()
+        };
+        let verifier_called = Cell::new(false);
+
+        let error = validate_dictation_engine_readiness(
+            &state.models,
+            &settings,
+            |_| Ok(()),
+            |_| {
+                verifier_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(!verifier_called.get());
+        assert_eq!(error, "unknown local model: whisper-does-not-exist");
     }
 
     #[test]
