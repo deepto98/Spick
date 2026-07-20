@@ -71,8 +71,10 @@ Until those checks are complete:
 - release builds report InputMethodKit insertion as unavailable;
 - ordinary debug builds first use verified `AXSelectedText` replacement and
   can fall back to a target-PID Unicode keyboard event when a control exposes
-  a readable selection but no direct setter; the fallback must observe the
-  expected caret before it reports success;
+  a readable selection but no direct setter; PID delivery cannot be bound
+  atomically to one Accessibility element, so the fallback revalidates again
+  immediately before its single post and must observe the original field's
+  expected caret and, where available, contents before it reports success;
 - transcripts remain available through the explicit copy recovery path when a control rejects insertion; and
 - no clipboard fallback runs silently.
 
