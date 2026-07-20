@@ -37,6 +37,7 @@ pub enum DesktopPlatform {
 pub enum TextInsertionStrategy {
     InputMethodKit,
     Accessibility,
+    KeyboardEvents,
     UiAutomation,
     AtSpi,
     ClipboardPaste,
@@ -295,7 +296,8 @@ pub fn current_platform_capabilities() -> PlatformCapabilities {
             } else {
                 TextInsertionStrategy::InputMethodKit
             },
-            fallback_text_insertion: None,
+            fallback_text_insertion: development_accessibility_insertion
+                .then_some(TextInsertionStrategy::KeyboardEvents),
             text_insertion_available: development_accessibility_insertion,
             supports_global_shortcut: true,
         }
@@ -377,12 +379,18 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_do_not_advertise_an_unwired_fallback() {
+    fn capabilities_advertise_only_wired_fallbacks() {
         let capabilities = current_platform_capabilities();
         #[cfg(target_os = "macos")]
         assert!(capabilities.text_insertion_available);
         #[cfg(not(target_os = "macos"))]
         assert!(!capabilities.text_insertion_available);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            capabilities.fallback_text_insertion,
+            Some(super::TextInsertionStrategy::KeyboardEvents)
+        );
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(capabilities.fallback_text_insertion, None);
     }
 }

@@ -40,6 +40,14 @@ use super::{
     AccessibilityPermissionState, AccessibilityPermissionStatus, CapturedTextTarget,
     TextInsertionReceipt, TextTargetError, TextTargetErrorKind, TextTargetToken,
 };
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+use core_graphics::{
+    event::CGEvent,
+    event_source::{CGEventSource, CGEventSourceStateID},
+};
 use libc::pid_t;
 #[cfg(feature = "macos-input-method-prototype")]
 use objc2_app_kit::NSRunningApplication;
@@ -87,6 +95,16 @@ const MAX_PARENT_DEPTH: usize = 12;
 const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(600);
 const FOCUSED_CONTEXT_RETRY_DELAY: Duration = Duration::from_millis(12);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const KEYBOARD_EVENT_CONFIRMATION_BUDGET: Duration = Duration::from_millis(160);
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+const UNMAPPED_VIRTUAL_KEY: u16 = u16::MAX;
 #[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
 #[cfg(feature = "macos-input-method-prototype")]
@@ -512,7 +530,11 @@ impl Worker {
                 });
             }
 
-            commit_through_accessibility(&target, transcript, deadline)
+            if target.selected_text_settable {
+                commit_through_accessibility(&target, transcript, deadline)
+            } else {
+                commit_through_unicode_keyboard_event(&target, transcript, deadline)
+            }
         }
 
         #[cfg(all(
@@ -683,6 +705,80 @@ fn commit_through_accessibility(
         target_app: None,
         caret_repositioned,
     })
+}
+
+/// Development fallback for controls (including Notes versions) that expose a
+/// readable selection but no `AXSelectedText` setter. The event is posted only
+/// to the captured PID after exact app, element, and selection revalidation.
+/// An unmapped virtual key is deliberate: a client that ignores the Unicode
+/// payload should insert nothing rather than a layout-dependent character.
+#[cfg(all(
+    debug_assertions,
+    not(feature = "macos-input-method-compatibility-harness")
+))]
+fn commit_through_unicode_keyboard_event(
+    target: &CapturedTarget,
+    transcript: &str,
+    deadline: Instant,
+) -> Result<TextInsertionReceipt, TextTargetError> {
+    check_deadline(deadline)?;
+    let (inserted_range, expected_caret) = insertion_ranges(target.selection, transcript)?;
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "macOS could not create a private keyboard-event source",
+        )
+    })?;
+    let key_down = CGEvent::new_keyboard_event(source.clone(), UNMAPPED_VIRTUAL_KEY, true)
+        .map_err(|_| {
+            TextTargetError::new(
+                TextTargetErrorKind::Platform,
+                "macOS could not create the text insertion event",
+            )
+        })?;
+    let key_up = CGEvent::new_keyboard_event(source, UNMAPPED_VIRTUAL_KEY, false).map_err(|_| {
+        TextTargetError::new(
+            TextTargetErrorKind::Platform,
+            "macOS could not create the text insertion completion event",
+        )
+    })?;
+    key_down.set_string(transcript);
+    key_down.post_to_pid(target.pid);
+    key_up.post_to_pid(target.pid);
+
+    // CGEventPostToPid is asynchronous and has no delivery result. Treat the
+    // readable selection that qualified this target as a bounded acknowledgement.
+    // Exact range readback, where implemented, adds a content check.
+    let confirmation_deadline = deadline.min(Instant::now() + KEYBOARD_EVENT_CONFIRMATION_BUDGET);
+    loop {
+        pump_run_loop();
+        match read_optional_range(&target.element, AX_SELECTED_TEXT_RANGE) {
+            Ok(Some(selection)) if ranges_equal(selection, expected_caret) => {
+                if let Some(readback) = read_string_for_range(&target.element, inserted_range)? {
+                    if readback != transcript {
+                        return Err(TextTargetError::new(
+                            TextTargetErrorKind::Indeterminate,
+                            "The field moved its caret but did not confirm the inserted text; check it before copying",
+                        ));
+                    }
+                }
+                return Ok(TextInsertionReceipt {
+                    target_app: None,
+                    caret_repositioned: true,
+                });
+            }
+            Ok(_) => {}
+            Err(error) if focused_context_error_is_transient(error.kind) => {}
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= confirmation_deadline {
+            return Err(TextTargetError::new(
+                TextTargetErrorKind::Indeterminate,
+                "macOS sent the text event but the field did not confirm its new caret; check it before copying",
+            ));
+        }
+        thread::sleep(FOCUSED_CONTEXT_RETRY_DELAY);
+    }
 }
 
 #[cfg(any(

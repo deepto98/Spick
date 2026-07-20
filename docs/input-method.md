@@ -69,7 +69,10 @@ Until those checks are complete:
 
 - the Cargo feature is off by default;
 - release builds report InputMethodKit insertion as unavailable;
-- ordinary debug builds may use verified `AXSelectedText` replacement for development testing;
+- ordinary debug builds first use verified `AXSelectedText` replacement and
+  can fall back to a target-PID Unicode keyboard event when a control exposes
+  a readable selection but no direct setter; the fallback must observe the
+  expected caret before it reports success;
 - transcripts remain available through the explicit copy recovery path when a control rejects insertion; and
 - no clipboard fallback runs silently.
 
