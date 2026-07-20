@@ -1838,6 +1838,32 @@ struct FocusedContext {
     pid: pid_t,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedApplicationFallback {
+    FocusedElement(pid_t),
+    FrontmostApplication(pid_t),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedApplicationFallbackError {
+    Missing,
+    PidMismatch,
+}
+
+fn select_focused_application_fallback(
+    focused_element_pid: Option<pid_t>,
+    frontmost_application_pid: Option<pid_t>,
+) -> Result<FocusedApplicationFallback, FocusedApplicationFallbackError> {
+    match (focused_element_pid, frontmost_application_pid) {
+        (Some(focused_pid), Some(frontmost_pid)) if focused_pid != frontmost_pid => {
+            Err(FocusedApplicationFallbackError::PidMismatch)
+        }
+        (Some(pid), _) => Ok(FocusedApplicationFallback::FocusedElement(pid)),
+        (None, Some(pid)) => Ok(FocusedApplicationFallback::FrontmostApplication(pid)),
+        (None, None) => Err(FocusedApplicationFallbackError::Missing),
+    }
+}
+
 fn permission_status() -> AccessibilityPermissionStatus {
     AccessibilityPermissionStatus {
         state: if is_trusted() {
@@ -1904,26 +1930,43 @@ fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTa
     check_deadline(deadline)?;
     let system = unsafe { AXUIElement::new_system_wide() };
     let mut system_anchor = None;
+    let mut prefer_system_anchor = false;
     let application = match read_optional_focus_element(&system, AX_FOCUSED_APPLICATION, deadline)?
     {
         Some(application) => application,
-        None => match frontmost_application_pid() {
-            Some(pid) => unsafe { AXUIElement::new_application(pid) },
-            None => {
-                check_deadline(deadline)?;
-                system_anchor =
-                    read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?;
-                let anchor = system_anchor.as_ref().ok_or_else(|| {
-                    TextTargetError::new(
+        None => {
+            // The system-wide focused element is the authoritative fallback.
+            // Read it before NSWorkspace so a stale frontmost application can
+            // never redirect capture to a different app during a focus switch.
+            check_deadline(deadline)?;
+            system_anchor = read_optional_element(&system, AX_FOCUSED_UI_ELEMENT)?;
+            check_deadline(deadline)?;
+            let focused_element_pid = system_anchor
+                .as_ref()
+                .map(|anchor| read_pid(anchor))
+                .transpose()?;
+            let frontmost_pid = frontmost_application_pid();
+            check_deadline(deadline)?;
+            let fallback = select_focused_application_fallback(focused_element_pid, frontmost_pid)
+                .map_err(|error| match error {
+                    FocusedApplicationFallbackError::Missing => TextTargetError::new(
                         TextTargetErrorKind::NoFocusedTarget,
                         "macOS did not report a focused application or text field",
-                    )
+                    ),
+                    FocusedApplicationFallbackError::PidMismatch => TextTargetError::new(
+                        TextTargetErrorKind::NoFocusedTarget,
+                        "macOS reported inconsistent focused application and text field",
+                    ),
                 })?;
-                let pid = read_pid(anchor)?;
-                check_deadline(deadline)?;
-                unsafe { AXUIElement::new_application(pid) }
-            }
-        },
+            let pid = match fallback {
+                FocusedApplicationFallback::FocusedElement(pid) => {
+                    prefer_system_anchor = true;
+                    pid
+                }
+                FocusedApplicationFallback::FrontmostApplication(pid) => pid,
+            };
+            unsafe { AXUIElement::new_application(pid) }
+        }
     };
     check_deadline(deadline)?;
     set_element_timeout(&application, deadline)?;
@@ -1938,19 +1981,28 @@ fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTa
         application_anchor =
             read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     }
-    let focus_anchor = match application_anchor {
-        Some(anchor) => anchor,
-        None => {
-            let fallback = match system_anchor {
-                Some(anchor) => Some(anchor),
-                None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?,
-            };
-            fallback.ok_or_else(|| {
-                TextTargetError::new(
-                    TextTargetErrorKind::NoFocusedTarget,
-                    "macOS did not report a focused text field",
-                )
-            })?
+    let focus_anchor = if prefer_system_anchor {
+        system_anchor.take().ok_or_else(|| {
+            TextTargetError::new(
+                TextTargetErrorKind::NoFocusedTarget,
+                "macOS did not report a focused text field",
+            )
+        })?
+    } else {
+        match application_anchor {
+            Some(anchor) => anchor,
+            None => {
+                let fallback = match system_anchor {
+                    Some(anchor) => Some(anchor),
+                    None => read_optional_focus_element(&system, AX_FOCUSED_UI_ELEMENT, deadline)?,
+                };
+                fallback.ok_or_else(|| {
+                    TextTargetError::new(
+                        TextTargetErrorKind::NoFocusedTarget,
+                        "macOS did not report a focused text field",
+                    )
+                })?
+            }
         }
     };
     set_element_timeout(&focus_anchor, deadline)?;
@@ -2431,6 +2483,41 @@ mod tests {
         ));
         assert!(!focused_context_error_is_transient(
             TextTargetErrorKind::SecureField
+        ));
+    }
+
+    #[test]
+    fn focused_element_pid_is_the_authoritative_application_fallback() {
+        assert_eq!(
+            select_focused_application_fallback(Some(41), Some(41)),
+            Ok(FocusedApplicationFallback::FocusedElement(41))
+        );
+        assert_eq!(
+            select_focused_application_fallback(Some(41), None),
+            Ok(FocusedApplicationFallback::FocusedElement(41))
+        );
+    }
+
+    #[test]
+    fn frontmost_application_is_used_only_without_a_focused_element() {
+        assert_eq!(
+            select_focused_application_fallback(None, Some(52)),
+            Ok(FocusedApplicationFallback::FrontmostApplication(52))
+        );
+        assert_eq!(
+            select_focused_application_fallback(None, None),
+            Err(FocusedApplicationFallbackError::Missing)
+        );
+    }
+
+    #[test]
+    fn mismatched_focused_and_frontmost_pids_are_retried() {
+        assert_eq!(
+            select_focused_application_fallback(Some(41), Some(52)),
+            Err(FocusedApplicationFallbackError::PidMismatch)
+        );
+        assert!(focused_context_error_is_transient(
+            TextTargetErrorKind::NoFocusedTarget
         ));
     }
 
