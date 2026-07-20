@@ -83,7 +83,7 @@ Settings schema v5 records the explicit cleanup choice together with language ro
 
 ### Cloud engines
 
-The development build has fixed batch adapters for OpenAI `gpt-4o-transcribe`, xAI Speech to Text, and experimental Gemini 3.5 Flash audio understanding. Credentials live in the OS credential store. Spick accesses that store only for explicit cloud credential operations or selected cloud dictation; local startup and local model activation do not read it. Requests and raw provider responses are bounded and zeroed after use; errors omit provider bodies and credentials. Gemini uses the stable Interactions endpoint with server-side storage explicitly disabled.
+The development build has fixed batch adapters for OpenAI `gpt-4o-transcribe`, xAI Speech to Text, and experimental Gemini 3.5 Flash audio understanding. Credentials live in a separate app-local JSON file rather than Keychain, with `0600` permissions on Unix systems. This removes development Keychain prompts at the cost of weaker isolation from other processes running as the same user. Requests and raw provider responses are bounded and zeroed after use; errors omit provider bodies and credentials. Gemini uses the stable Interactions endpoint with server-side storage explicitly disabled.
 
 Cloud fallback is never implicit in local-only mode. Its permission is captured when recording starts. After an eligible local runtime failure, the worker chooses the first configured provider compatible with the session’s language in the documented order and makes at most one upload; cancellation never triggers fallback. Settings disclose that enabled vocabulary hints may accompany audio and that an upload already in progress cannot be recalled.
 
@@ -143,7 +143,7 @@ The target layer refuses known secure/password/protected controls before audio c
 - Raw audio is ephemeral by default and is not written to disk.
 - Transcript history is off by default and requires explicit opt-in.
 - Local-only mode blocks every cloud transcription, cleanup, translation, and fallback route.
-- API keys are stored in the operating system credential store and are never exposed to the webview or written to the application database.
+- API keys are stored in a separate app-local credential file, are never returned to the webview, and are never written to the application database. Unix permissions restrict the file to the current user; this is not equivalent to Keychain isolation from other same-user processes.
 - Logs omit API keys, raw audio, clipboard contents, and transcript text by default.
 - Provider requests contain only the data required for the selected operation.
 - Secure fields are excluded from dictation and insertion.
@@ -158,7 +158,7 @@ The target layer refuses known secure/password/protected controls before audio c
 | Usage counts, capture duration, word-count inputs, language, and engine identifiers | Native-owned local SQLite database                                     | Until usage and history are cleared        |
 | Transcript history                                                                  | Local SQLite database only when enabled                                | User-configurable                          |
 | Vocabulary phrases and inactive pronunciation/category metadata                     | Native-owned local SQLite database                                     | Until removed                              |
-| API keys and provider secrets                                                       | OS credential store                                                    | Until removed                              |
+| API keys and provider secrets                                                       | Private app-local `cloud-credentials.json` file                        | Until removed                              |
 | Downloaded model files and manifests                                                | Application model directory                                            | Until removed                              |
 | Raw microphone audio                                                                | Memory during the active session                                       | Discarded after completion or cancellation |
 | Clipboard snapshot retained by fallback insertion                                   | Memory during insertion, capped at 64 MiB after AppKit materialization | Discarded when the transaction ends        |

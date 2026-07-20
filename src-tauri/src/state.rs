@@ -126,6 +126,7 @@ impl AppState {
         database_path: PathBuf,
     ) -> Result<Self, String> {
         let settings = load_settings(&settings_path)?;
+        let credentials_path = parent_directory(&database_path).join("cloud-credentials.json");
         Ok(Self {
             settings: RwLock::new(settings),
             session: Mutex::new(SessionController::default()),
@@ -134,7 +135,7 @@ impl AppState {
             whisper: WhisperCppRuntime::default(),
             local_data: LocalDataStore::open(database_path),
             text_targets: TextTargetController::default(),
-            cloud: CloudRuntime::default(),
+            cloud: CloudRuntime::new(credentials_path),
             model_configuration: Mutex::new(()),
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),

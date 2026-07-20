@@ -1,4 +1,7 @@
 use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -9,7 +12,8 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewWindow};
-use zeroize::Zeroizing;
+use tempfile::Builder as TempFileBuilder;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     domain::{AppSettings, EngineConfig, EngineLocation, EngineProvider, LanguagePolicy},
@@ -17,7 +21,8 @@ use crate::{
     state::AppState,
 };
 
-const CREDENTIAL_SERVICE: &str = "app.spick.desktop";
+const CREDENTIAL_FILE_SCHEMA_VERSION: u8 = 1;
+const MAX_CREDENTIAL_FILE_BYTES: u64 = 32 * 1024;
 const MAIN_WINDOW_LABEL: &str = "main";
 const MIN_API_KEY_BYTES: usize = 8;
 const MAX_API_KEY_BYTES: usize = 8 * 1024;
@@ -43,14 +48,6 @@ pub enum CloudProviderId {
 
 impl CloudProviderId {
     pub const ORDERED: [Self; 3] = [Self::OpenAi, Self::XAi, Self::Gemini];
-
-    fn credential_account(self) -> &'static str {
-        match self {
-            Self::OpenAi => "openai",
-            Self::XAi => "xai",
-            Self::Gemini => "gemini",
-        }
-    }
 
     pub(crate) fn provider(self) -> EngineProvider {
         match self {
@@ -168,35 +165,193 @@ pub(crate) trait CredentialStore: Send + Sync {
     fn delete(&self, provider: CloudProviderId) -> Result<(), ()>;
 }
 
-#[derive(Default)]
-struct OsCredentialStore;
+struct PrivateFileCredentialStore {
+    path: PathBuf,
+}
 
-impl OsCredentialStore {
-    fn entry(provider: CloudProviderId) -> Result<keyring::Entry, ()> {
-        keyring::Entry::new(CREDENTIAL_SERVICE, provider.credential_account()).map_err(|_| ())
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CredentialDocument {
+    schema_version: u8,
+    open_ai: Option<String>,
+    x_ai: Option<String>,
+    gemini: Option<String>,
+}
+
+impl Default for CredentialDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: CREDENTIAL_FILE_SCHEMA_VERSION,
+            open_ai: None,
+            x_ai: None,
+            gemini: None,
+        }
     }
 }
 
-impl CredentialStore for OsCredentialStore {
-    fn get(&self, provider: CloudProviderId) -> Result<Option<Zeroizing<String>>, ()> {
-        match Self::entry(provider)?.get_password() {
-            Ok(secret) => Ok(Some(Zeroizing::new(secret))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(()),
+impl CredentialDocument {
+    fn secret(&self, provider: CloudProviderId) -> Option<&str> {
+        match provider {
+            CloudProviderId::OpenAi => self.open_ai.as_deref(),
+            CloudProviderId::XAi => self.x_ai.as_deref(),
+            CloudProviderId::Gemini => self.gemini.as_deref(),
         }
+    }
+
+    fn replace(&mut self, provider: CloudProviderId, value: Option<String>) {
+        let target = match provider {
+            CloudProviderId::OpenAi => &mut self.open_ai,
+            CloudProviderId::XAi => &mut self.x_ai,
+            CloudProviderId::Gemini => &mut self.gemini,
+        };
+        if let Some(secret) = target.as_mut() {
+            secret.zeroize();
+        }
+        *target = value;
+    }
+
+    fn validate(&self) -> Result<(), ()> {
+        if self.schema_version != CREDENTIAL_FILE_SCHEMA_VERSION {
+            return Err(());
+        }
+        for provider in CloudProviderId::ORDERED {
+            if let Some(secret) = self.secret(provider) {
+                validate_api_key(secret).map_err(|_| ())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CredentialDocument {
+    fn drop(&mut self) {
+        for secret in [&mut self.open_ai, &mut self.x_ai, &mut self.gemini]
+            .into_iter()
+            .flatten()
+        {
+            secret.zeroize();
+        }
+    }
+}
+
+impl PrivateFileCredentialStore {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn read_document(&self) -> Result<CredentialDocument, ()> {
+        let mut file = match open_private_credential_file(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(CredentialDocument::default())
+            }
+            Err(_) => return Err(()),
+        };
+        let metadata = file.metadata().map_err(|_| ())?;
+        if !metadata.is_file() || metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
+            return Err(());
+        }
+        let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
+        Read::by_ref(&mut file)
+            .take(MAX_CREDENTIAL_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ())?;
+        if bytes.len() as u64 > MAX_CREDENTIAL_FILE_BYTES {
+            return Err(());
+        }
+        let document: CredentialDocument =
+            serde_json::from_slice(bytes.as_slice()).map_err(|_| ())?;
+        document.validate()?;
+        Ok(document)
+    }
+
+    fn write_document(&self, document: &CredentialDocument) -> Result<(), ()> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .ok_or(())?;
+        fs::create_dir_all(parent).map_err(|_| ())?;
+        if fs::symlink_metadata(&self.path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(());
+        }
+        let bytes = Zeroizing::new(serde_json::to_vec(document).map_err(|_| ())?);
+        if bytes.len() as u64 > MAX_CREDENTIAL_FILE_BYTES {
+            return Err(());
+        }
+        let mut temporary = TempFileBuilder::new()
+            .prefix(".spick-cloud-credentials-")
+            .tempfile_in(parent)
+            .map_err(|_| ())?;
+        set_private_permissions(temporary.as_file()).map_err(|_| ())?;
+        temporary.write_all(bytes.as_slice()).map_err(|_| ())?;
+        temporary.as_file().sync_all().map_err(|_| ())?;
+        temporary.persist(&self.path).map_err(|_| ())?;
+        let file = open_private_credential_file(&self.path).map_err(|_| ())?;
+        set_private_permissions(&file).map_err(|_| ())?;
+        sync_credential_parent(&self.path);
+        Ok(())
+    }
+}
+
+impl CredentialStore for PrivateFileCredentialStore {
+    fn get(&self, provider: CloudProviderId) -> Result<Option<Zeroizing<String>>, ()> {
+        let document = self.read_document()?;
+        Ok(document
+            .secret(provider)
+            .map(|secret| Zeroizing::new(secret.to_owned())))
     }
 
     fn set(&self, provider: CloudProviderId, api_key: &str) -> Result<(), ()> {
-        Self::entry(provider)?.set_password(api_key).map_err(|_| ())
+        let mut document = self.read_document()?;
+        document.replace(provider, Some(api_key.to_owned()));
+        document.validate()?;
+        self.write_document(&document)
     }
 
     fn delete(&self, provider: CloudProviderId) -> Result<(), ()> {
-        match Self::entry(provider)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(()),
+        let mut document = self.read_document()?;
+        document.replace(provider, None);
+        self.write_document(&document)
+    }
+}
+
+fn open_private_credential_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    set_private_permissions(&file)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn set_private_permissions(file: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_credential_parent(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
         }
     }
 }
+
+#[cfg(not(unix))]
+fn sync_credential_parent(_path: &Path) {}
 
 pub struct CloudRuntime {
     credentials: Arc<dyn CredentialStore>,
@@ -237,17 +392,15 @@ impl Drop for CloudRequestLease<'_> {
     }
 }
 
-impl Default for CloudRuntime {
-    fn default() -> Self {
+impl CloudRuntime {
+    pub fn new(credentials_path: PathBuf) -> Self {
         Self {
-            credentials: Arc::new(OsCredentialStore),
+            credentials: Arc::new(PrivateFileCredentialStore::new(credentials_path)),
             http: cloud_http_agent(),
             configuration: Mutex::new(CloudConfigurationState::default()),
         }
     }
-}
 
-impl CloudRuntime {
     #[cfg(test)]
     fn with_credentials(credentials: Arc<dyn CredentialStore>) -> Self {
         Self {
@@ -261,9 +414,9 @@ impl CloudRuntime {
         &self,
         provider: CloudProviderId,
     ) -> Result<Option<Zeroizing<String>>, String> {
-        self.credentials.get(provider).map_err(|()| {
-            "The OS credential store could not be read. Unlock it and try again.".into()
-        })
+        self.credentials
+            .get(provider)
+            .map_err(|()| "Spick's private cloud credential file could not be read.".into())
     }
 
     /// Checks only local credential state. Dictation startup uses this before
@@ -1049,7 +1202,7 @@ pub async fn set_cloud_api_key(
             .credentials
             .set(provider, trimmed)
             .map_err(|()| {
-                "The API key could not be saved in the OS credential store.".to_string()
+                "The API key could not be saved in Spick's private app-data file.".to_string()
             })?;
         drop(configuration);
         state.cloud.status(provider, &state.settings_snapshot()?)
@@ -1079,7 +1232,7 @@ pub async fn delete_cloud_api_key(
             return Err("Choose another transcription engine before removing this key.".into());
         }
         state.cloud.credentials.delete(provider).map_err(|()| {
-            "The API key could not be removed from the OS credential store.".to_string()
+            "The API key could not be removed from Spick's private app-data file.".to_string()
         })?;
         drop(configuration);
         state.cloud.status(provider, &settings)
@@ -1242,6 +1395,83 @@ mod tests {
             assert_eq!(spec.engine_config().location, EngineLocation::Cloud);
         }
         assert_eq!(provider_spec(CloudProviderId::XAi).model, "speech-to-text");
+    }
+
+    #[test]
+    fn private_credential_file_round_trips_without_an_os_secret_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cloud-credentials.json");
+        let store = PrivateFileCredentialStore::new(path.clone());
+
+        assert!(store.get(CloudProviderId::OpenAi).unwrap().is_none());
+        assert!(!path.exists());
+        store
+            .set(CloudProviderId::OpenAi, "openai-development-key")
+            .unwrap();
+        store
+            .set(CloudProviderId::Gemini, "gemini-development-key")
+            .unwrap();
+        assert_eq!(
+            store
+                .get(CloudProviderId::OpenAi)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("openai-development-key")
+        );
+        assert_eq!(
+            store
+                .get(CloudProviderId::Gemini)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("gemini-development-key")
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        }
+
+        store.delete(CloudProviderId::OpenAi).unwrap();
+        assert!(store.get(CloudProviderId::OpenAi).unwrap().is_none());
+        assert!(store.get(CloudProviderId::Gemini).unwrap().is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_credential_file_never_follows_a_symbolic_link() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let victim = directory.path().join("victim.json");
+        fs::write(&victim, b"leave me alone").unwrap();
+        let path = directory.path().join("cloud-credentials.json");
+        symlink(&victim, &path).unwrap();
+        let store = PrivateFileCredentialStore::new(path);
+
+        assert!(store
+            .set(CloudProviderId::OpenAi, "openai-development-key")
+            .is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"leave me alone");
+    }
+
+    #[test]
+    fn private_credential_file_rejects_oversized_or_unknown_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cloud-credentials.json");
+        let store = PrivateFileCredentialStore::new(path.clone());
+
+        fs::write(&path, vec![b'x'; MAX_CREDENTIAL_FILE_BYTES as usize + 1]).unwrap();
+        assert!(store.get(CloudProviderId::OpenAi).is_err());
+
+        fs::write(
+            &path,
+            br#"{"schemaVersion":1,"openAi":null,"xAi":null,"gemini":null,"extra":true}"#,
+        )
+        .unwrap();
+        assert!(store.get(CloudProviderId::OpenAi).is_err());
     }
 
     #[test]

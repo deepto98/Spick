@@ -71,7 +71,7 @@ Exit criteria:
 
 ## Milestone 4: cleanup and cloud providers
 
-Build on the initial as-transcribed and deterministic English cleanup choices with separate engine selectors and, only when it has a clear job, optional model-based rewriting. Add cloud adapters one provider at a time, beginning with a single speech service, and store its key in the macOS credential store.
+Build on the initial as-transcribed and deterministic English cleanup choices with separate engine selectors and, only when it has a clear job, optional model-based rewriting. Add cloud adapters one provider at a time, beginning with a single speech service. During development, store keys in a current-user-only app-local credential file so unsigned rebuilds do not trigger Keychain authorization prompts; revisit the release credential boundary before distribution.
 
 Adapters declare streaming, language, translation, vocabulary, and cleanup capabilities. Local-only mode and per-role routing are enforced by the core.
 

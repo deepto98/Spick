@@ -432,10 +432,10 @@ export function EnginesView({
               <p>
                 Audio leaves this Mac only when a cloud provider is selected as
                 primary, or when cloud fallback is explicitly enabled in
-                Settings. Keys are kept by the operating system credential
-                store. Enabled vocabulary hints may accompany the recording.
-                Once an upload begins, cancelling cannot recall audio already
-                sent.
+                Settings. Keys are kept in Spick’s private local app-data file,
+                readable only by your user account. Spick does not use Keychain.
+                Enabled vocabulary hints may accompany the recording. Once an
+                upload begins, cancelling cannot recall audio already sent.
               </p>
             </div>
             <span>
@@ -484,8 +484,8 @@ export function EnginesView({
               <LockKeyhole size={15} />
               <span>
                 Open the Tauri development app to save a key or select a cloud
-                provider. This browser preview cannot access the credential
-                store.
+                provider. This browser preview cannot access the native app’s
+                private credential file.
               </span>
             </div>
           )}
@@ -556,7 +556,7 @@ export function EnginesView({
                     <KeyRound size={14} />
                     <span>
                       {provider.configured
-                        ? "Key saved in the OS credential store"
+                        ? "Key saved locally"
                         : "No API key saved"}
                     </span>
                   </div>
@@ -627,8 +627,8 @@ export function EnginesView({
                         </button>
                       </div>
                       <small>
-                        Spick sends this value straight to the OS credential
-                        store. The field is cleared as soon as you press save.
+                        Spick writes this value to its private local credential
+                        file. The field is cleared as soon as you press save.
                       </small>
                     </div>
                   )}

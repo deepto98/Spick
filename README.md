@@ -38,7 +38,7 @@ After a dictation attempt, **Today → Last handoff** shows coarse startup and p
 ~/Library/Application Support/app.spick.desktop/models/
 ```
 
-SQLite may also create `spick.sqlite3-wal` and `spick.sqlite3-shm` while Spick is running. Quit Spick before resetting it, then remove `settings.json` (and its `.bak`) plus all three `spick.sqlite3*` files. Remove `models/` only if downloaded model weights should be reset too. To revisit onboarding without deleting data, use **Settings → General → Restart setup**. To erase its WebView `localStorage` marker as part of a full manual reset, quit Spick and also remove `~/Library/WebKit/spick-desktop/`. Provider keys are separate Keychain items under the `app.spick.desktop` service; deleting the files above does not remove them, so use **Engines** if those should also be reset. Windows keeps the database under the app-local data directory (`%LOCALAPPDATA%`), while Linux uses the platform local-data/XDG directory; settings follow each platform's config directory.
+SQLite may also create `spick.sqlite3-wal` and `spick.sqlite3-shm` while Spick is running. Quit Spick before resetting it, then remove `settings.json` (and its `.bak`) plus all three `spick.sqlite3*` files. Cloud API keys are stored separately as `cloud-credentials.json` in the same app-local data directory; remove that file too for a complete reset. Remove `models/` only if downloaded model weights should be reset too. To revisit onboarding without deleting data, use **Settings → General → Restart setup**. To erase its WebView `localStorage` marker as part of a full manual reset, quit Spick and also remove `~/Library/WebKit/spick-desktop/`. Windows keeps the database and credential file under the app-local data directory (`%LOCALAPPDATA%`), while Linux uses the platform local-data/XDG directory; settings follow each platform's config directory.
 
 The Option gesture needs macOS **Input Monitoring** in addition to microphone and Accessibility access. Spick shows a temporary `⌘ ⇧ Space` fallback until Input Monitoring is allowed; returning to Spick activates Option without requiring a rebuild. Option-letter, Option-click, dual-Option, and other chords are passed through. Chords seen before the hold threshold prevent dictation, and external pointer input during an active hold cancels it before delivery. Pointer input proven to target the nonactivating Spick HUD remains available so its move grip works while speaking.
 
@@ -79,8 +79,8 @@ Read [the architecture](docs/architecture.md) for the pipeline, native seams, la
 
 - Local-only mode must never silently fall back to a cloud provider.
 - Raw audio is ephemeral by default and transcript history is opt-in.
-- API keys are sent directly from the transient entry field to the operating system credential store, cleared from the field immediately, never returned to the frontend, and never written to ordinary settings or SQLite.
-- Keychain access is lazy: Spick touches it only for explicit cloud credential operations or selected cloud dictation, never during local startup or local model activation.
+- API keys are sent directly from the transient entry field to a private app-local credential file, cleared from the field immediately, never returned to the frontend, and never written to ordinary settings or SQLite.
+- The credential file is restricted to the current user on Unix systems. This avoids Keychain prompts in development but provides weaker same-user process isolation than the operating-system credential store.
 - Logs and statistics omit dictated text, raw audio, clipboard contents, and credentials by default.
 - Secure fields and stale focus targets must fail safely instead of receiving inserted text.
 
