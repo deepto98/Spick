@@ -31,7 +31,7 @@ use crate::platform::{
 
 pub const COMPATIBILITY_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 const CATALOG_ID: &str = "spickInputCompatibilityMacOs";
-const CATALOG_VERSION: u32 = 1;
+const CATALOG_VERSION: u32 = 2;
 const EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const MAX_EVIDENCE_BYTES: u64 = 64 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -122,6 +122,16 @@ const CASES: &[CompatibilityCase] = &[
         fixture: Fixture { id: "unicodeSingleV1", text: UNICODE_SINGLE },
         expected: ExpectedObservation::Confirmed,
         setup: "Use an unsaved rich-text document and place an empty caret in scratch text.",
+    },
+    CompatibilityCase {
+        id: "macos.notes.body.caretUnicode",
+        target_bundle_identifier: "com.apple.Notes",
+        target_name: "Notes",
+        control: "new disposable note body, empty caret",
+        selection: CompatibilitySelection::Caret,
+        fixture: Fixture { id: "unicodeSingleV1", text: UNICODE_SINGLE },
+        expected: ExpectedObservation::Confirmed,
+        setup: "Create a disposable note and place an empty caret in its body.",
     },
     CompatibilityCase {
         id: "macos.chrome.input.caretAscii",
@@ -232,6 +242,16 @@ const CASES: &[CompatibilityCase] = &[
         fixture: Fixture { id: "communicationDraftV1", text: COMMUNICATION_DRAFT },
         expected: ExpectedObservation::Confirmed,
         setup: "Use a cleared private draft. Do not send the fixture.",
+    },
+    CompatibilityCase {
+        id: "macos.chatGpt.composer.caretDraft",
+        target_bundle_identifier: "com.openai.codex",
+        target_name: "ChatGPT",
+        control: "new-chat composer, empty caret",
+        selection: CompatibilitySelection::Caret,
+        fixture: Fixture { id: "communicationDraftV1", text: COMMUNICATION_DRAFT },
+        expected: ExpectedObservation::Confirmed,
+        setup: "Use a cleared new-chat composer. Do not send the fixture.",
     },
 ];
 
@@ -1552,8 +1572,7 @@ fn validate_review_combination(
         }
         ExpectedObservation::CaptureRefusal(_) => caret == "notApplicable",
     };
-    let requires_external_attestation =
-        case.id.starts_with("macos.terminal.") || case.id.starts_with("macos.slack.");
+    let requires_external_attestation = requires_external_attestation(case);
     let external_valid = if requires_external_attestation {
         matches!(
             external,
@@ -1625,7 +1644,7 @@ fn classify_reviewed_attempt(run_id: &str) -> Result<&'static str, String> {
             ExpectedObservation::Confirmed => review.caret_observation == "expected",
             ExpectedObservation::CaptureRefusal(_) => review.caret_observation == "notApplicable",
         }
-        && if case.id.starts_with("macos.terminal.") || case.id.starts_with("macos.slack.") {
+        && if requires_external_attestation(case) {
             review.external_action_observation == "noneObserved"
         } else {
             review.external_action_observation == "notApplicable"
@@ -1657,6 +1676,12 @@ fn classify_reviewed_attempt(run_id: &str) -> Result<&'static str, String> {
     } else {
         "nonQualifyingMatch"
     })
+}
+
+fn requires_external_attestation(case: &CompatibilityCase) -> bool {
+    case.id.starts_with("macos.terminal.")
+        || case.id.starts_with("macos.slack.")
+        || case.id.starts_with("macos.chatGpt.")
 }
 
 fn write_new_json<T: Serialize>(root: &Path, destination: &Path, value: &T) -> Result<(), String> {

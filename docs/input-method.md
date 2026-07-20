@@ -18,7 +18,7 @@ Every broker connection is mutually authenticated before a request header or tra
 
 ## Why it is still gated
 
-The release bundle still needs notarization, a prebuilt helper payload nested into the desktop bundle, and compatibility runs against real controls in TextEdit, browsers, VS Code, terminals, and Electron apps. InputMethodKit support is a control-level result; one working field does not prove an entire app works.
+The release bundle still needs notarization, a prebuilt helper payload nested into the desktop bundle, and compatibility runs against real controls in Notes, TextEdit, browsers, ChatGPT, VS Code, terminals, and other Electron apps. InputMethodKit support is a control-level result; one working field does not prove an entire app works.
 
 ## Real-control compatibility harness
 
