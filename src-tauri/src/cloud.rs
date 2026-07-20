@@ -200,6 +200,10 @@ impl CredentialStore for OsCredentialStore {
 
 pub struct CloudRuntime {
     credentials: Arc<dyn CredentialStore>,
+    /// One process-lived client keeps each provider's idle HTTPS connection
+    /// available for a following dictation. Constructing an Agent per request
+    /// would discard ureq's connection pool and force avoidable DNS/TLS work.
+    http: ureq::Agent,
     /// Serializes short credential/configuration transactions and tracks
     /// provider requests without holding a mutex across network I/O.
     configuration: Mutex<CloudConfigurationState>,
@@ -237,6 +241,7 @@ impl Default for CloudRuntime {
     fn default() -> Self {
         Self {
             credentials: Arc::new(OsCredentialStore),
+            http: cloud_http_agent(),
             configuration: Mutex::new(CloudConfigurationState::default()),
         }
     }
@@ -247,6 +252,7 @@ impl CloudRuntime {
     fn with_credentials(credentials: Arc<dyn CredentialStore>) -> Self {
         Self {
             credentials,
+            http: cloud_http_agent(),
             configuration: Mutex::new(CloudConfigurationState::default()),
         }
     }
@@ -335,7 +341,7 @@ impl CloudRuntime {
         if !claim_upload().map_err(EngineError::Backend)? {
             return Err(EngineError::Cancelled);
         }
-        let response = send_request(&prepared, credential.as_str())?;
+        let response = send_request(&self.http, &prepared, credential.as_str())?;
         drop(request_lease);
         drop(credential);
         drop(prepared);
@@ -594,10 +600,10 @@ fn validate_gemini_body_size(body_bytes: usize) -> Result<(), EngineError> {
 }
 
 fn send_request(
+    agent: &ureq::Agent,
     request: &PreparedRequest,
     api_key: &str,
 ) -> Result<Zeroizing<String>, EngineError> {
-    let agent = cloud_http_agent();
     let response = match request.authentication {
         Authentication::Bearer => {
             let authorization = Zeroizing::new(format!("Bearer {api_key}"));
@@ -1456,10 +1462,23 @@ mod tests {
         assert!(message.contains("OpenAI"));
         assert!(message.contains("401"));
         assert!(!message.contains("secret"));
+    }
 
-        let agent = cloud_http_agent();
-        assert!(agent.config().https_only());
-        assert_eq!(agent.config().max_redirects(), 0);
+    #[test]
+    fn runtime_owns_one_hardened_shared_http_agent() {
+        let runtime = CloudRuntime::with_credentials(Arc::new(MemoryCredentials::default()));
+        let shared = runtime.http.clone();
+
+        assert!(runtime.http.config().https_only());
+        assert_eq!(runtime.http.config().max_redirects(), 0);
+        assert_eq!(
+            runtime.http.config().timeouts().global,
+            Some(CLOUD_REQUEST_TIMEOUT)
+        );
+        assert!(
+            std::ptr::eq(runtime.http.config(), shared.config()),
+            "ureq Agent clones must retain the runtime's shared client state"
+        );
     }
 
     #[test]
