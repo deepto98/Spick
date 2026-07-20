@@ -28,6 +28,7 @@ const localDataMocks = vi.hoisted(() => ({
 
 const cloudMocks = vi.hoisted(() => ({
   activate: vi.fn(),
+  clearSelectedProvider: vi.fn(),
   configure: vi.fn(),
   enabled: vi.fn(),
   providers: [] as CloudProviderStatus[],
@@ -109,6 +110,7 @@ vi.mock("./hooks/useCloudProviders", () => ({
     cloudMocks.enabled(enabled);
     return {
       activate: cloudMocks.activate,
+      clearSelectedProvider: cloudMocks.clearSelectedProvider,
       configure: cloudMocks.configure,
       error: null,
       loading: false,
@@ -257,6 +259,7 @@ describe("native language and cleanup persistence", () => {
     localDataMocks.clearData.mockReset();
     localDataMocks.lastTranscript = null;
     cloudMocks.activate.mockReset();
+    cloudMocks.clearSelectedProvider.mockReset();
     cloudMocks.configure.mockReset();
     cloudMocks.enabled.mockReset();
     cloudMocks.providers = [];

@@ -342,8 +342,9 @@ function App() {
         .then((saved) => {
           if (selectionRevision === engineSelectionRevision.current) {
             acceptNativeSettings(saved);
+            cloudProviders.clearSelectedProvider();
           }
-          return Promise.all([refreshLocalEngines(), cloudProviders.refresh()]);
+          return refreshLocalEngines();
         })
         .catch((reason) => setModelError(`Couldn’t use that model: ${reason}`))
         .finally(() => setModelActionPending(null));

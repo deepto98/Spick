@@ -251,6 +251,11 @@ describe("useCloudProviders", () => {
       result.current.providers.find(({ provider }) => provider === "xAi")
         ?.selected,
     ).toBe(true);
+
+    act(() => result.current.clearSelectedProvider());
+    expect(result.current.providers.some(({ selected }) => selected)).toBe(
+      false,
+    );
   });
 
   it("surfaces list failures and can retry", async () => {

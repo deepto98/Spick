@@ -224,8 +224,17 @@ export function useCloudProviders(enabled: boolean) {
     [beginOperation, finishOperation, refresh],
   );
 
+  const clearSelectedProvider = useCallback(() => {
+    setProviders((current) =>
+      current.map((provider) =>
+        provider.selected ? { ...provider, selected: false } : provider,
+      ),
+    );
+  }, []);
+
   return {
     activate,
+    clearSelectedProvider,
     configure,
     error,
     loading,
