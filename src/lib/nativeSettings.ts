@@ -23,6 +23,7 @@ export interface NativeAppSettings {
   languagePolicy: NativeLanguagePolicy;
   transcriptionEngine: NativeEngineConfig;
   cleanupEngine: NativeEngineConfig | null;
+  inputDeviceName: string | null;
   hud: NativeHudSettings;
   allowCloudFallback: boolean;
   saveTranscriptHistory: boolean;
@@ -32,6 +33,7 @@ export interface NativeHudSettings {
   position: "bottomLeft" | "bottomCenter" | "bottomRight";
   presentation: "expanded" | "compact";
   customPosition: { x: number; y: number } | null;
+  visible: boolean;
 }
 
 export type NativeCleanupLevel = "Verbatim" | "Clean";

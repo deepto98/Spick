@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const LEGACY_SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub(crate) const OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION: u32 = 2;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub(crate) const MULTILINGUAL_SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
 #[cfg(target_os = "macos")]
 pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "Option";
 #[cfg(not(target_os = "macos"))]
@@ -187,12 +188,24 @@ pub struct HudCoordinates {
     pub y: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HudSettings {
     pub position: HudPosition,
     pub presentation: HudPresentation,
     pub custom_position: Option<HudCoordinates>,
+    pub visible: bool,
+}
+
+impl Default for HudSettings {
+    fn default() -> Self {
+        Self {
+            position: HudPosition::default(),
+            presentation: HudPresentation::default(),
+            custom_position: None,
+            visible: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +216,9 @@ pub struct AppSettings {
     pub language_policy: LanguagePolicy,
     pub transcription_engine: EngineConfig,
     pub cleanup_engine: Option<EngineConfig>,
+    /// `None` follows the operating system's current default input device.
+    /// A named choice is snapshotted when a session begins.
+    pub input_device_name: Option<String>,
     pub hud: HudSettings,
     pub allow_cloud_fallback: bool,
     pub save_transcript_history: bool,
@@ -220,6 +236,7 @@ impl Default for AppSettings {
             ),
             // Cleanup changes a user's words, so it is an explicit opt-in.
             cleanup_engine: None,
+            input_device_name: None,
             hud: HudSettings::default(),
             allow_cloud_fallback: false,
             save_transcript_history: false,
@@ -232,8 +249,8 @@ impl AppSettings {
     ///
     /// Schema v1 could contain a cleanup selection even though cleanup was not
     /// connected, so that selection is disabled. Schema v2 also predates the
-    /// macOS Option default. Both migrations preserve custom accelerators and
-    /// every unrelated setting.
+    /// macOS Option default. Schema v3 predates persisted microphone/HUD
+    /// visibility choices. All migrations preserve explicit user choices.
     pub(crate) fn migrate_legacy_schema(&mut self) -> bool {
         match self.schema_version {
             LEGACY_SETTINGS_SCHEMA_VERSION => {
@@ -242,6 +259,7 @@ impl AppSettings {
                 if self.push_to_talk_shortcut == LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT {
                     self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
                 }
+                self.hud.visible = true;
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
@@ -250,6 +268,12 @@ impl AppSettings {
                 if self.push_to_talk_shortcut == LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT {
                     self.push_to_talk_shortcut = DEFAULT_PUSH_TO_TALK_SHORTCUT.into();
                 }
+                self.hud.visible = true;
+                self.schema_version = SETTINGS_SCHEMA_VERSION;
+                true
+            }
+            MULTILINGUAL_SETTINGS_SCHEMA_VERSION => {
+                self.hud.visible = true;
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
@@ -266,6 +290,15 @@ impl AppSettings {
         }
         if self.push_to_talk_shortcut.trim().is_empty() {
             return Err("push-to-talk shortcut cannot be empty".into());
+        }
+        if let Some(name) = self.input_device_name.as_deref() {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("selected microphone name cannot be empty".into());
+            }
+            if name.len() > 512 || name.chars().any(char::is_control) {
+                return Err("selected microphone name is invalid".into());
+            }
         }
 
         self.language_policy.validate()?;
@@ -403,6 +436,8 @@ mod tests {
             "whisper-small-multilingual-q5-1"
         );
         assert_eq!(settings.cleanup_engine, None);
+        assert_eq!(settings.input_device_name, None);
+        assert!(settings.hud.visible);
         assert!(!settings.allow_cloud_fallback);
         assert!(!settings.save_transcript_history);
         assert!(settings.validate().is_ok());
@@ -516,6 +551,45 @@ mod tests {
         assert_eq!(
             current.push_to_talk_shortcut,
             LEGACY_DEFAULT_PUSH_TO_TALK_SHORTCUT
+        );
+    }
+
+    #[test]
+    fn schema_v3_migration_enables_the_preexisting_hud_by_default() {
+        let mut previous = AppSettings {
+            schema_version: MULTILINGUAL_SETTINGS_SCHEMA_VERSION,
+            input_device_name: None,
+            hud: HudSettings {
+                visible: false,
+                ..HudSettings::default()
+            },
+            ..AppSettings::default()
+        };
+
+        assert!(previous.migrate_legacy_schema());
+        assert_eq!(previous.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(previous.hud.visible);
+        assert_eq!(previous.input_device_name, None);
+    }
+
+    #[test]
+    fn selected_microphone_names_are_bounded_and_printable() {
+        let mut settings = AppSettings {
+            input_device_name: Some("Studio microphone".into()),
+            ..AppSettings::default()
+        };
+        assert!(settings.validate().is_ok());
+
+        settings.input_device_name = Some("\n".into());
+        assert_eq!(
+            settings.validate(),
+            Err("selected microphone name cannot be empty".into())
+        );
+
+        settings.input_device_name = Some("microphone\0name".into());
+        assert_eq!(
+            settings.validate(),
+            Err("selected microphone name is invalid".into())
         );
     }
 }

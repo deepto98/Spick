@@ -150,6 +150,7 @@ pub fn run() {
             commands::clear_local_data,
             commands::get_dictation_session,
             commands::get_audio_capture_status,
+            commands::list_audio_input_devices,
             commands::get_shortcut_status,
             commands::request_input_monitoring_permission,
             commands::get_hud_settings,

@@ -81,6 +81,39 @@ pub struct AudioCaptureStatus {
     pub dropped_chunks: u64,
 }
 
+/// A privacy-safe input-device choice for Settings. CPAL does not expose a
+/// stable cross-platform device identifier, so the stored name is resolved
+/// again immediately before capture and an unavailable choice fails clearly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInputDevice {
+    pub name: String,
+    pub is_default: bool,
+}
+
+pub fn list_input_devices() -> Result<Vec<AudioInputDevice>, String> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device_name(&device));
+    let devices = host
+        .input_devices()
+        .map_err(|error| format!("could not list microphones: {error}"))?;
+    let mut names = devices
+        .filter_map(|device| device_name(&device))
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+
+    Ok(names
+        .into_iter()
+        .map(|name| AudioInputDevice {
+            is_default: default_name.as_deref() == Some(name.as_str()),
+            name,
+        })
+        .collect())
+}
+
 impl AudioCaptureStatus {
     fn idle() -> Self {
         Self {
@@ -109,6 +142,7 @@ impl AudioCaptureController {
     pub fn start(
         &mut self,
         session_id: String,
+        input_device_name: Option<String>,
         level_sink: LevelSink,
         error_sink: ErrorSink,
     ) -> Result<AudioCaptureStatus, String> {
@@ -119,7 +153,7 @@ impl AudioCaptureController {
             ));
         }
 
-        let capture = ActiveCapture::spawn(session_id, level_sink, error_sink)?;
+        let capture = ActiveCapture::spawn(session_id, input_device_name, level_sink, error_sink)?;
         let status = capture.status();
         self.active = Some(capture);
         Ok(status)
@@ -208,6 +242,7 @@ struct ActiveCapture {
 impl ActiveCapture {
     fn spawn(
         session_id: String,
+        input_device_name: Option<String>,
         level_sink: LevelSink,
         error_sink: ErrorSink,
     ) -> Result<Self, String> {
@@ -243,6 +278,7 @@ impl ActiveCapture {
             .spawn(move || {
                 run_capture_owner(
                     owner_session_id,
+                    input_device_name,
                     data_sender,
                     data_receiver,
                     command_receiver,
@@ -438,6 +474,7 @@ impl FinalizedCapture {
 #[allow(clippy::too_many_arguments)]
 fn run_capture_owner(
     session_id: String,
+    input_device_name: Option<String>,
     data_sender: SyncSender<Vec<f32>>,
     data_receiver: Receiver<Vec<f32>>,
     command_receiver: Receiver<CaptureCommand>,
@@ -452,6 +489,7 @@ fn run_capture_owner(
     level_sink: LevelSink,
 ) {
     let setup = open_microphone_stream(
+        input_device_name.as_deref(),
         data_sender,
         Arc::clone(&captured_frames),
         Arc::clone(&observed_frames),
@@ -645,6 +683,7 @@ fn notify_failure(
 }
 
 fn open_microphone_stream(
+    input_device_name: Option<&str>,
     sender: SyncSender<Vec<f32>>,
     captured_frames: Arc<AtomicU64>,
     observed_frames: Arc<AtomicU64>,
@@ -652,13 +691,21 @@ fn open_microphone_stream(
     stream_error_sender: mpsc::Sender<CaptureCommand>,
 ) -> Result<(Stream, CaptureMetadata), String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no default microphone is available".to_string())?;
-    let device_name = device
-        .description()
-        .map(|description| description.name().to_string())
-        .unwrap_or_else(|_| "Default microphone".into());
+    let device = match input_device_name {
+        Some(expected) => host
+            .input_devices()
+            .map_err(|error| format!("could not list microphones: {error}"))?
+            .find(|device| device_name(device).as_deref() == Some(expected))
+            .ok_or_else(|| {
+                format!(
+                    "the selected microphone ‘{expected}’ is unavailable; choose another microphone in Settings"
+                )
+            })?,
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "no default microphone is available".to_string())?,
+    };
+    let device_name = device_name(&device).unwrap_or_else(|| "System default microphone".into());
     let supported_config = device
         .default_input_config()
         .map_err(|error| format!("could not read the microphone configuration: {error}"))?;
@@ -671,7 +718,7 @@ fn open_microphone_stream(
     };
 
     if metadata.input_sample_rate == 0 || metadata.input_channels == 0 {
-        return Err("the default microphone reported an invalid configuration".into());
+        return Err("the selected microphone reported an invalid configuration".into());
     }
 
     let stream = build_input_stream(
@@ -685,6 +732,15 @@ fn open_microphone_stream(
         stream_error_sender,
     )?;
     Ok((stream, metadata))
+}
+
+fn device_name(device: &cpal::Device) -> Option<String> {
+    let name = device.description().ok()?.name().trim().to_string();
+    if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -14,8 +14,8 @@ use crate::{
     audio::AudioCaptureController,
     cloud::CloudRuntime,
     domain::{
-        AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
-        SETTINGS_SCHEMA_VERSION,
+        AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, MULTILINGUAL_SETTINGS_SCHEMA_VERSION,
+        OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
     local_data::LocalDataStore,
@@ -452,6 +452,7 @@ fn parse_settings_document(bytes: &[u8]) -> Result<ParsedSettings, SettingsParse
         settings.schema_version,
         LEGACY_SETTINGS_SCHEMA_VERSION
             | OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION
+            | MULTILINGUAL_SETTINGS_SCHEMA_VERSION
             | SETTINGS_SCHEMA_VERSION
     ) {
         settings.migrate_legacy_schema()
@@ -656,6 +657,7 @@ mod tests {
                 EngineProvider::LlamaCpp,
                 "old-local-polisher",
             )),
+            input_device_name: None,
             hud: HudSettings {
                 position: HudPosition::BottomRight,
                 ..HudSettings::default()
@@ -729,6 +731,47 @@ mod tests {
         assert_eq!(state.settings_snapshot().unwrap(), expected);
         assert_eq!(parse_settings(&fs::read(&path).unwrap()).unwrap(), expected);
         assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn schema_v3_adds_device_and_hud_defaults_without_losing_choices() {
+        let (_directory, path) = test_path();
+        let mut value = serde_json::to_value(AppSettings {
+            language_policy: LanguagePolicy::Fixed {
+                language: "ja".into(),
+            },
+            save_transcript_history: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.insert(
+            "schemaVersion".into(),
+            serde_json::Value::from(MULTILINGUAL_SETTINGS_SCHEMA_VERSION),
+        );
+        object.remove("inputDeviceName");
+        object
+            .get_mut("hud")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("visible");
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let loaded = AppState::load(path.clone())
+            .unwrap()
+            .settings_snapshot()
+            .unwrap();
+
+        assert_eq!(loaded.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(loaded.input_device_name, None);
+        assert!(loaded.hud.visible);
+        assert_eq!(
+            loaded.language_policy,
+            LanguagePolicy::Fixed {
+                language: "ja".into()
+            }
+        );
+        assert!(loaded.save_transcript_history);
     }
 
     #[test]

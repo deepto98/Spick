@@ -13,12 +13,10 @@ import {
   Languages,
   LockKeyhole,
   Mic2,
-  MonitorUp,
   RotateCcw,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
-  Volume2,
 } from "lucide-react";
 import type { AppSettings } from "../types";
 import type {
@@ -27,6 +25,7 @@ import type {
 } from "../lib/nativeLocalData";
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
+import type { NativeAudioInputDevice } from "../lib/nativeAudio";
 import { captureMacShortcut } from "../lib/shortcutCapture";
 import {
   shortcutDisplayName,
@@ -49,6 +48,9 @@ interface SettingsViewProps {
   shortcutPending: boolean;
   shortcutError?: string;
   settingsSaving: boolean;
+  audioInputDevices?: NativeAudioInputDevice[];
+  audioInputDevicesLoading?: boolean;
+  audioInputDevicesError?: string;
   settingsAcknowledged?: boolean;
   settingsLoading?: boolean;
   nativeError?: string;
@@ -64,6 +66,7 @@ interface SettingsViewProps {
   onRequestInputMonitoring: () => void;
   onRestartOnboarding: () => void;
   onRetryNativeSettings?: () => void;
+  onRefreshAudioInputDevices?: () => void;
   onClearLocalData?: (
     scope: ClearLocalDataScope,
   ) => Promise<ClearLocalDataResult | null>;
@@ -119,6 +122,9 @@ export function SettingsView({
   shortcutPending,
   shortcutError,
   settingsSaving,
+  audioInputDevices = [],
+  audioInputDevicesLoading = false,
+  audioInputDevicesError,
   settingsAcknowledged = true,
   settingsLoading = false,
   nativeError,
@@ -134,6 +140,7 @@ export function SettingsView({
   onRequestInputMonitoring,
   onRestartOnboarding,
   onRetryNativeSettings,
+  onRefreshAudioInputDevices,
   onClearLocalData,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>("general");
@@ -146,6 +153,17 @@ export function SettingsView({
   const usesOptionGesture = settings.hotkey === "⌥";
   const settingsControlsDisabled = settingsSaving || !settingsAcknowledged;
   const shortcutControlsDisabled = settingsControlsDisabled || shortcutPending;
+  const systemMicrophone = "System default microphone";
+  const microphoneOptions = Array.from(
+    new Set([
+      systemMicrophone,
+      settings.microphone,
+      ...audioInputDevices.map((device) => device.name),
+    ]),
+  );
+  const defaultMicrophone = audioInputDevices.find(
+    (device) => device.isDefault,
+  )?.name;
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
@@ -209,7 +227,7 @@ export function SettingsView({
       <PageHeader
         eyebrow="PREFERENCES"
         title="Settings"
-        description="Shortcut, language, cleanup, and privacy choices are saved here. Unconnected controls are marked."
+        description="Shortcut, microphone, language, cleanup, and privacy choices are saved here."
         actions={
           <span
             className={`settings-saved ${settingsAcknowledged ? "" : "settings-saved--unavailable"}`}
@@ -291,32 +309,21 @@ export function SettingsView({
               <SettingsSectionHeader
                 icon={<SlidersHorizontal size={18} />}
                 title="General"
-                description="Startup, the floating widget, and sounds."
+                description="The floating control and first-run setup."
               />
               <section className="settings-card">
                 <SettingRow
-                  icon={<MonitorUp size={17} />}
-                  title="Open Spick at login"
-                  description="Not connected in this development build yet."
-                  control={<span className="fixed-value">Coming later</span>}
-                />
-                <SettingRow
                   icon={<AppWindow size={17} />}
                   title="Show floating widget"
-                  description="Show the microphone control above other windows during this run."
+                  description="Show the movable microphone control above other apps while dictating."
                   control={
                     <Toggle
                       label="Show floating widget"
                       checked={settings.showWidget}
+                      disabled={settingsControlsDisabled}
                       onChange={(value) => update("showWidget", value)}
                     />
                   }
-                />
-                <SettingRow
-                  icon={<Volume2 size={17} />}
-                  title="Interface sounds"
-                  description="Audio cues are not connected in this development build yet."
-                  control={<span className="fixed-value">Coming later</span>}
                 />
               </section>
               <section className="settings-card settings-card--standalone">
@@ -428,22 +435,35 @@ export function SettingsView({
                     <div>
                       <strong>Microphone</strong>
                       <p>
-                        Device selection is not connected yet; Spick uses the
-                        system default.
+                        {audioInputDevicesLoading
+                          ? "Looking for connected microphones…"
+                          : audioInputDevicesError
+                            ? "Spick couldn’t refresh the device list. Your saved choice is unchanged."
+                            : defaultMicrophone
+                              ? `System default: ${defaultMicrophone}`
+                              : "Choose a microphone, or follow the system default."}
                       </p>
                     </div>
                   </div>
                   <SelectField
-                    label=""
+                    label="Microphone"
                     value={settings.microphone}
-                    disabled
+                    disabled={
+                      settingsControlsDisabled || audioInputDevicesLoading
+                    }
                     onChange={(value) => update("microphone", value)}
-                    options={[
-                      "System default microphone",
-                      "Connected wireless microphone",
-                      "External USB microphone",
-                    ]}
+                    options={microphoneOptions}
                   />
+                  {audioInputDevicesError && onRefreshAudioInputDevices && (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={onRefreshAudioInputDevices}
+                      disabled={audioInputDevicesLoading}
+                    >
+                      Refresh microphones
+                    </button>
+                  )}
                 </div>
                 <SettingRow
                   icon={<BellRing size={17} />}

@@ -14,6 +14,10 @@ import { useHudWindow } from "./hooks/useHudWindow";
 import { useLocalData } from "./hooks/useLocalData";
 import { useShortcutStatus } from "./hooks/useShortcutStatus";
 import {
+  listNativeAudioInputDevices,
+  type NativeAudioInputDevice,
+} from "./lib/nativeAudio";
+import {
   activateLocalModel,
   cancelLocalModelInstall,
   formatModelBytes,
@@ -48,13 +52,13 @@ const defaultSettings: AppSettings = {
   hotkey: "⌥",
   language: "Auto-detect",
   microphone: "System default microphone",
-  launchAtLogin: false,
-  playSounds: true,
   showWidget: true,
   keepHistory: false,
   cloudFallback: false,
   cleanupLevel: "Verbatim",
 };
+
+const SYSTEM_DEFAULT_MICROPHONE = "System default microphone";
 
 function App() {
   const hudOnly =
@@ -93,11 +97,15 @@ function App() {
   const settingsIntentRef = useRef<{
     languagePolicy: NativeLanguagePolicy;
     cleanupLevel: AppSettings["cleanupLevel"];
+    inputDeviceName: string | null;
+    hudVisible: boolean;
     allowCloudFallback: boolean;
     saveTranscriptHistory: boolean;
   }>({
     languagePolicy: { mode: "auto" },
     cleanupLevel: defaultSettings.cleanupLevel,
+    inputDeviceName: null,
+    hudVisible: true,
     allowCloudFallback: defaultSettings.cloudFallback,
     saveTranscriptHistory: defaultSettings.keepHistory,
   });
@@ -105,6 +113,14 @@ function App() {
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const engineSelectionRevision = useRef(0);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [audioInputDevices, setAudioInputDevices] = useState<
+    NativeAudioInputDevice[]
+  >([]);
+  const [audioInputDevicesLoading, setAudioInputDevicesLoading] =
+    useState(false);
+  const [audioInputDevicesError, setAudioInputDevicesError] = useState<
+    string | null
+  >(null);
   const localData = useLocalData(dictation.native && !hudOnly);
   const cloudProviders = useCloudProviders(dictation.native && !hudOnly);
   const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
@@ -131,6 +147,8 @@ function App() {
         settingsIntentRef.current = {
           languagePolicy: saved.languagePolicy,
           cleanupLevel,
+          inputDeviceName: saved.inputDeviceName,
+          hudVisible: saved.hud.visible,
           allowCloudFallback: saved.allowCloudFallback,
           saveTranscriptHistory: saved.saveTranscriptHistory,
         };
@@ -139,6 +157,8 @@ function App() {
       setSettings((current) => ({
         ...current,
         hotkey: shortcutDisplayName(saved.pushToTalkShortcut),
+        microphone: saved.inputDeviceName ?? SYSTEM_DEFAULT_MICROPHONE,
+        showWidget: saved.hud.visible,
         cloudFallback: saved.allowCloudFallback,
         keepHistory: saved.saveTranscriptHistory,
         language,
@@ -170,6 +190,27 @@ function App() {
       disposed = true;
     };
   }, [acceptNativeSettings, dictation.native, hudOnly, settingsLoadRevision]);
+
+  const refreshAudioInputDevices = useCallback(async () => {
+    if (!dictation.native || hudOnly) return;
+    setAudioInputDevicesLoading(true);
+    setAudioInputDevicesError(null);
+    try {
+      setAudioInputDevices(await listNativeAudioInputDevices());
+    } catch (reason) {
+      setAudioInputDevicesError(`Couldn’t list microphones: ${String(reason)}`);
+    } finally {
+      setAudioInputDevicesLoading(false);
+    }
+  }, [dictation.native, hudOnly]);
+
+  useEffect(() => {
+    if (activeView !== "settings" || !dictation.native || hudOnly) return;
+    const timeout = window.setTimeout(() => {
+      void refreshAudioInputDevices();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [activeView, dictation.native, hudOnly, refreshAudioInputDevices]);
 
   const refreshLocalEngines = useCallback(async () => {
     if (!dictation.native || hudOnly) return;
@@ -309,11 +350,15 @@ function App() {
 
     const languageChanged = next.language !== settings.language;
     const cleanupChanged = next.cleanupLevel !== settings.cleanupLevel;
+    const microphoneChanged = next.microphone !== settings.microphone;
+    const hudVisibilityChanged = next.showWidget !== settings.showWidget;
     const cloudFallbackChanged = next.cloudFallback !== settings.cloudFallback;
     const transcriptHistoryChanged = next.keepHistory !== settings.keepHistory;
     if (
       !languageChanged &&
       !cleanupChanged &&
+      !microphoneChanged &&
+      !hudVisibilityChanged &&
       !cloudFallbackChanged &&
       !transcriptHistoryChanged
     ) {
@@ -328,6 +373,14 @@ function App() {
     const desiredCleanupLevel = cleanupChanged
       ? next.cleanupLevel
       : intent.cleanupLevel;
+    const inputDeviceName = microphoneChanged
+      ? next.microphone === SYSTEM_DEFAULT_MICROPHONE
+        ? null
+        : next.microphone
+      : intent.inputDeviceName;
+    const hudVisible = hudVisibilityChanged
+      ? next.showWidget
+      : intent.hudVisible;
     const allowCloudFallback = cloudFallbackChanged
       ? next.cloudFallback
       : intent.allowCloudFallback;
@@ -341,17 +394,21 @@ function App() {
     const cleanupEngine = cleanupEngineForLevel(desiredCleanupLevel);
 
     // Native-backed choices stay on their last acknowledged values while the
-    // write is in flight. Preview-only choices can still update immediately.
+    // write is in flight, so a failed save never masquerades as success.
     setSettings((current) => ({
       ...next,
       language: current.language,
       cleanupLevel: current.cleanupLevel,
+      microphone: current.microphone,
+      showWidget: current.showWidget,
       cloudFallback: current.cloudFallback,
       keepHistory: current.keepHistory,
     }));
     settingsIntentRef.current = {
       languagePolicy,
       cleanupLevel: desiredCleanupLevel,
+      inputDeviceName,
+      hudVisible,
       allowCloudFallback,
       saveTranscriptHistory,
     };
@@ -368,6 +425,11 @@ function App() {
           ...current,
           languagePolicy,
           cleanupEngine,
+          inputDeviceName,
+          hud: {
+            ...current.hud,
+            visible: hudVisible,
+          },
           allowCloudFallback,
           saveTranscriptHistory,
         });
@@ -732,6 +794,9 @@ function App() {
           {activeView === "settings" && (
             <SettingsView
               settings={settings}
+              audioInputDevices={audioInputDevices}
+              audioInputDevicesLoading={audioInputDevicesLoading}
+              audioInputDevicesError={audioInputDevicesError ?? undefined}
               accessibilityError={accessibility.error ?? undefined}
               accessibilityPending={accessibility.pending}
               accessibilityStatus={accessibility.status}
@@ -762,25 +827,12 @@ function App() {
               onRetryNativeSettings={
                 settingsLoadError ? retrySettingsLoad : undefined
               }
+              onRefreshAudioInputDevices={() => void refreshAudioInputDevices()}
               onClearLocalData={clearSavedLocalData}
             />
           )}
         </main>
       </div>
-      {settings.showWidget && activeView !== "today" && (
-        <DictationHud
-          autoAdvance={false}
-          audioLevel={audioFrame?.level}
-          disabled={dictation.pending}
-          errorMessage={dictation.error ?? undefined}
-          delivery={dictation.delivery}
-          floating
-          state={dictation.state}
-          onStateChange={dictation.transitionTo}
-          language={hudLanguage}
-          shortcut={settings.hotkey}
-        />
-      )}
       {dictation.error && (
         <div className="native-error-toast" role="alert">
           <strong>Dictation unavailable</strong>

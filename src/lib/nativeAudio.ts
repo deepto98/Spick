@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export const AUDIO_LEVEL_EVENT = "dictation://audio-level";
@@ -6,6 +7,15 @@ export interface AudioLevelFrame {
   level: number;
   peak: number;
   capturedMs: number;
+}
+
+export interface NativeAudioInputDevice {
+  name: string;
+  isDefault: boolean;
+}
+
+export function listNativeAudioInputDevices() {
+  return invoke<NativeAudioInputDevice[]>("list_audio_input_devices");
 }
 
 export function clampAudioLevel(value: number) {

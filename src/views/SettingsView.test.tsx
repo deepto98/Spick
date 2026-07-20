@@ -13,8 +13,6 @@ const settings: AppSettings = {
   hotkey: "⌥",
   language: "English",
   microphone: "System default microphone",
-  launchAtLogin: false,
-  playSounds: true,
   showWidget: true,
   keepHistory: false,
   cloudFallback: false,
@@ -24,6 +22,54 @@ const settings: AppSettings = {
 afterEach(cleanup);
 
 describe("cleanup settings", () => {
+  it("uses real microphone choices and a persisted widget control", () => {
+    const onChange = vi.fn();
+    render(
+      <SettingsView
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        audioInputDevices={[
+          { name: "MacBook Microphone", isDefault: true },
+          { name: "Desk Mic", isDefault: false },
+        ]}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: true,
+          fallbackShortcut: null,
+        }}
+        onChange={onChange}
+        onShortcutChange={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRequestAccessibility={vi.fn()}
+        onRestartOnboarding={vi.fn()}
+        settings={settings}
+        settingsSaving={false}
+      />,
+    );
+
+    expect(screen.queryByText("Coming later")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Show floating widget" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({
+      ...settings,
+      showWidget: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    const microphone = screen.getByRole("combobox", { name: "Microphone" });
+    expect(microphone).toBeEnabled();
+    expect(screen.getByRole("option", { name: "Desk Mic" })).toBeVisible();
+    expect(screen.queryByText("External USB microphone")).toBeNull();
+    expect(
+      screen.getByText("System default: MacBook Microphone"),
+    ).toBeVisible();
+  });
+
   it("marks settings unacknowledged and offers a native load retry", () => {
     const onRetryNativeSettings = vi.fn();
     render(

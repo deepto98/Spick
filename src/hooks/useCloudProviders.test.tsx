@@ -62,7 +62,7 @@ const statuses: Record<CloudProviderId, CloudProviderStatus> = {
 };
 
 const cloudSettings: NativeAppSettings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   pushToTalkShortcut: "Option",
   languagePolicy: { mode: "auto" },
   transcriptionEngine: {
@@ -71,10 +71,12 @@ const cloudSettings: NativeAppSettings = {
     location: "cloud",
   },
   cleanupEngine: null,
+  inputDeviceName: null,
   hud: {
     position: "bottomRight",
     presentation: "expanded",
     customPosition: null,
+    visible: true,
   },
   allowCloudFallback: false,
   saveTranscriptHistory: false,

@@ -27,8 +27,6 @@ export interface AppSettings {
   hotkey: string;
   language: string;
   microphone: string;
-  launchAtLogin: boolean;
-  playSounds: boolean;
   showWidget: boolean;
   keepHistory: boolean;
   cloudFallback: boolean;

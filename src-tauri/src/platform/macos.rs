@@ -736,12 +736,13 @@ fn commit_through_unicode_keyboard_event(
                 "macOS could not create the text insertion event",
             )
         })?;
-    let key_up = CGEvent::new_keyboard_event(source, UNMAPPED_VIRTUAL_KEY, false).map_err(|_| {
-        TextTargetError::new(
-            TextTargetErrorKind::Platform,
-            "macOS could not create the text insertion completion event",
-        )
-    })?;
+    let key_up =
+        CGEvent::new_keyboard_event(source, UNMAPPED_VIRTUAL_KEY, false).map_err(|_| {
+            TextTargetError::new(
+                TextTargetErrorKind::Platform,
+                "macOS could not create the text insertion completion event",
+            )
+        })?;
     key_down.set_string(transcript);
     key_down.post_to_pid(target.pid);
     key_up.post_to_pid(target.pid);

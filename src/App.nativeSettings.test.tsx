@@ -37,12 +37,24 @@ const modelMocks = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const audioMocks = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 vi.mock("./lib/nativeSettings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/nativeSettings")>();
   return {
     ...actual,
     getNativeSettings: nativeMocks.getSettings,
     updateNativeSettings: nativeMocks.updateSettings,
+  };
+});
+
+vi.mock("./lib/nativeAudio", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./lib/nativeAudio")>();
+  return {
+    ...actual,
+    listNativeAudioInputDevices: audioMocks.list,
   };
 });
 
@@ -141,7 +153,7 @@ vi.mock("./lib/nativeModels", () => ({
 }));
 
 const baseSettings: NativeAppSettings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   pushToTalkShortcut: "Option",
   languagePolicy: { mode: "auto" },
   transcriptionEngine: {
@@ -150,10 +162,12 @@ const baseSettings: NativeAppSettings = {
     location: "local",
   },
   cleanupEngine: null,
+  inputDeviceName: null,
   hud: {
     position: "bottomRight",
     presentation: "expanded",
     customPosition: null,
+    visible: true,
   },
   allowCloudFallback: false,
   saveTranscriptHistory: false,
@@ -231,6 +245,8 @@ describe("native language and cleanup persistence", () => {
     cloudMocks.removeCredential.mockReset();
     modelMocks.list.mockReset();
     modelMocks.list.mockResolvedValue([]);
+    audioMocks.list.mockReset();
+    audioMocks.list.mockResolvedValue([]);
     nativeMocks.getSettings.mockResolvedValue(baseSettings);
   });
 
@@ -328,6 +344,57 @@ describe("native language and cleanup persistence", () => {
     );
     expect(screen.queryByLabelText("Shortcut ⌥")).not.toBeInTheDocument();
     expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
+  });
+
+  it("persists the selected microphone for the next capture", async () => {
+    audioMocks.list.mockResolvedValue([
+      { name: "MacBook Microphone", isDefault: true },
+      { name: "Desk Mic", isDefault: false },
+    ]);
+    nativeMocks.updateSettings.mockImplementation(
+      async (saved: NativeAppSettings) => saved,
+    );
+    await openDictationSettings();
+
+    const microphone = await screen.findByRole("combobox", {
+      name: "Microphone",
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Desk Mic" })).toBeVisible(),
+    );
+    fireEvent.change(microphone, { target: { value: "Desk Mic" } });
+
+    await waitFor(() =>
+      expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
+    );
+    expect(nativeMocks.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      inputDeviceName: "Desk Mic",
+    });
+    await waitFor(() => expect(microphone).toHaveValue("Desk Mic"));
+  });
+
+  it("persists visibility for the native floating HUD", async () => {
+    nativeMocks.updateSettings.mockImplementation(
+      async (saved: NativeAppSettings) => saved,
+    );
+    render(<App />);
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Show floating widget" }),
+    );
+
+    await waitFor(() =>
+      expect(nativeMocks.updateSettings).toHaveBeenCalledOnce(),
+    );
+    expect(nativeMocks.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      hud: { visible: false },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Show floating widget" }),
+      ).toHaveAttribute("aria-checked", "false"),
+    );
   });
 
   it("uses an acknowledged cloud engine in the next settings write", async () => {

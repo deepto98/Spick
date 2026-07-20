@@ -13,8 +13,6 @@ const optionSettings: AppSettings = {
   hotkey: "⌥",
   language: "English",
   microphone: "System default microphone",
-  launchAtLogin: false,
-  playSounds: true,
   showWidget: true,
   keepHistory: false,
   cloudFallback: false,

@@ -11,8 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::{
     audio::{
-        AudioCaptureFailure, AudioCaptureStatus, CaptureFinalizer, ErrorSink, LevelSink,
-        AUDIO_LEVEL_EVENT,
+        self, AudioCaptureFailure, AudioCaptureStatus, AudioInputDevice, CaptureFinalizer,
+        ErrorSink, LevelSink, AUDIO_LEVEL_EVENT,
     },
     cloud::{provider_for_engine, validate_provider_language_policy, CloudTranscription},
     domain::{
@@ -215,6 +215,7 @@ pub fn update_settings(
     require_main_window(&window)?;
     settings.validate()?;
     shortcut::validate(&settings.push_to_talk_shortcut)?;
+    let requested_hud_visibility = settings.hud.visible;
 
     // Dashboard saves are serialized by a lock the dictation worker never
     // acquires. Do not hold either the settings or model locks while replacing
@@ -235,6 +236,7 @@ pub fn update_settings(
         // HUD geometry is owned by the HUD webview. Ignore the dashboard's
         // potentially stale copy and begin with the latest native state.
         settings.hud = current.hud.clone();
+        settings.hud.visible = requested_hud_visibility;
         if settings.transcription_engine != current.transcription_engine {
             return Err("choose transcription models from Engines".into());
         }
@@ -274,7 +276,14 @@ pub fn update_settings(
     })();
 
     match commit {
-        Ok(next) => Ok(next),
+        Ok(next) => {
+            if previous.hud.visible && !next.hud.visible {
+                if let Err(error) = hud::hide(&app) {
+                    eprintln!("floating HUD was disabled but could not be hidden: {error}");
+                }
+            }
+            Ok(next)
+        }
         Err(error) => {
             // All AppState guards from the commit attempt are gone before a
             // rollback can stop and join an Option worker.
@@ -311,6 +320,17 @@ pub fn get_audio_capture_status(state: State<'_, AppState>) -> Result<AudioCaptu
         .lock()
         .map(|audio| audio.status())
         .map_err(|_| "microphone capture lock is poisoned".into())
+}
+
+#[tauri::command]
+pub async fn list_audio_input_devices(
+    window: WebviewWindow,
+) -> Result<Vec<AudioInputDevice>, String> {
+    require_main_window(&window)?;
+    drop(window);
+    tauri::async_runtime::spawn_blocking(audio::list_input_devices)
+        .await
+        .map_err(|error| format!("microphone discovery worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -787,6 +807,7 @@ fn rebase_settings_update(
 
     let mut next = requested.clone();
     next.hud = current.hud.clone();
+    next.hud.visible = requested.hud.visible;
     Ok(next)
 }
 
@@ -866,6 +887,7 @@ pub(crate) fn start_session<R: Runtime>(
             return Err(error);
         }
     };
+    let input_device_name = settings.input_device_name.clone();
     let language_policy = settings.language_policy;
     let transcription_engine = settings.transcription_engine;
     let cleanup_engine = settings.cleanup_engine;
@@ -937,7 +959,7 @@ pub(crate) fn start_session<R: Runtime>(
             return Ok((failed, Some(error)));
         }
 
-        match audio.start(session_id, level_sink, error_sink) {
+        match audio.start(session_id, input_device_name, level_sink, error_sink) {
             Ok(_) => Ok((listening, None)),
             Err(error) => {
                 state.finish_transcription(&active_session_id(&listening)?)?;
@@ -1741,6 +1763,9 @@ fn show_hud_for_target<R: Runtime>(
     settings: &HudSettings,
     lease: Option<&HudTargetProtectionLease>,
 ) -> Result<bool, String> {
+    if !settings.visible {
+        return Ok(false);
+    }
     let protection = state
         .hud_target_protection
         .lock()
@@ -1916,6 +1941,7 @@ mod tests {
         let previous = AppSettings::default();
         let mut requested = previous.clone();
         requested.save_transcript_history = true;
+        requested.hud.visible = false;
         let mut current = previous.clone();
         current.hud.presentation = HudPresentation::Compact;
         current.hud.custom_position = Some(HudCoordinates { x: -320, y: 84 });
@@ -1923,7 +1949,9 @@ mod tests {
         let rebased = rebase_settings_update(&previous, &requested, &current).unwrap();
 
         assert!(rebased.save_transcript_history);
-        assert_eq!(rebased.hud, current.hud);
+        assert!(!rebased.hud.visible);
+        assert_eq!(rebased.hud.presentation, current.hud.presentation);
+        assert_eq!(rebased.hud.custom_position, current.hud.custom_position);
     }
 
     #[test]
