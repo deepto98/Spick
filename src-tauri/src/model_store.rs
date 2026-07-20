@@ -30,6 +30,8 @@ const IMPORTED_MODELS_FILE: &str = "imported-models.json";
 const MAX_IMPORTED_MODELS: usize = 256;
 const MAX_IMPORTED_REGISTRY_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_IMPORTED_MODEL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+// Leave room for receipts, settings, and normal system writes while a model lands.
+const MODEL_STORAGE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
 const MODEL_OPERATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -296,6 +298,8 @@ impl ModelStore {
         if existing_verification.is_ok() {
             write_receipt(&self.receipt_path(&model), &model.sha256)?;
             self.remember_verified(&model.id, file_fingerprint(&target)?)?;
+            self.remove_invalid_artifacts(&model)?;
+            sync_parent_directory(&self.root);
             progress(ModelDownloadProgress::new(
                 &model,
                 ModelDownloadPhase::Installed,
@@ -304,7 +308,8 @@ impl ModelStore {
             return Ok(self.summary(&model, false));
         }
         self.quarantine_invalid(&model)?;
-        self.remove_invalid_artifacts(&model)?;
+        ensure_not_cancelled(Some(download.cancellation.as_ref()))?;
+        preflight_model_storage(&self.root, model.download_bytes)?;
         ensure_not_cancelled(Some(download.cancellation.as_ref()))?;
 
         let source_url = model
@@ -407,12 +412,15 @@ impl ModelStore {
             )
         })?;
 
+        let (mut input, expected_bytes) = open_import_source(source)?;
+        preflight_model_storage(&self.root, expected_bytes)?;
         let mut temporary = TempFileBuilder::new()
             .prefix(".spick-import-")
             .suffix(".bin")
             .tempfile_in(&self.root)
             .map_err(|error| format!("could not create a temporary model file: {error}"))?;
-        let (model_bytes, sha256) = copy_import_source(source, temporary.as_file_mut())?;
+        let (model_bytes, sha256) =
+            copy_import_source(&mut input, expected_bytes, temporary.as_file_mut())?;
         temporary
             .as_file()
             .sync_all()
@@ -1007,7 +1015,78 @@ fn imported_display_name(inspection: &WhisperModelInspection, sha256: &str) -> S
     format!("Imported {family} {quantization} · {digest}")
 }
 
-fn copy_import_source(source: &Path, output: &mut File) -> Result<(u64, String), String> {
+fn preflight_model_storage(root: &Path, incoming_bytes: u64) -> Result<(), String> {
+    let available_bytes = available_model_storage_bytes(root)?;
+    check_model_storage_space(available_bytes, incoming_bytes, MODEL_STORAGE_RESERVE_BYTES)
+}
+
+fn check_model_storage_space(
+    available_bytes: Option<u64>,
+    incoming_bytes: u64,
+    reserve_bytes: u64,
+) -> Result<(), String> {
+    let Some(available_bytes) = available_bytes else {
+        return Ok(());
+    };
+    // The filesystem's available-byte count is taken after any invalid model
+    // has been quarantined, so retained artifacts are already accounted for.
+    let needed_bytes = incoming_bytes.saturating_add(reserve_bytes);
+    if available_bytes < needed_bytes {
+        return Err(format!(
+            "not enough free space for this model: need {}; {} available",
+            format_storage_bytes(needed_bytes),
+            format_storage_bytes(available_bytes)
+        ));
+    }
+    Ok(())
+}
+
+fn format_storage_bytes(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+#[cfg(unix)]
+fn available_model_storage_bytes(root: &Path) -> Result<Option<u64>, String> {
+    use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+
+    let root = CString::new(root.as_os_str().as_bytes())
+        .map_err(|_| "could not check free space for local models".to_string())?;
+    let mut statistics = MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `root` is NUL-terminated and `statistics` points to writable,
+    // correctly aligned storage that is initialized by a successful call.
+    if unsafe { libc::statvfs(root.as_ptr(), statistics.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "could not check free space for local models: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: `statvfs` returned success and initialized `statistics`.
+    let statistics = unsafe { statistics.assume_init() };
+    let block_bytes = if statistics.f_frsize == 0 {
+        statistics.f_bsize
+    } else {
+        statistics.f_frsize
+    };
+    let available_bytes = (statistics.f_bavail as u128)
+        .saturating_mul(block_bytes as u128)
+        .min(u128::from(u64::MAX)) as u64;
+    Ok(Some(available_bytes))
+}
+
+#[cfg(not(unix))]
+fn available_model_storage_bytes(_root: &Path) -> Result<Option<u64>, String> {
+    Ok(None)
+}
+
+fn open_import_source(source: &Path) -> Result<(File, u64), String> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -1015,7 +1094,7 @@ fn copy_import_source(source: &Path, output: &mut File) -> Result<(u64, String),
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let mut input = options.open(source).map_err(|error| {
+    let input = options.open(source).map_err(|error| {
         #[cfg(unix)]
         if error.raw_os_error() == Some(libc::ELOOP) {
             return "choose the model file itself instead of a symbolic link".to_string();
@@ -1035,6 +1114,14 @@ fn copy_import_source(source: &Path, output: &mut File) -> Result<(u64, String),
     if expected_bytes > MAX_IMPORTED_MODEL_BYTES {
         return Err("the selected model is larger than Spick's 8 GiB import limit".into());
     }
+    Ok((input, expected_bytes))
+}
+
+fn copy_import_source(
+    input: &mut File,
+    expected_bytes: u64,
+    output: &mut File,
+) -> Result<(u64, String), String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; DOWNLOAD_BUFFER_BYTES];
     let mut copied = 0_u64;
@@ -1775,11 +1862,31 @@ mod tests {
         fs::write(&source, [0_u8; 48]).unwrap();
         let selected = directory.path().join("selected.bin");
         symlink(&source, &selected).unwrap();
-        let mut output = tempfile::tempfile().unwrap();
 
-        assert!(copy_import_source(&selected, &mut output)
+        assert!(open_import_source(&selected)
             .unwrap_err()
             .contains("symbolic link"));
+    }
+
+    #[test]
+    fn model_storage_preflight_requires_the_copy_and_reserve() {
+        assert!(check_model_storage_space(Some(150), 100, 50).is_ok());
+
+        let error = check_model_storage_space(Some(149), 100, 50).unwrap_err();
+        assert_eq!(
+            error,
+            "not enough free space for this model: need 150 bytes; 149 bytes available"
+        );
+    }
+
+    #[test]
+    fn retained_quarantine_is_not_double_counted_by_the_preflight() {
+        // The injected value represents free bytes after an unrelated
+        // quarantine file has consumed its space on the destination volume.
+        let available_after_quarantine = 150;
+        assert!(check_model_storage_space(Some(available_after_quarantine), 100, 50).is_ok());
+
+        assert!(check_model_storage_space(None, u64::MAX, u64::MAX).is_ok());
     }
 
     #[test]
