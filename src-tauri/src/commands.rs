@@ -1,7 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, TryLockError,
     },
     thread,
     time::Duration,
@@ -51,6 +51,8 @@ const HUD_DRAG_INITIAL_SETTLE: Duration = Duration::from_millis(300);
 const HUD_DRAG_POLL: Duration = Duration::from_millis(100);
 const HUD_DRAG_STABLE_POLLS: usize = 3;
 const HUD_DRAG_MAX_POLLS: usize = 50;
+const HUD_SETTLE_RETRY_DELAY: Duration = Duration::from_millis(25);
+const HUD_SETTLE_MAX_RETRIES: usize = 80;
 static HUD_DRAG_REVISION: AtomicU64 = AtomicU64::new(0);
 
 struct PendingDictationTranscript {
@@ -665,9 +667,7 @@ pub(crate) fn cancel_session<R: Runtime>(
     discard_on_worker(cleanup);
 
     emit_state(app, &event)?;
-    if let Err(error) = settle_hud_for_revision(app, state, event.revision) {
-        eprintln!("dictation was cancelled but the HUD could not return to idle: {error}");
-    }
+    settle_after(app, Duration::ZERO, event.revision);
     Ok(event)
 }
 
@@ -2032,37 +2032,75 @@ fn release_hud_target<R: Runtime>(
     protection.release_if_current(lease);
 }
 
-fn settle_hud_for_revision<R: Runtime>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HudSettleAttempt {
+    Applied,
+    Obsolete,
+    Retry,
+}
+
+fn try_mutex_guard<'a, T>(
+    lock: &'a Mutex<T>,
+    poisoned_message: &'static str,
+) -> Result<Option<MutexGuard<'a, T>>, String> {
+    match lock.try_lock() {
+        Ok(guard) => Ok(Some(guard)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Poisoned(_)) => Err(poisoned_message.into()),
+    }
+}
+
+fn try_read_guard<'a, T>(
+    lock: &'a RwLock<T>,
+    poisoned_message: &'static str,
+) -> Result<Option<RwLockReadGuard<'a, T>>, String> {
+    match lock.try_read() {
+        Ok(guard) => Ok(Some(guard)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Poisoned(_)) => Err(poisoned_message.into()),
+    }
+}
+
+fn try_settle_hud_for_revision<R: Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
     revision: u64,
-) -> Result<bool, String> {
-    // Keep this check and the native HUD update in the same session critical
-    // section so a new session cannot start between them.
-    let session = state
-        .session
-        .lock()
-        .map_err(|_| "dictation session lock is poisoned".to_string())?;
+) -> Result<HudSettleAttempt, String> {
+    // This function runs on AppKit's main thread. Never block there on a guard:
+    // another worker may own that guard while its panel operation is already
+    // queued behind us. A short retry lets that operation run first and avoids
+    // a main-thread/worker lock inversion.
+    let Some(session) = try_mutex_guard(&state.session, "dictation session lock is poisoned")?
+    else {
+        return Ok(HudSettleAttempt::Retry);
+    };
     if !should_settle_for_revision(&session.snapshot(), revision) {
-        return Ok(false);
+        return Ok(HudSettleAttempt::Obsolete);
     }
-    let protection = state
-        .hud_target_protection
-        .lock()
-        .map_err(|_| "HUD target protection is unavailable".to_string())?;
+    let Some(protection) = try_mutex_guard(
+        &state.hud_target_protection,
+        "HUD target protection is unavailable",
+    )?
+    else {
+        return Ok(HudSettleAttempt::Retry);
+    };
     if protection.has_owner() {
-        return Ok(false);
+        return Ok(HudSettleAttempt::Retry);
     }
-    let settings = state.settings_snapshot()?.hud;
-    if settings.visible {
+    let Some(settings) = try_read_guard(&state.settings, "settings lock is poisoned")? else {
+        return Ok(HudSettleAttempt::Retry);
+    };
+    let hud_settings = settings.hud.clone();
+    drop(settings);
+    if hud_settings.visible {
         // The floating widget is a persistent idle control. Showing an
         // already-visible nonactivating panel also reapplies its saved size and
         // monitor-clamped position after the session releases its target.
-        hud::show(app, &settings, false)?;
+        hud::show(app, &hud_settings, false)?;
     } else {
         hud::hide(app)?;
     }
-    Ok(true)
+    Ok(HudSettleAttempt::Applied)
 }
 
 fn discard_on_worker(finalizer: Option<CaptureFinalizer>) {
@@ -2083,17 +2121,50 @@ fn discard_on_worker(finalizer: Option<CaptureFinalizer>) {
 }
 
 fn settle_after<R: Runtime>(app: &AppHandle<R>, delay: Duration, revision: u64) {
+    schedule_hud_settle(app, delay, revision, HUD_SETTLE_MAX_RETRIES);
+}
+
+fn schedule_hud_settle<R: Runtime>(
+    app: &AppHandle<R>,
+    delay: Duration,
+    revision: u64,
+    retries_remaining: usize,
+) {
     let app = app.clone();
     let spawn_result = thread::Builder::new()
         .name("spick-hud-settle".into())
         .spawn(move || {
-            thread::sleep(delay);
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
 
-            // Do not let an old completion timer resize, reposition, hide, or
-            // unprotect a newly-started session.
-            let state = app.state::<AppState>();
-            if let Err(error) = settle_hud_for_revision(&app, state.inner(), revision) {
-                eprintln!("could not return the dictation HUD to idle: {error}");
+            let operation_app = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || {
+                // The revision check and native panel operation share the same
+                // guards on AppKit's thread, so an old timer cannot overwrite a
+                // newly started session's target protection or presentation.
+                let state = operation_app.state::<AppState>();
+                match try_settle_hud_for_revision(&operation_app, state.inner(), revision) {
+                    Ok(HudSettleAttempt::Applied | HudSettleAttempt::Obsolete) => {}
+                    Ok(HudSettleAttempt::Retry) if retries_remaining > 0 => {
+                        schedule_hud_settle(
+                            &operation_app,
+                            HUD_SETTLE_RETRY_DELAY,
+                            revision,
+                            retries_remaining - 1,
+                        );
+                    }
+                    Ok(HudSettleAttempt::Retry) => {
+                        eprintln!(
+                            "could not return the dictation HUD to idle because its state remained busy"
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("could not return the dictation HUD to idle: {error}");
+                    }
+                }
+            }) {
+                eprintln!("could not schedule the dictation HUD reset on AppKit: {error}");
             }
         });
 
@@ -2184,6 +2255,21 @@ mod tests {
             &event("session-b", SessionState::Listening, 5),
             4
         ));
+    }
+
+    #[test]
+    fn hud_settle_defers_instead_of_waiting_on_a_new_session_lock() {
+        let session_gate = Mutex::new(());
+        let new_session = session_gate.lock().unwrap();
+
+        assert!(try_mutex_guard(&session_gate, "session lock is poisoned")
+            .unwrap()
+            .is_none());
+
+        drop(new_session);
+        assert!(try_mutex_guard(&session_gate, "session lock is poisoned")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

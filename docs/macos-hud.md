@@ -57,6 +57,11 @@ routine dependency refresh. Before changing its revision or Tauri/Tao versions:
    The HUD must remain reusable and must never be closed or converted back to a
    window.
 
+Terminal settle work is queued onto AppKit's main thread. It uses nonblocking
+state guards and bounded retries, so a timer that fires while a new session is
+starting cannot deadlock the main thread or overwrite that newer session's HUD
+protection.
+
 This is development scope. Release readiness requires the same matrix on every
 supported macOS version and a fresh audit of the pinned plugin's open lifecycle
 issues.
