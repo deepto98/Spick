@@ -7,6 +7,7 @@ compile_error!("macos-input-method-unsafe-dev-peers is forbidden in release buil
 compile_error!("macos-input-method-compatibility-harness is forbidden in release builds");
 
 mod audio;
+mod cloud;
 mod commands;
 #[cfg(all(
     target_os = "macos",
@@ -136,6 +137,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            cloud::list_cloud_providers,
+            cloud::set_cloud_api_key,
+            cloud::delete_cloud_api_key,
+            cloud::activate_cloud_provider,
             commands::get_usage_dashboard,
             commands::list_transcript_history,
             commands::list_vocabulary,

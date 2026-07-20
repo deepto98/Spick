@@ -291,8 +291,11 @@ describe("privacy and local data", () => {
       screen.getByText(/Turning this off leaves aggregate usage totals/),
     ).toBeInTheDocument();
     expect(
+      screen.getByText(/first configured provider in this order/i),
+    ).toHaveTextContent(/OpenAI, xAI, then Gemini/);
+    expect(
       screen.getByText(/another SQLite reader is still open/),
-    ).toHaveTextContent(/run the same clear action again/i);
+    ).toHaveTextContent(/Quit and reopen Spick/i);
     expect(
       screen.getByText(/the recovery transcript lock is unavailable/),
     ).toHaveTextContent(/quit and reopen Spick/i);

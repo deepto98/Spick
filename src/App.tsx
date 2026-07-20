@@ -8,6 +8,7 @@ import { TopBar } from "./components/TopBar";
 import { initialEngines } from "./data/mockData";
 import { useAudioLevel } from "./hooks/useAudioLevel";
 import { useAccessibilityPermission } from "./hooks/useAccessibilityPermission";
+import { useCloudProviders } from "./hooks/useCloudProviders";
 import { useDictationController } from "./hooks/useDictationController";
 import { useHudWindow } from "./hooks/useHudWindow";
 import { useLocalData } from "./hooks/useLocalData";
@@ -36,6 +37,7 @@ import {
   type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
 import type { ClearLocalDataScope } from "./lib/nativeLocalData";
+import type { CloudProviderId } from "./lib/nativeCloud";
 import type { AppSettings, Engine, ViewId } from "./types";
 import { EnginesView } from "./views/EnginesView";
 import { SettingsView } from "./views/SettingsView";
@@ -89,9 +91,11 @@ function App() {
   });
   const settingsSaveRevision = useRef(0);
   const settingsSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const engineSelectionRevision = useRef(0);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const dictation = useDictationController(!hudOnly);
   const localData = useLocalData(dictation.native && !hudOnly);
+  const cloudProviders = useCloudProviders(dictation.native && !hudOnly);
   const [hiddenEphemeralSessionId, setHiddenEphemeralSessionId] = useState<
     string | null
   >(null);
@@ -177,7 +181,7 @@ function App() {
           recommended: model.manifest.id === "whisper-small-multilingual-q5-1",
         };
       });
-      return [...local, ...current.filter((engine) => engine.kind === "cloud")];
+      return local;
     });
   }, [dictation.native]);
 
@@ -234,12 +238,15 @@ function App() {
 
   const activateEngine = (id: string) => {
     if (dictation.native) {
+      const selectionRevision = ++engineSelectionRevision.current;
       setModelActionPending(id);
       setModelError(null);
       void activateLocalModel(id)
         .then((saved) => {
-          acceptNativeSettings(saved);
-          return refreshLocalEngines();
+          if (selectionRevision === engineSelectionRevision.current) {
+            acceptNativeSettings(saved);
+          }
+          return Promise.all([refreshLocalEngines(), cloudProviders.refresh()]);
         })
         .catch((reason) => setModelError(`Couldn’t use that model: ${reason}`))
         .finally(() => setModelActionPending(null));
@@ -252,6 +259,23 @@ function App() {
         return engine;
       }),
     );
+  };
+
+  const activateCloudEngine = async (provider: CloudProviderId) => {
+    setModelError(null);
+    const selectionRevision = ++engineSelectionRevision.current;
+    const saved = await cloudProviders.activate(provider);
+    if (!saved || selectionRevision !== engineSelectionRevision.current)
+      return false;
+    acceptNativeSettings(saved);
+    try {
+      await refreshLocalEngines();
+    } catch (reason) {
+      setModelError(
+        `Cloud provider is active, but local models didn’t refresh: ${reason}`,
+      );
+    }
+    return true;
   };
 
   const changeSettings = (next: AppSettings) => {
@@ -608,10 +632,19 @@ function App() {
               cancellingModelIds={cancellingModels}
               pendingModelId={modelActionPending}
               error={modelError ?? undefined}
+              cloudProviders={cloudProviders.providers}
+              cloudLoading={cloudProviders.loading}
+              cloudPending={cloudProviders.pending}
+              cloudError={cloudProviders.error ?? undefined}
+              cloudFallbackEnabled={settings.cloudFallback}
               onActivate={activateEngine}
               onCancelInstall={cancelEngineInstall}
               onInstall={installEngine}
               onRemove={removeEngine}
+              onCloudRefresh={() => void cloudProviders.refresh()}
+              onCloudConfigure={cloudProviders.configure}
+              onCloudDelete={cloudProviders.removeCredential}
+              onCloudActivate={activateCloudEngine}
             />
           )}
           {activeView === "vocabulary" && (

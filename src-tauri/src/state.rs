@@ -12,6 +12,7 @@ use tempfile::Builder as TempFileBuilder;
 
 use crate::{
     audio::AudioCaptureController,
+    cloud::CloudRuntime,
     domain::{
         AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
         SETTINGS_SCHEMA_VERSION,
@@ -36,6 +37,7 @@ pub struct AppState {
     pub whisper: WhisperCppRuntime,
     pub local_data: LocalDataStore,
     pub text_targets: TextTargetController,
+    pub cloud: CloudRuntime,
     /// Serializes model selection/removal with settings writes so an active
     /// model cannot disappear between verification and persistence.
     pub model_configuration: Mutex<()>,
@@ -127,6 +129,7 @@ impl AppState {
             whisper: WhisperCppRuntime::default(),
             local_data: LocalDataStore::open(database_path),
             text_targets: TextTargetController::default(),
+            cloud: CloudRuntime::default(),
             model_configuration: Mutex::new(()),
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),

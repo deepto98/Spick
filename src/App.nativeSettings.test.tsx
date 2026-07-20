@@ -12,6 +12,7 @@ import type {
   NativeLanguagePolicy,
 } from "./lib/nativeSettings";
 import type { NativeDictationTranscript } from "./lib/nativeDictation";
+import type { CloudProviderStatus } from "./lib/nativeCloud";
 import App from "./App";
 
 const nativeMocks = vi.hoisted(() => ({
@@ -22,6 +23,14 @@ const nativeMocks = vi.hoisted(() => ({
 const localDataMocks = vi.hoisted(() => ({
   clearData: vi.fn(),
   lastTranscript: null as NativeDictationTranscript | null,
+}));
+
+const cloudMocks = vi.hoisted(() => ({
+  activate: vi.fn(),
+  configure: vi.fn(),
+  providers: [] as CloudProviderStatus[],
+  refresh: vi.fn(),
+  removeCredential: vi.fn(),
 }));
 
 vi.mock("./lib/nativeSettings", async (importOriginal) => {
@@ -71,6 +80,19 @@ vi.mock("./hooks/useLocalData", () => ({
     updateVocabulary: vi.fn(),
     deleteVocabulary: vi.fn(),
     clearData: localDataMocks.clearData,
+  }),
+}));
+
+vi.mock("./hooks/useCloudProviders", () => ({
+  useCloudProviders: () => ({
+    activate: cloudMocks.activate,
+    configure: cloudMocks.configure,
+    error: null,
+    loading: false,
+    pending: null,
+    providers: cloudMocks.providers,
+    refresh: cloudMocks.refresh,
+    removeCredential: cloudMocks.removeCredential,
   }),
 }));
 
@@ -197,6 +219,12 @@ describe("native language and cleanup persistence", () => {
     nativeMocks.updateSettings.mockReset();
     localDataMocks.clearData.mockReset();
     localDataMocks.lastTranscript = null;
+    cloudMocks.activate.mockReset();
+    cloudMocks.configure.mockReset();
+    cloudMocks.providers = [];
+    cloudMocks.refresh.mockReset();
+    cloudMocks.refresh.mockResolvedValue(true);
+    cloudMocks.removeCredential.mockReset();
     nativeMocks.getSettings.mockResolvedValue(baseSettings);
   });
 
@@ -294,6 +322,59 @@ describe("native language and cleanup persistence", () => {
     );
     expect(screen.queryByLabelText("Shortcut ⌥")).not.toBeInTheDocument();
     expect(screen.getByText("Saved on this Mac")).toBeInTheDocument();
+  });
+
+  it("uses an acknowledged cloud engine in the next settings write", async () => {
+    const provider: CloudProviderStatus = {
+      provider: "openAi",
+      providerName: "OpenAI",
+      engineId: "openai-gpt-4o-transcribe",
+      modelName: "GPT-4o Transcribe",
+      configured: true,
+      selected: false,
+      experimental: false,
+      description: "Dedicated multilingual speech-to-text.",
+      languageSupport: "Multilingual batch transcription",
+      cleanupBehavior: "Spick cleanup runs after transcription",
+    };
+    const cloudSettings: NativeAppSettings = {
+      ...baseSettings,
+      transcriptionEngine: {
+        provider: "openAi",
+        model: "gpt-4o-transcribe",
+        location: "cloud",
+      },
+    };
+    cloudMocks.providers = [provider];
+    cloudMocks.activate.mockResolvedValue(cloudSettings);
+    nativeMocks.updateSettings.mockImplementation(
+      async (saved: NativeAppSettings) => saved,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(nativeMocks.getSettings).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Engines" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Cloud providers/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Use provider" }));
+    await waitFor(() =>
+      expect(cloudMocks.activate).toHaveBeenCalledWith("openAi"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Privacy & history" }));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Keep transcript history" }),
+    );
+
+    await waitFor(() => expect(nativeMocks.updateSettings).toHaveBeenCalled());
+    const latestSave =
+      nativeMocks.updateSettings.mock.calls[
+        nativeMocks.updateSettings.mock.calls.length - 1
+      ]?.[0];
+    expect(latestSave).toMatchObject({
+      transcriptionEngine: cloudSettings.transcriptionEngine,
+      saveTranscriptHistory: true,
+    });
   });
 
   it("keeps the previous shortcut and shows a native save error", async () => {

@@ -596,7 +596,7 @@ export function SettingsView({
                 <SettingRow
                   icon={<Cloud size={17} />}
                   title="Allow cloud fallback"
-                  description="Save permission to use a configured cloud provider. No cloud provider is connected yet."
+                  description="If local transcription cannot finish, send that recording to the first configured provider in this order: OpenAI, xAI, then Gemini. Audio leaves this Mac only when fallback runs."
                   control={
                     <Toggle
                       label="Allow cloud fallback"
@@ -702,8 +702,8 @@ export function SettingsView({
                       <small>
                         {lastClearResult.storageCleanupWarning ??
                           "The SQLite storage cleanup could not finish."}{" "}
-                        Close other Spick windows, then run the same clear
-                        action again.
+                        Quit and reopen Spick, then run the same clear action
+                        again.
                       </small>
                     )}
                     {!lastClearResult.memoryCleanupComplete && (

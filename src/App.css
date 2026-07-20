@@ -4799,6 +4799,150 @@ select:focus-visible {
   border-color: #dfb29e;
 }
 
+/* Cloud credentials and provider selection */
+.cloud-provider-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.cloud-provider-card__title {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.cloud-provider-card__title > div {
+  flex: 1;
+  min-width: 110px;
+}
+
+.cloud-provider-card__title .prototype-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #765337;
+  background: #f8eee1;
+}
+
+.cloud-credential-status,
+.cloud-browser-note,
+.cloud-active-key-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #7f786f;
+  font-size: 9px;
+}
+
+.cloud-credential-status {
+  padding-top: 11px;
+  margin-top: auto;
+  border-top: 1px solid #eee8df;
+}
+
+.cloud-credential-status svg,
+.cloud-active-key-note {
+  color: #8b5b44;
+}
+
+.cloud-provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.cloud-provider-actions .button,
+.cloud-key-editor .button {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+.cloud-key-editor {
+  padding: 11px;
+  margin-top: 12px;
+  background: #faf6ef;
+  border: 1px solid #e4dacd;
+  border-radius: 9px;
+}
+
+.cloud-key-input {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 3px;
+  margin-top: 1px;
+  background: #fff;
+  border: 1px solid #ded6cc;
+  border-radius: 8px;
+}
+
+.cloud-key-input > svg {
+  margin-left: 8px;
+  color: #9a8b7f;
+}
+
+.cloud-key-input input {
+  min-width: 0;
+  height: 35px;
+  padding: 0 6px;
+  color: #4d4944;
+  font-size: 10px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.cloud-key-editor__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.cloud-key-editor > small {
+  display: block;
+  margin-top: 8px;
+  color: #867d73;
+  font-size: 8.5px;
+  line-height: 1.45;
+}
+
+.cloud-browser-note,
+.cloud-provider-empty {
+  padding: 11px 13px;
+  margin-bottom: 10px;
+  background: #f6efe5;
+  border: 1px solid #ded2c2;
+  border-radius: 9px;
+}
+
+.cloud-provider-empty {
+  display: flex;
+  min-height: 130px;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  color: #92877c;
+  text-align: center;
+}
+
+.cloud-provider-empty strong {
+  margin-top: 8px;
+  color: #5f5851;
+  font-size: 10px;
+}
+
+.cloud-provider-empty span {
+  margin-top: 4px;
+  font-size: 9px;
+}
+
+.cloud-active-key-note {
+  align-items: flex-start;
+  margin-top: 9px;
+  line-height: 1.4;
+}
+
 @keyframes loader-spin {
   to {
     transform: rotate(1turn);
