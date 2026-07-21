@@ -14,9 +14,9 @@ community `tauri-nspanel` crate on macOS, pinned to commit
 Git dependency rather than a floating branch.
 
 At startup, `hud.rs` creates one hidden, undecorated Tauri webview window and
-converts it once to `SpickHudPanel`. The renderer first commits the saved
-expanded or compact presentation, then acknowledges readiness before the native
-window can appear at its saved position. The panel is configured as:
+converts it once to `SpickHudPanel`. The renderer first commits the compact
+presentation, then acknowledges readiness before the native window can appear
+at its saved dock position. The panel is configured as:
 
 - borderless plus `NonactivatingPanel`;
 - unable to become key or main;
@@ -49,8 +49,8 @@ routine dependency refresh. Before changing its revision or Tauri/Tao versions:
 
 1. Run `npm run check:all` and the native all-features test/clippy checks.
 2. In Notes and a browser text field, start dictation and confirm Spick never
-   becomes the frontmost application when the HUD appears, is clicked, is
-   collapsed or expanded, or is dragged.
+   becomes the frontmost application when the HUD appears, is clicked, expands
+   its hover controls, or is dragged.
 3. Confirm the original caret remains active and receives the transcript.
 4. Repeat on multiple Spaces, a full-screen app, and mixed-DPI monitors.
 5. Exercise at least 100 dictate/settle cycles plus repeated visibility toggles.

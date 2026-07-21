@@ -5,3 +5,5 @@ src-tauri/gen
 *.svg
 package-lock.json
 src-tauri/Cargo.lock
+website/.vinext
+website/.wrangler

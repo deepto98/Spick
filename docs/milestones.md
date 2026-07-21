@@ -29,7 +29,7 @@ Current checkpoint:
 - The cleanup choice is saved natively and captured per session. As-transcribed output is the safe default; the opt-in local cleaner removes a reviewed, language-tagged set of standalone hesitation sounds across nine languages while preserving quoted uses, obvious word or code references, and unreviewed languages.
 - Focused-field capture retries transient app gaps within a bounded snapshot deadline, falls back through the focused UI element, and performs exact-target revalidation and secure/protected-field preflight. macOS builds prefer element-addressed `AXSelectedText` replacement with exact range/caret confirmation; a one-shot, explicitly weaker target-PID paste covers browser, Electron, and Notes-style controls without a setter. Structured copy recovery remains available.
 - A universal InputMethodKit palette helper and versioned local protocol exercise arm, one-use insert, disarm, expiry, exact readback, and ambiguous-delivery outcomes. The desktop and helper mutually authenticate live audit-token-bound code identities. It remains the release candidate while application compatibility and final packaging work continue; the ordinary debug build uses the narrower Accessibility development path.
-- Final transcripts are kept in memory and shown on Today for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
+- Final transcripts are kept in memory and shown on Stats for an explicit copy. Indeterminate future writes require a separate check-before-copy acknowledgement.
 - First-run setup is persisted only after the selected local model is usable or the selected cloud provider has a saved credential.
 - A debug-only, fixed-fixture harness now measures exact controls without initializing audio, Whisper, settings, or the dashboard. Its offline browser bench, read-only preflight, exact target-app constraints, pre-capture evidence journal, and separately hashed visual review make runs repeatable without storing user content. The prototype still needs three signed hands-on passes per catalog case and a nested/notarized distribution path before it can become the default text-input primitive. Whole-field Accessibility replacement was rejected because it can race and overwrite a concurrent keystroke.
 
@@ -54,7 +54,7 @@ Exit criteria:
 - Stage timings are visible in diagnostics without exposing transcript or audio content.
 - Compatibility results identify supported controls and known limitations rather than claiming application-wide support.
 
-Current development checkpoint: the Today view can expand the last attempt into target capture, microphone startup, state-signal, successful native widget-call, microphone-ready, microphone handoff, transcription, and text-handoff timings. The native widget milestone records the show call returning rather than claiming a painted frame. Failed and cancelled attempts leave unreached or unsuccessful stages blank. Measurements stay in process memory, use monotonic elapsed time, and omit speech, transcripts, target-app and device names, model/provider identifiers, errors, paths, and wall-clock timestamps.
+Current development checkpoint: the Stats view can expand the last attempt into target capture, microphone startup, state-signal, successful native widget-call, microphone-ready, microphone handoff, transcription, and text-handoff timings. The native widget milestone records the show call returning rather than claiming a painted frame. Failed and cancelled attempts leave unreached or unsuccessful stages blank. Measurements stay in process memory, use monotonic elapsed time, and omit speech, transcripts, target-app and device names, model/provider identifiers, errors, paths, and wall-clock timestamps.
 
 ## Milestone 3: multilingual local models
 
@@ -85,7 +85,7 @@ Exit criteria:
 
 ## Milestone 5: dashboard and personalization
 
-Complete onboarding and the four primary product areas: Today, Engines, Vocabulary, and Settings. Add local statistics for words dictated, voiced minutes, speaking speed, time saved, languages, engine usage, and processing latency. Add custom vocabulary and per-application formatting profiles without coupling them to a single provider.
+Complete onboarding and the primary product areas: Stats, Notes, Engines, Vocabulary, and Settings. Add local statistics for words dictated, voiced minutes, speaking speed, time saved, languages, engine usage, and processing latency. Add custom vocabulary and per-application formatting profiles without coupling them to a single provider.
 
 Exit criteria:
 

@@ -78,10 +78,11 @@ test("keeps the loading skeleton scoped and disposable", async () => {
   assert.match(page, /"codex-preview": "development"/);
   assert.match(page, /<SkeletonPreview \/>/);
   assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
+  assert.doesNotMatch(
+    layout,
+    /codex-preview|_sites-preview|themeColor|\bViewport\b/,
+  );
   assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
 
-  await assert.rejects(
-    access(new URL("public/_sites-preview", templateRoot)),
-  );
+  await assert.rejects(access(new URL("public/_sites-preview", templateRoot)));
 });

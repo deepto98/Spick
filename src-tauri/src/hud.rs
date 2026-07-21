@@ -431,8 +431,8 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<
 
     // The native window may finish building before its React surface has read
     // the persisted presentation. Keep it hidden until that surface explicitly
-    // confirms hydration, otherwise a compact native frame briefly contains
-    // the expanded widget (or remains clipped if IPC initialization fails).
+    // confirms hydration, otherwise the native frame can briefly contain an
+    // uninitialized widget (or remain clipped if IPC initialization fails).
     reset_renderer_gate()?;
 
     let (width, height) = logical_dimensions(settings.presentation);

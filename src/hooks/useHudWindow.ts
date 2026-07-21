@@ -41,8 +41,8 @@ export function useHudWindow(enabled: boolean) {
   useLayoutEffect(() => {
     if (!enabled || !hydrated || rendererReadySent.current) return;
 
-    // Layout effects run after React has committed the persisted compact or
-    // expanded surface, but before the browser paints it. The native panel
+    // Layout effects run after React has committed the persisted compact
+    // surface, but before the browser paints it. The native panel
     // stays hidden until this explicit acknowledgement reaches Rust.
     const generation = ++rendererReadyAttempt.current;
     let retryTimer: number | null = null;
