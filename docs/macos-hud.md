@@ -26,8 +26,10 @@ at its saved dock position. The panel is configured as:
 
 All AppKit panel operations run on the macOS main thread. Show, hide, and resize
 use the panel handle. Dragging calls AppKit's `performWindowDragWithEvent:` on
-that panel. Tauri remains responsible for its tested cross-monitor coordinate
-conversion and frame-position queries.
+that panel. Three transient, click-through native guide panels mark the left,
+right, and bottom docking zones for the duration of the drag, then the HUD snaps
+to the nearest one. Tauri remains responsible for its tested cross-monitor
+coordinate conversion and frame-position queries.
 
 Do not close the HUD, convert it back to a Tauri window, maximize it, or call
 Tauri's focusability setters after conversion. The plugin changes the native

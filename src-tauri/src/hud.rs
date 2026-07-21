@@ -37,6 +37,12 @@ const HUD_MARGIN: f64 = 24.0;
 const PANEL_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: usize = 1;
+#[cfg(target_os = "macos")]
+const DOCK_GUIDE_EDGE_INSET: f64 = 14.0;
+#[cfg(target_os = "macos")]
+const DOCK_GUIDE_THICKNESS: f64 = 18.0;
+#[cfg(target_os = "macos")]
+const DOCK_GUIDE_LENGTH: f64 = 144.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingHudShow {
@@ -782,10 +788,12 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
                         "macOS did not report a left-button press on the HUD for this drag".into(),
                     );
                 }
+                let dock_guides = create_dock_guides(panel.as_panel())?;
                 let _: () = tauri_nspanel::objc2::msg_send![
                     panel.as_panel(),
                     performWindowDragWithEvent: event
                 ];
+                close_dock_guides(dock_guides);
             }
             Ok(())
         })?;
@@ -798,6 +806,88 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
         .start_dragging()
         .map_err(|error| format!("could not move dictation HUD: {error}"))?;
     Ok(false)
+}
+
+/// Creates three transient, click-through panels around the current screen.
+/// They are intentionally native rather than webview content: AppKit runs a
+/// nested event loop during `performWindowDragWithEvent:`, and separate native
+/// panels remain visible throughout that synchronous drag without activating
+/// Spick or covering the application beneath them with hit targets.
+#[cfg(target_os = "macos")]
+unsafe fn create_dock_guides(
+    panel: &tauri_nspanel::objc2_app_kit::NSPanel,
+) -> Result<Vec<tauri_nspanel::objc2::rc::Retained<tauri_nspanel::objc2_app_kit::NSPanel>>, String>
+{
+    use tauri_nspanel::objc2::MainThreadMarker;
+    use tauri_nspanel::objc2_app_kit::{NSBackingStoreType, NSPanel, NSWindowStyleMask};
+    use tauri_nspanel::{NSPoint, NSRect, NSSize};
+
+    let screen: Option<
+        tauri_nspanel::objc2::rc::Retained<tauri_nspanel::objc2_foundation::NSObject>,
+    > = tauri_nspanel::objc2::msg_send![panel, screen];
+    let screen = screen.ok_or_else(|| "macOS did not report a screen for the HUD".to_string())?;
+    let visible_frame: NSRect = tauri_nspanel::objc2::msg_send![&*screen, visibleFrame];
+    let vertical_y =
+        visible_frame.origin.y + (visible_frame.size.height - DOCK_GUIDE_LENGTH).max(0.0) / 2.0;
+    let horizontal_x =
+        visible_frame.origin.x + (visible_frame.size.width - DOCK_GUIDE_LENGTH).max(0.0) / 2.0;
+    let frames = [
+        NSRect::new(
+            NSPoint::new(visible_frame.origin.x + DOCK_GUIDE_EDGE_INSET, vertical_y),
+            NSSize::new(DOCK_GUIDE_THICKNESS, DOCK_GUIDE_LENGTH),
+        ),
+        NSRect::new(
+            NSPoint::new(
+                visible_frame.origin.x + visible_frame.size.width
+                    - DOCK_GUIDE_EDGE_INSET
+                    - DOCK_GUIDE_THICKNESS,
+                vertical_y,
+            ),
+            NSSize::new(DOCK_GUIDE_THICKNESS, DOCK_GUIDE_LENGTH),
+        ),
+        NSRect::new(
+            NSPoint::new(horizontal_x, visible_frame.origin.y + DOCK_GUIDE_EDGE_INSET),
+            NSSize::new(DOCK_GUIDE_LENGTH, DOCK_GUIDE_THICKNESS),
+        ),
+    ];
+    let color: tauri_nspanel::objc2::rc::Retained<tauri_nspanel::objc2_foundation::NSObject> = tauri_nspanel::objc2::msg_send![
+        tauri_nspanel::objc2::class!(NSColor),
+        colorWithSRGBRed: 0.72_f64,
+        green: 0.29_f64,
+        blue: 0.16_f64,
+        alpha: 0.28_f64
+    ];
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "dock guides must be created on the macOS main thread".to_string())?;
+    let mut guides = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let guide = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            frame,
+            NSWindowStyleMask::Borderless,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        guide.setReleasedWhenClosed(false);
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setOpaque: false];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setBackgroundColor: &*color];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setIgnoresMouseEvents: true];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setHasShadow: true];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setLevel: 5_isize];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setCollectionBehavior: 257_usize];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, orderFrontRegardless];
+        guides.push(guide);
+    }
+    Ok(guides)
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn close_dock_guides(
+    guides: Vec<tauri_nspanel::objc2::rc::Retained<tauri_nspanel::objc2_app_kit::NSPanel>>,
+) {
+    for guide in guides {
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, close];
+    }
 }
 
 #[cfg(target_os = "macos")]
