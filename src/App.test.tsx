@@ -84,9 +84,7 @@ describe("Spick product shell", () => {
     expect(
       screen.getByRole("status", { name: "Spick is ready" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Tap or hold to talk"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Tap or hold to talk")).not.toBeInTheDocument();
   });
 
   it("offers compact widget preferences without the dashboard shell", () => {

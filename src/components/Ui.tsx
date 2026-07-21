@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from "react";
-import { AudioWaveform, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 
 export function SpickLogo({ compact = false }: { compact?: boolean }) {
   return (
@@ -8,7 +8,7 @@ export function SpickLogo({ compact = false }: { compact?: boolean }) {
       aria-label="Spick"
     >
       <span className="brand__mark" aria-hidden="true">
-        <AudioWaveform size={18} strokeWidth={2.4} />
+        <img src="/spick-mark.png" alt="" />
       </span>
       {!compact && <span className="brand__name">Spick</span>}
     </div>

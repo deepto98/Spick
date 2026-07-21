@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { NativeAppSettings, NativeHudSettings, NativeLanguagePolicy } from "./nativeSettings";
+import type {
+  NativeAppSettings,
+  NativeHudSettings,
+  NativeLanguagePolicy,
+} from "./nativeSettings";
 
 export function getHudSettings() {
   return invoke<NativeHudSettings>("get_hud_settings");

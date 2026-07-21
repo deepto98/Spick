@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import {
-  AlertTriangle,
-  Check,
-  Copy,
-  LoaderCircle,
-  Mic,
-  X,
-} from "lucide-react";
+import { AlertTriangle, Check, Copy, LoaderCircle, Mic, X } from "lucide-react";
 import type { NativeDeliveryOutcome } from "../lib/nativeDictation";
 import type { HudState } from "../types";
 
@@ -145,10 +138,16 @@ export function DictationHud({
             />
           ))}
         </div>
-        <div className="hud-quick-menu" onPointerDown={(event) => event.stopPropagation()}>
+        <div
+          className="hud-quick-menu"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
           <label>
             <span>Language</span>
-            <select value={language} onChange={(event) => onLanguageChange?.(event.target.value)}>
+            <select
+              value={language}
+              onChange={(event) => onLanguageChange?.(event.target.value)}
+            >
               <option value="AUTO">Auto</option>
               <option value="EN">English</option>
               <option value="ES">Spanish</option>
@@ -158,11 +157,17 @@ export function DictationHud({
             </select>
           </label>
           <button type="button" onClick={onOpenModels}>
-            <span>Model</span><strong>{model}</strong>
+            <span>Model</span>
+            <strong>{model}</strong>
           </button>
           <label>
             <span>Mode</span>
-            <select value={mode} onChange={(event) => onModeChange?.(event.target.value as "Verbatim" | "Clean")}>
+            <select
+              value={mode}
+              onChange={(event) =>
+                onModeChange?.(event.target.value as "Verbatim" | "Clean")
+              }
+            >
               <option value="Verbatim">Verbatim</option>
               <option value="Clean">Polished</option>
             </select>

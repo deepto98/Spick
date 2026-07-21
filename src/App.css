@@ -145,10 +145,12 @@ p {
   width: 32px;
   height: 32px;
   place-items: center;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.brand__mark img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
 }
 
 .brand__name {
@@ -1591,7 +1593,9 @@ p {
   color: #fff9ef;
   cursor: grab;
 }
-.dictation-hud-compact:active { cursor: grabbing; }
+.dictation-hud-compact:active {
+  cursor: grabbing;
+}
 
 .hud-compact-wave {
   position: absolute;
@@ -1605,7 +1609,10 @@ p {
   border: 1px solid rgba(255, 244, 227, 0.14);
   border-radius: 12px;
   box-shadow: 0 8px 22px rgba(31, 28, 23, 0.22);
-  transition: width 150ms ease, height 150ms ease, background 150ms ease;
+  transition:
+    width 150ms ease,
+    height 150ms ease,
+    background 150ms ease;
 }
 
 .dictation-hud-compact--bottomLeft .hud-compact-wave {
@@ -1644,7 +1651,9 @@ p {
   border-radius: 14px;
   box-shadow: 0 14px 34px rgba(25, 22, 17, 0.28);
   transform: translateY(3px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
   cursor: default;
 }
 .dictation-hud-compact:hover .hud-quick-menu {
@@ -4165,9 +4174,6 @@ select:focus-visible {
 }
 
 .brand__mark {
-  background: var(--accent);
-  border-radius: 42% 58% 48% 52% / 55% 45% 55% 45%;
-  box-shadow: inset 0 0 0 1px rgba(255, 250, 242, 0.14);
   transform: rotate(-2deg);
 }
 

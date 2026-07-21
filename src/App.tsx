@@ -802,9 +802,7 @@ function App() {
         DE: "German",
         FR: "French",
       }[badge];
-      const policy = languageName
-        ? languagePolicyForName(languageName)
-        : null;
+      const policy = languageName ? languagePolicyForName(languageName) : null;
       if (!policy) return;
       void updateHudPreferences(
         policy,
@@ -815,10 +813,7 @@ function App() {
     };
     const changeHudMode = (mode: "Verbatim" | "Clean") => {
       if (!nativeSettings) return;
-      void updateHudPreferences(
-        nativeSettings.languagePolicy,
-        mode === "Clean",
-      )
+      void updateHudPreferences(nativeSettings.languagePolicy, mode === "Clean")
         .then((saved) => acceptNativeSettings(saved))
         .catch(() => undefined);
     };
