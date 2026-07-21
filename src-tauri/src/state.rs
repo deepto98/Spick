@@ -920,7 +920,10 @@ mod tests {
         assert_eq!(loaded.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(loaded.hud.position, HudPosition::BottomCenter);
         assert_eq!(loaded.hud.custom_position, None);
-        assert_eq!(loaded.hud.presentation, crate::domain::HudPresentation::Compact);
+        assert_eq!(
+            loaded.hud.presentation,
+            crate::domain::HudPresentation::Compact
+        );
     }
 
     #[test]
