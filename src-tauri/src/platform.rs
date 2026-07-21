@@ -288,17 +288,20 @@ pub(crate) enum CompatibilitySelection {
 pub fn current_platform_capabilities() -> PlatformCapabilities {
     #[cfg(target_os = "macos")]
     {
-        let development_accessibility_insertion = cfg!(debug_assertions);
+        let input_method_enabled = cfg!(feature = "macos-input-method-prototype");
         PlatformCapabilities {
             platform: DesktopPlatform::MacOs,
-            preferred_text_insertion: if development_accessibility_insertion {
+            preferred_text_insertion: if input_method_enabled {
+                TextInsertionStrategy::InputMethodKit
+            } else {
+                TextInsertionStrategy::Accessibility
+            },
+            fallback_text_insertion: Some(if input_method_enabled {
                 TextInsertionStrategy::Accessibility
             } else {
-                TextInsertionStrategy::InputMethodKit
-            },
-            fallback_text_insertion: development_accessibility_insertion
-                .then_some(TextInsertionStrategy::ClipboardPaste),
-            text_insertion_available: development_accessibility_insertion,
+                TextInsertionStrategy::ClipboardPaste
+            }),
+            text_insertion_available: true,
             supports_global_shortcut: true,
         }
     }

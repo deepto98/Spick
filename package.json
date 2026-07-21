@@ -15,6 +15,8 @@
     "build:desktop:input-method:unsafe-adhoc": "SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD=YES ./scripts/build-input-method-desktop.sh unsafe-adhoc",
     "build:desktop:input-method:compatibility:development": "./scripts/build-input-method-desktop.sh development compatibility",
     "build:desktop:input-method:compatibility:unsafe-adhoc": "SPICK_INPUT_ALLOW_UNSAFE_ADHOC_BUILD=YES ./scripts/build-input-method-desktop.sh unsafe-adhoc compatibility",
+    "build:macos:local": "./scripts/build-macos.sh local",
+    "build:macos:release": "./scripts/build-macos.sh release",
     "check:input-method": "./scripts/check-input-method.sh",
     "preflight:input-method:compatibility": "./scripts/preflight-input-method-compatibility.sh",
     "run:input-method:compatibility": "./scripts/run-input-method-compatibility.sh",

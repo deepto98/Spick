@@ -40,27 +40,18 @@ use super::{
     AccessibilityPermissionState, AccessibilityPermissionStatus, CapturedTextTarget,
     TextInsertionReceipt, TextTargetError, TextTargetErrorKind, TextTargetToken,
 };
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 use core_graphics::{
     event::{CGEvent, CGEventFlags},
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use libc::pid_t;
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 use objc2::{rc::Retained, runtime::ProtocolObject};
 #[cfg(feature = "macos-input-method-prototype")]
 use objc2_app_kit::NSRunningApplication;
 use objc2_app_kit::NSWorkspace;
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 use objc2_app_kit::{
     NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
 };
@@ -72,10 +63,7 @@ use objc2_core_foundation::{
     kCFBooleanTrue, kCFRunLoopDefaultMode, CFArray, CFBoolean, CFDictionary, CFRange, CFRetained,
     CFRunLoop, CFRunLoopSource, CFString, CFType,
 };
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 use objc2_foundation::{NSArray, NSData, NSString};
 
 const AX_FOCUSED_APPLICATION: &str = "AXFocusedApplication";
@@ -90,10 +78,7 @@ const AX_VALUE: &str = "AXValue";
 const AX_SELECTED_TEXT: &str = "AXSelectedText";
 const AX_SELECTED_TEXT_RANGE: &str = "AXSelectedTextRange";
 const AX_SELECTED_TEXT_RANGES: &str = "AXSelectedTextRanges";
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const AX_STRING_FOR_RANGE: &str = "AXStringForRange";
 const AX_SECURE_TEXT_FIELD: &str = "AXSecureTextField";
 const AX_TEXT_FIELD_ROLE: &str = "AXTextField";
@@ -114,35 +99,17 @@ const MAX_PARENT_DEPTH: usize = 64;
 const FOCUSED_CONTEXT_RETRY_BUDGET: Duration = Duration::from_millis(600);
 const FOCUSED_CONTEXT_RETRY_DELAY: Duration = Duration::from_millis(12);
 const RUN_LOOP_POLL: Duration = Duration::from_millis(4);
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const INSERTION_CONFIRMATION_BUDGET: Duration = Duration::from_millis(850);
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const PASTEBOARD_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const PASTEBOARD_SNAPSHOT_MAX_ITEMS: usize = 128;
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const PASTEBOARD_SNAPSHOT_MAX_TYPES: usize = 512;
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const PASTEBOARD_OWNER_TYPE: &str = "app.spick.desktop.transient-paste-owner";
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 const ANSI_VIRTUAL_KEY_V: u16 = 9;
 #[cfg(feature = "macos-input-method-prototype")]
 const INPUT_METHOD_SOCKET_NAME: &str = "app.spick.input-method.sock";
@@ -521,11 +488,8 @@ impl Worker {
             .ok()
             .flatten()
             .and_then(sanitize_application_name);
-        #[cfg(all(
-            debug_assertions,
-            not(feature = "macos-input-method-compatibility-harness")
-        ))]
-        let development_insertion_path = development_insertion_path(
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+        let insertion_path = insertion_path(
             confirmed_editable.selected_text_settable,
             confirmed_editable.selection.is_some(),
             confirmed_editable.prefers_paste,
@@ -542,11 +506,8 @@ impl Worker {
                 #[cfg(feature = "macos-input-method-prototype")]
                 input_method_lease,
                 selection: confirmed_editable.selection,
-                #[cfg(all(
-                    debug_assertions,
-                    not(feature = "macos-input-method-compatibility-harness")
-                ))]
-                development_insertion_path,
+                #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+                insertion_path,
                 observer,
             },
         );
@@ -574,10 +535,7 @@ impl Worker {
         })?;
         ensure_secure_event_input_disabled()?;
         let revalidated = revalidate_captured_target(&target, deadline)?;
-        #[cfg(any(
-            not(debug_assertions),
-            feature = "macos-input-method-compatibility-harness"
-        ))]
+        #[cfg(feature = "macos-input-method-compatibility-harness")]
         let _ = revalidated;
 
         #[cfg(feature = "macos-input-method-compatibility-harness")]
@@ -594,10 +552,7 @@ impl Worker {
             })
         }
 
-        #[cfg(all(
-            debug_assertions,
-            not(feature = "macos-input-method-compatibility-harness")
-        ))]
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         {
             #[cfg(feature = "macos-input-method-prototype")]
             if target.input_method_lease.is_some() {
@@ -608,8 +563,8 @@ impl Worker {
                 });
             }
 
-            match target.development_insertion_path {
-                DevelopmentInsertionPath::ElementAddressed => {
+            match target.insertion_path {
+                InsertionPath::ElementAddressed => {
                     if !revalidated.selected_text_settable {
                         return Err(TextTargetError::new(
                             TextTargetErrorKind::FocusChanged,
@@ -618,32 +573,10 @@ impl Worker {
                     }
                     commit_through_accessibility(&target, transcript, deadline)
                 }
-                DevelopmentInsertionPath::ClipboardPaste => {
+                InsertionPath::ClipboardPaste => {
                     commit_through_clipboard_paste(&target, transcript, deadline)
                 }
             }
-        }
-
-        #[cfg(all(
-            not(debug_assertions),
-            feature = "macos-input-method-prototype",
-            not(feature = "macos-input-method-compatibility-harness")
-        ))]
-        {
-            commit_through_input_method(&mut target, token, transcript, deadline)?;
-            Ok(TextInsertionReceipt {
-                target_app: None,
-                caret_repositioned: true,
-            })
-        }
-
-        #[cfg(all(not(debug_assertions), not(feature = "macos-input-method-prototype")))]
-        {
-            let _ = (transcript, &mut target, revalidated);
-            Err(TextTargetError::new(
-                TextTargetErrorKind::Unsupported,
-                "Automatic typing is not enabled in this build; the transcript is ready to copy",
-            ))
         }
     }
 }
@@ -658,11 +591,8 @@ struct CapturedTarget {
     #[cfg(feature = "macos-input-method-prototype")]
     input_method_lease: Option<InputMethodLease>,
     selection: Option<CFRange>,
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
-    development_insertion_path: DevelopmentInsertionPath,
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
+    insertion_path: InsertionPath,
     observer: ObserverLease,
 }
 
@@ -790,10 +720,7 @@ fn read_current_editable_target(
     Ok(editable)
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn commit_through_accessibility(
     target: &CapturedTarget,
     transcript: &str,
@@ -829,68 +756,44 @@ fn commit_through_accessibility(
     )
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DevelopmentInsertionPath {
+enum InsertionPath {
     ElementAddressed,
     ClipboardPaste,
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
-fn development_insertion_path(
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
+fn insertion_path(
     selected_text_settable: bool,
     has_selection: bool,
     prefers_paste: bool,
-) -> DevelopmentInsertionPath {
+) -> InsertionPath {
     if selected_text_settable && has_selection && !prefers_paste {
-        DevelopmentInsertionPath::ElementAddressed
+        InsertionPath::ElementAddressed
     } else {
-        DevelopmentInsertionPath::ClipboardPaste
+        InsertionPath::ClipboardPaste
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 struct PasteboardEntrySnapshot {
     data_type: Retained<NSPasteboardType>,
     data: Retained<NSData>,
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 struct PasteboardItemSnapshot {
     entries: Vec<PasteboardEntrySnapshot>,
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 struct PasteboardSnapshot {
     items: Vec<PasteboardItemSnapshot>,
     source_change_count: isize,
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 impl PasteboardSnapshot {
     fn capture(pasteboard: &NSPasteboard, deadline: Instant) -> Result<Self, TextTargetError> {
         check_deadline(deadline)?;
@@ -976,10 +879,7 @@ impl PasteboardSnapshot {
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 struct PasteboardTransaction {
     pasteboard: Retained<NSPasteboard>,
     restore_items: Option<Vec<Retained<NSPasteboardItem>>>,
@@ -988,10 +888,7 @@ struct PasteboardTransaction {
     owner_marker: Retained<NSString>,
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 impl PasteboardTransaction {
     fn begin(transcript: &str, deadline: Instant) -> Result<Self, TextTargetError> {
         check_deadline(deadline)?;
@@ -1130,20 +1027,14 @@ impl PasteboardTransaction {
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 impl Drop for PasteboardTransaction {
     fn drop(&mut self) {
         let _ = self.restore_if_owned();
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn write_pasteboard_items(pasteboard: &NSPasteboard, items: &[Retained<NSPasteboardItem>]) -> bool {
     let writers = items
         .iter()
@@ -1153,10 +1044,7 @@ fn write_pasteboard_items(pasteboard: &NSPasteboard, items: &[Retained<NSPastebo
     pasteboard.writeObjects(&writers)
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn clipboard_snapshot_too_large_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::Unsupported,
@@ -1164,10 +1052,7 @@ fn clipboard_snapshot_too_large_error() -> TextTargetError {
     )
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn clipboard_snapshot_unavailable_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::Unsupported,
@@ -1175,10 +1060,7 @@ fn clipboard_snapshot_unavailable_error() -> TextTargetError {
     )
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn clipboard_changed_during_snapshot_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::FocusChanged,
@@ -1186,28 +1068,19 @@ fn clipboard_changed_during_snapshot_error() -> TextTargetError {
     )
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn checked_pasteboard_snapshot_size(current: usize, addition: usize) -> Option<usize> {
     current
         .checked_add(addition)
         .filter(|total| *total <= PASTEBOARD_SNAPSHOT_MAX_BYTES)
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn pasteboard_change_count_is_owned(expected: isize, current: isize) -> bool {
     expected == current
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn pasteboard_contains_owned_marker(
     pasteboard: &NSPasteboard,
     expected_change_count: isize,
@@ -1227,26 +1100,17 @@ fn pasteboard_contains_owned_marker(
         && pasteboard_change_count_is_owned(expected_change_count, pasteboard.changeCount())
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn pasteboard_source_count_is_stable(expected: isize, current: isize) -> bool {
     expected == current
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn pasteboard_change_count_advanced_once(previous: isize, current: isize) -> bool {
     previous.checked_add(1) == Some(current)
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn restore_items_after_failed_stage(
     pasteboard: &NSPasteboard,
     expected_change_count: isize,
@@ -1272,16 +1136,13 @@ fn restore_items_after_failed_stage(
     }
 }
 
-/// Development fallback for web, Electron, and custom controls that
+/// Guarded fallback for web, Electron, and custom controls that
 /// need an ordinary paste command rather than an Accessibility value mutation.
 /// The route is selected before any write and the exact target is revalidated
 /// again immediately before one Cmd-V. NSPasteboard replacement and restore
 /// are inherently non-atomic, so ownership checks only narrow the remaining
-/// race and this path remains debug-only.
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+/// race. It therefore reports indeterminate delivery instead of retrying.
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn commit_through_clipboard_paste(
     target: &CapturedTarget,
     transcript: &str,
@@ -1353,10 +1214,7 @@ fn commit_through_clipboard_paste(
     delivery
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn restore_after_pre_dispatch_error(
     pasteboard: &mut PasteboardTransaction,
     original: TextTargetError,
@@ -1367,21 +1225,12 @@ fn restore_after_pre_dispatch_error(
     }
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 fn clipboard_paste_transcript_is_safe(transcript: &str) -> bool {
     !transcript.contains(['\r', '\n'])
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn ensure_post_dispatch_budget(deadline: Instant) -> Result<(), TextTargetError> {
     if has_post_dispatch_budget(deadline.saturating_duration_since(Instant::now())) {
         Ok(())
@@ -1393,18 +1242,12 @@ fn ensure_post_dispatch_budget(deadline: Instant) -> Result<(), TextTargetError>
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn has_post_dispatch_budget(remaining: Duration) -> bool {
     remaining >= INSERTION_CONFIRMATION_BUDGET
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn confirm_clipboard_paste(
     target: &CapturedTarget,
     transcript: &str,
@@ -1480,10 +1323,7 @@ fn confirm_clipboard_paste(
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn wait_for_paste_consumer(deadline: Instant) {
     while Instant::now() < deadline {
         pump_run_loop();
@@ -1491,10 +1331,7 @@ fn wait_for_paste_consumer(deadline: Instant) {
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn confirm_element_addressed_write(
     element: &AXUIElement,
     inserted_range: CFRange,
@@ -1544,24 +1381,12 @@ fn confirm_element_addressed_write(
     }
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 fn insertion_confirmation_error_is_retryable(kind: TextTargetErrorKind) -> bool {
     focused_context_error_is_transient(kind)
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InsertionReadbackState {
     Confirmed,
@@ -1569,13 +1394,7 @@ enum InsertionReadbackState {
     Mismatch,
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 fn insertion_readback_state(readback: Option<&str>, transcript: &str) -> InsertionReadbackState {
     match readback {
         Some(value) if value == transcript => InsertionReadbackState::Confirmed,
@@ -1584,13 +1403,7 @@ fn insertion_readback_state(readback: Option<&str>, transcript: &str) -> Inserti
     }
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyboardSelectionState {
     Pending,
@@ -1598,13 +1411,7 @@ enum KeyboardSelectionState {
     Shifted,
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 fn keyboard_selection_state(
     current: CFRange,
     original: CFRange,
@@ -1619,10 +1426,7 @@ fn keyboard_selection_state(
     }
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn indeterminate_element_write_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::Indeterminate,
@@ -1630,10 +1434,7 @@ fn indeterminate_element_write_error() -> TextTargetError {
     )
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn indeterminate_paste_delivery_error() -> TextTargetError {
     TextTargetError::new(
         TextTargetErrorKind::Indeterminate,
@@ -1641,13 +1442,7 @@ fn indeterminate_paste_delivery_error() -> TextTargetError {
     )
 }
 
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    )
-))]
+#[cfg(any(test, not(feature = "macos-input-method-compatibility-harness")))]
 fn insertion_ranges(
     selection: CFRange,
     transcript: &str,
@@ -1671,10 +1466,7 @@ fn insertion_ranges(
     ))
 }
 
-#[cfg(all(
-    debug_assertions,
-    not(feature = "macos-input-method-compatibility-harness")
-))]
+#[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 fn read_string_for_range(
     element: &AXUIElement,
     range: CFRange,
@@ -2508,10 +2300,7 @@ fn notification_registration_is_best_effort_success(result: AXError) -> bool {
 struct EditableTarget {
     element: CFRetained<AXUIElement>,
     selection: Option<CFRange>,
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
     selected_text_settable: bool,
     prefers_paste: bool,
 }
@@ -2848,10 +2637,7 @@ fn editable_snapshot(
     Ok(Some(EditableTarget {
         element: retain_element(element),
         selection,
-        #[cfg(all(
-            debug_assertions,
-            not(feature = "macos-input-method-compatibility-harness")
-        ))]
+        #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
         selected_text_settable,
         prefers_paste: selection.is_none() || !selected_text_settable,
     }))
@@ -3282,20 +3068,20 @@ mod tests {
     #[test]
     fn only_proven_native_selection_setters_use_direct_accessibility() {
         assert_eq!(
-            development_insertion_path(true, true, false),
-            DevelopmentInsertionPath::ElementAddressed
+            insertion_path(true, true, false),
+            InsertionPath::ElementAddressed
         );
         assert_eq!(
-            development_insertion_path(false, true, true),
-            DevelopmentInsertionPath::ClipboardPaste
+            insertion_path(false, true, true),
+            InsertionPath::ClipboardPaste
         );
         assert_eq!(
-            development_insertion_path(true, false, true),
-            DevelopmentInsertionPath::ClipboardPaste
+            insertion_path(true, false, true),
+            InsertionPath::ClipboardPaste
         );
         assert_eq!(
-            development_insertion_path(true, true, true),
-            DevelopmentInsertionPath::ClipboardPaste
+            insertion_path(true, true, true),
+            InsertionPath::ClipboardPaste
         );
     }
 
@@ -3324,10 +3110,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
     fn clipboard_restoration_requires_unchanged_transaction_ownership() {
         assert!(pasteboard_change_count_is_owned(41, 41));
         assert!(!pasteboard_change_count_is_owned(41, 42));
@@ -3343,10 +3126,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
     fn clipboard_snapshot_size_is_bounded_before_mutation() {
         assert_eq!(checked_pasteboard_snapshot_size(10, 20), Some(30));
         assert_eq!(
@@ -3361,10 +3141,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(
-        debug_assertions,
-        not(feature = "macos-input-method-compatibility-harness")
-    ))]
+    #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
     fn web_confirmation_budget_allows_async_accessibility_updates() {
         assert!(INSERTION_CONFIRMATION_BUDGET >= Duration::from_millis(750));
         assert!(has_post_dispatch_budget(INSERTION_CONFIRMATION_BUDGET));
