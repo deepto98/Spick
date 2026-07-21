@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { DictationHud } from "./components/DictationHud";
 import { Onboarding } from "./components/Onboarding";
@@ -43,6 +44,7 @@ import {
   type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
 import { setInAppDictationMode } from "./lib/nativeDictation";
+import { openDashboardView, updateHudPreferences } from "./lib/nativeHud";
 import type { ClearLocalDataScope } from "./lib/nativeLocalData";
 import type { CloudProviderId } from "./lib/nativeCloud";
 import type { AppSettings, Engine, TranscriptionSource, ViewId } from "./types";
@@ -204,6 +206,28 @@ function App() {
       disposed = true;
     };
   }, [acceptNativeSettings, dictation.native, hudOnly, settingsLoadRevision]);
+
+  useEffect(() => {
+    if (!dictation.native || hudOnly) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    try {
+      void listen<string>("navigation://requested", (event) => {
+        if (event.payload === "engines") setActiveView("engines");
+      })
+        .then((stop) => {
+          if (disposed) stop();
+          else unlisten = stop;
+        })
+        .catch(() => undefined);
+    } catch {
+      // Unit-test and browser previews do not provide Tauri's event bridge.
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [dictation.native, hudOnly]);
 
   const refreshAudioInputDevices = useCallback(async () => {
     if (!dictation.native || hudOnly) return;
@@ -768,6 +792,36 @@ function App() {
   }, [activeView, dictation.native, onboardingComplete]);
 
   if (hudOnly) {
+    const changeHudLanguage = (badge: string) => {
+      if (!nativeSettings) return;
+      const languageName = {
+        AUTO: "Auto-detect",
+        EN: "English",
+        ES: "Spanish",
+        HI: "Hindi",
+        DE: "German",
+        FR: "French",
+      }[badge];
+      const policy = languageName
+        ? languagePolicyForName(languageName)
+        : null;
+      if (!policy) return;
+      void updateHudPreferences(
+        policy,
+        cleanupLevelForEngine(nativeSettings.cleanupEngine) === "Clean",
+      )
+        .then((saved) => acceptNativeSettings(saved))
+        .catch(() => undefined);
+    };
+    const changeHudMode = (mode: "Verbatim" | "Clean") => {
+      if (!nativeSettings) return;
+      void updateHudPreferences(
+        nativeSettings.languagePolicy,
+        mode === "Clean",
+      )
+        .then((saved) => acceptNativeSettings(saved))
+        .catch(() => undefined);
+    };
     return (
       <div className="hud-window-surface">
         <DictationHud
@@ -780,11 +834,15 @@ function App() {
           state={dictation.state}
           onStateChange={dictation.transitionTo}
           language={dictation.language}
-          compact={hudWindow.compact}
-          compactPending={hudWindow.pending}
+          dock={hudWindow.settings?.position}
+          model={selectedEngineName ?? "Local"}
+          mode={settings.cleanupLevel}
           shortcut={settings.hotkey}
           onMovePointerDown={hudWindow.beginDrag}
-          onToggleCompact={() => void hudWindow.togglePresentation()}
+          onHoverChange={hudWindow.setHovered}
+          onLanguageChange={changeHudLanguage}
+          onModeChange={changeHudMode}
+          onOpenModels={() => void openDashboardView("engines")}
         />
       </div>
     );

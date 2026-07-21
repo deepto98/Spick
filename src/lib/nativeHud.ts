@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { NativeHudSettings } from "./nativeSettings";
+import type { NativeAppSettings, NativeHudSettings, NativeLanguagePolicy } from "./nativeSettings";
 
 export function getHudSettings() {
   return invoke<NativeHudSettings>("get_hud_settings");
@@ -17,4 +17,22 @@ export function setHudPresentation(
 
 export function startHudDrag() {
   return invoke<void>("start_hud_drag");
+}
+
+export function setHudHovered(hovered: boolean) {
+  return invoke<void>("set_hud_hovered", { hovered });
+}
+
+export function updateHudPreferences(
+  languagePolicy: NativeLanguagePolicy,
+  polished: boolean,
+) {
+  return invoke<NativeAppSettings>("update_hud_preferences", {
+    languagePolicy,
+    polished,
+  });
+}
+
+export function openDashboardView(view: "engines") {
+  return invoke<void>("open_dashboard_view", { view });
 }

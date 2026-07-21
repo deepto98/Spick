@@ -56,66 +56,55 @@ describe("dictation delivery HUD", () => {
     expect(screen.getByText(/cursor moved/i)).toBeInTheDocument();
   });
 
-  it("keeps compact listening feedback movable and expandable", () => {
+  it("keeps the compact floating feedback draggable from its whole surface", () => {
     const onMove = vi.fn();
-    const onExpand = vi.fn();
     render(
       <DictationHud
         audioLevel={0.8}
-        compact
+        floating
         onMovePointerDown={onMove}
-        onToggleCompact={onExpand}
         state="listening"
       />,
     );
 
-    expect(
-      screen.getByRole("status", { name: "Spick is listening" }),
-    ).toBeInTheDocument();
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Move dictation widget" }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Expand dictation widget" }),
-    );
+    const widget = screen.getByRole("status", { name: "Spick is listening" });
+    fireEvent.pointerDown(widget);
     expect(onMove).toHaveBeenCalledOnce();
-    expect(onExpand).toHaveBeenCalledOnce();
   });
 
-  it("minimizes the expanded widget and locks presentation controls while saving", () => {
-    const onMove = vi.fn();
-    const onMinimize = vi.fn();
-    const { rerender } = render(
+  it("offers language, model, and cleanup controls on hover", () => {
+    const onHover = vi.fn();
+    const onLanguage = vi.fn();
+    const onMode = vi.fn();
+    const onModels = vi.fn();
+    render(
       <DictationHud
         autoAdvance={false}
-        onMovePointerDown={onMove}
-        onToggleCompact={onMinimize}
+        floating
+        model="Whisper Tiny"
+        onHoverChange={onHover}
+        onLanguageChange={onLanguage}
+        onModeChange={onMode}
+        onOpenModels={onModels}
         state="idle"
       />,
     );
 
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Move dictation widget" }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Minimize dictation widget" }),
-    );
-    expect(onMove).toHaveBeenCalledOnce();
-    expect(onMinimize).toHaveBeenCalledOnce();
+    const widget = screen.getByRole("status", { name: "Spick is ready" });
+    fireEvent.mouseEnter(widget);
+    fireEvent.change(screen.getByLabelText("Language"), {
+      target: { value: "ES" },
+    });
+    fireEvent.change(screen.getByLabelText("Mode"), {
+      target: { value: "Clean" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /ModelWhisper Tiny/ }));
+    fireEvent.mouseLeave(widget);
 
-    rerender(
-      <DictationHud
-        autoAdvance={false}
-        compact
-        compactPending
-        onMovePointerDown={onMove}
-        onToggleCompact={onMinimize}
-        state="listening"
-      />,
-    );
-
-    expect(
-      screen.getByRole("button", { name: "Expand dictation widget" }),
-    ).toBeDisabled();
+    expect(onHover).toHaveBeenNthCalledWith(1, true);
+    expect(onHover).toHaveBeenLastCalledWith(false);
+    expect(onLanguage).toHaveBeenCalledWith("ES");
+    expect(onMode).toHaveBeenCalledWith("Clean");
+    expect(onModels).toHaveBeenCalledOnce();
   });
 });

@@ -1,10 +1,4 @@
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -76,50 +70,31 @@ describe("Spick product shell", () => {
     render(<App />);
 
     expect(
-      screen.getByRole("button", { name: "Start recording" }),
+      screen.getByRole("status", { name: "Spick is ready" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Let’s set it up" }),
     ).not.toBeInTheDocument();
   });
 
-  it("runs the browser HUD through its preview lifecycle", () => {
-    vi.useFakeTimers();
+  it("keeps the floating HUD in its compact-only shape", () => {
     window.history.replaceState({}, "", "/?window=hud");
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
     expect(
-      screen.getByRole("button", { name: "Finish recording" }),
+      screen.getByRole("status", { name: "Spick is ready" }),
     ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Finish recording" }));
-    expect(screen.getByText("Writing that down")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Cancel transcription" }),
-    ).toBeInTheDocument();
-
-    act(() => vi.advanceTimersByTime(1150));
-    expect(screen.getByText("Got it")).toBeInTheDocument();
-
-    act(() => vi.advanceTimersByTime(1250));
-    expect(
-      screen.getByRole("button", { name: "Start recording" }),
-    ).toBeInTheDocument();
+      screen.queryByText("Tap or hold to talk"),
+    ).not.toBeInTheDocument();
   });
 
-  it("can leave processing without waiting for the preview", () => {
+  it("offers compact widget preferences without the dashboard shell", () => {
     window.history.replaceState({}, "", "/?window=hud");
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
-    fireEvent.click(screen.getByRole("button", { name: "Finish recording" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Cancel transcription" }),
-    );
-
-    expect(
-      screen.getByRole("button", { name: "Start recording" }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Language")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mode")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 });

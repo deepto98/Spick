@@ -14,9 +14,9 @@ use crate::{
     audio::AudioCaptureController,
     cloud::CloudRuntime,
     domain::{
-        AppSettings, LEGACY_SETTINGS_SCHEMA_VERSION, MULTILINGUAL_SETTINGS_SCHEMA_VERSION,
-        OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION, SETTINGS_SCHEMA_VERSION,
-        TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
+        AppSettings, FREEFORM_HUD_SETTINGS_SCHEMA_VERSION, LEGACY_SETTINGS_SCHEMA_VERSION,
+        MULTILINGUAL_SETTINGS_SCHEMA_VERSION, OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION,
+        SETTINGS_SCHEMA_VERSION, TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION,
     },
     engines::{DictationTranscript, WhisperCppRuntime},
     latency::{DictationLatencyEvent, StartupLatencyTrace},
@@ -539,6 +539,7 @@ fn parse_settings_document(bytes: &[u8]) -> Result<ParsedSettings, SettingsParse
             | OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION
             | MULTILINGUAL_SETTINGS_SCHEMA_VERSION
             | TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION
+            | FREEFORM_HUD_SETTINGS_SCHEMA_VERSION
             | SETTINGS_SCHEMA_VERSION
     ) {
         settings.migrate_legacy_schema()
@@ -900,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v4_preserves_a_dragged_hud_coordinate() {
+    fn schema_v4_maps_a_dragged_hud_to_a_supported_dock() {
         let (_directory, path) = test_path();
         let dragged_position = crate::domain::HudCoordinates { x: 1456, y: 880 };
         let previous = AppSettings {
@@ -918,7 +919,8 @@ mod tests {
 
         assert_eq!(loaded.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(loaded.hud.position, HudPosition::BottomCenter);
-        assert_eq!(loaded.hud.custom_position, Some(dragged_position));
+        assert_eq!(loaded.hud.custom_position, None);
+        assert_eq!(loaded.hud.presentation, crate::domain::HudPresentation::Compact);
     }
 
     #[test]

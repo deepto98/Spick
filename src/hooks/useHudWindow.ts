@@ -8,6 +8,7 @@ import {
 import {
   getHudSettings,
   markHudRendererReady,
+  setHudHovered,
   setHudPresentation,
   startHudDrag,
 } from "../lib/nativeHud";
@@ -97,12 +98,23 @@ export function useHudWindow(enabled: boolean) {
     });
   }, [enabled]);
 
+  const setHovered = useCallback(
+    (hovered: boolean) => {
+      if (!enabled) return;
+      void setHudHovered(hovered).catch((reason) => {
+        setError(`Couldn’t resize the HUD controls: ${String(reason)}`);
+      });
+    },
+    [enabled],
+  );
+
   return {
     beginDrag,
     compact: settings?.presentation === "compact",
     error,
     pending,
     settings,
+    setHovered,
     togglePresentation,
   };
 }

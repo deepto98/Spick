@@ -4,11 +4,8 @@ import {
   AlertTriangle,
   Check,
   Copy,
-  GripVertical,
   LoaderCircle,
-  Maximize2,
   Mic,
-  Minimize2,
   X,
 } from "lucide-react";
 import type { NativeDeliveryOutcome } from "../lib/nativeDictation";
@@ -25,10 +22,14 @@ interface DictationHudProps {
   errorMessage?: string;
   delivery?: NativeDeliveryOutcome | null;
   shortcut?: string;
-  compact?: boolean;
-  compactPending?: boolean;
-  onToggleCompact?: () => void;
   onMovePointerDown?: () => void;
+  onHoverChange?: (hovered: boolean) => void;
+  dock?: "bottomLeft" | "bottomCenter" | "bottomRight";
+  model?: string;
+  mode?: "Verbatim" | "Clean";
+  onLanguageChange?: (language: string) => void;
+  onModeChange?: (mode: "Verbatim" | "Clean") => void;
+  onOpenModels?: () => void;
 }
 
 const sampleBars = [
@@ -46,10 +47,14 @@ export function DictationHud({
   errorMessage,
   delivery,
   shortcut = "⌥",
-  compact = false,
-  compactPending = false,
-  onToggleCompact,
   onMovePointerDown,
+  onHoverChange,
+  dock = "bottomRight",
+  model = "Local",
+  mode = "Verbatim",
+  onLanguageChange,
+  onModeChange,
+  onOpenModels,
 }: DictationHudProps) {
   const [internalState, setInternalState] = useState<HudState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -99,57 +104,24 @@ export function DictationHud({
       className={`dictation-hud-frame ${floating ? "dictation-hud-frame--floating" : ""}`}
     >
       {content}
-      {(onMovePointerDown || onToggleCompact) && (
-        <div className="hud-window-controls">
-          {onMovePointerDown && (
-            <button
-              type="button"
-              className="hud-window-control hud-window-control--move"
-              aria-label="Move dictation widget"
-              onPointerDown={(event) => {
-                event.preventDefault();
-                onMovePointerDown();
-              }}
-            >
-              <GripVertical size={13} />
-            </button>
-          )}
-          {onToggleCompact && (
-            <button
-              type="button"
-              className="hud-window-control"
-              aria-label="Minimize dictation widget"
-              onClick={onToggleCompact}
-              disabled={compactPending}
-            >
-              <Minimize2 size={12} />
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 
-  if (compact) {
+  if (floating) {
     const compactBars = sampleBars.slice(4, 11);
     return (
       <div
-        className={`dictation-hud-compact dictation-hud-compact--${state}`}
+        className={`dictation-hud-compact dictation-hud-compact--${state} dictation-hud-compact--${dock}`}
         role="status"
         aria-label={compactStatusLabel(state)}
         aria-live="polite"
+        onMouseEnter={() => onHoverChange?.(true)}
+        onMouseLeave={() => onHoverChange?.(false)}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          onMovePointerDown?.();
+        }}
       >
-        <button
-          type="button"
-          className="hud-compact-grip"
-          aria-label="Move dictation widget"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            onMovePointerDown?.();
-          }}
-        >
-          <GripVertical size={13} />
-        </button>
         <div
           className={`hud-compact-wave ${state === "listening" ? "hud-compact-wave--live" : ""}`}
           aria-hidden="true"
@@ -173,15 +145,29 @@ export function DictationHud({
             />
           ))}
         </div>
-        <button
-          type="button"
-          className="hud-compact-expand"
-          aria-label="Expand dictation widget"
-          onClick={onToggleCompact}
-          disabled={compactPending || !onToggleCompact}
-        >
-          <Maximize2 size={11} />
-        </button>
+        <div className="hud-quick-menu" onPointerDown={(event) => event.stopPropagation()}>
+          <label>
+            <span>Language</span>
+            <select value={language} onChange={(event) => onLanguageChange?.(event.target.value)}>
+              <option value="AUTO">Auto</option>
+              <option value="EN">English</option>
+              <option value="ES">Spanish</option>
+              <option value="HI">Hindi</option>
+              <option value="DE">German</option>
+              <option value="FR">French</option>
+            </select>
+          </label>
+          <button type="button" onClick={onOpenModels}>
+            <span>Model</span><strong>{model}</strong>
+          </button>
+          <label>
+            <span>Mode</span>
+            <select value={mode} onChange={(event) => onModeChange?.(event.target.value as "Verbatim" | "Clean")}>
+              <option value="Verbatim">Verbatim</option>
+              <option value="Clean">Polished</option>
+            </select>
+          </label>
+        </div>
       </div>
     );
   }

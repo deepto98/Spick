@@ -21,7 +21,7 @@ use crate::{
     domain::{
         AppSettings, DictationDelivery, DictationDeliveryStatus, DictationSession,
         DictationStateEvent, EngineConfig, EngineLocation, EngineProvider, HudPresentation,
-        HudSettings, LanguagePolicy, SessionState, SessionTrigger,
+        HudSettings, LanguagePolicy, SessionState, SessionTrigger, BUILTIN_READABLE_CLEANUP_MODEL,
     },
     engines::{
         validate_whisper_model_policy, AudioInput, CleanupEngine, CleanupRequest,
@@ -564,7 +564,9 @@ pub fn start_hud_drag(
     let completed_synchronously = hud::start_drag(&app)?;
     if completed_synchronously {
         let position = hud::current_position(&app)?;
-        persist_hud_position_with_gate(state.inner(), position)?;
+        let preset = hud::nearest_preset(&app, position)?;
+        let saved_hud = persist_hud_position_with_gate(state.inner(), preset)?;
+        hud::apply(&app, &saved_hud)?;
         drop(settings_update);
     } else {
         // The portable drag API can return before the window stops moving. It
@@ -573,6 +575,71 @@ pub fn start_hud_drag(
         schedule_hud_position_save(app, revision);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_hud_hovered(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hovered: bool,
+) -> Result<(), String> {
+    require_hud_window(&window)?;
+    let settings = state.settings_snapshot()?.hud;
+    hud::set_hovered(&app, &settings, hovered)
+}
+
+#[tauri::command]
+pub fn update_hud_preferences(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    language_policy: LanguagePolicy,
+    polished: bool,
+) -> Result<AppSettings, String> {
+    require_hud_window(&window)?;
+    language_policy.validate()?;
+    let _settings_update = state
+        .settings_update
+        .lock()
+        .map_err(|_| "settings update is unavailable".to_string())?;
+    let _model_configuration = state
+        .model_configuration
+        .lock()
+        .map_err(|_| "model configuration is unavailable".to_string())?;
+    let mut current = state
+        .settings
+        .write()
+        .map_err(|_| "settings lock is poisoned".to_string())?;
+    let mut next = current.clone();
+    next.language_policy = language_policy;
+    next.cleanup_engine = polished
+        .then(|| EngineConfig::local(EngineProvider::BuiltIn, BUILTIN_READABLE_CLEANUP_MODEL));
+    next.validate()?;
+    validate_selected_transcription(&state.models, &next)?;
+    state.persist_settings(&next)?;
+    *current = next.clone();
+    Ok(next)
+}
+
+#[tauri::command]
+pub fn open_dashboard_view(
+    window: WebviewWindow,
+    app: AppHandle,
+    view: String,
+) -> Result<(), String> {
+    require_hud_window(&window)?;
+    if view != "engines" {
+        return Err("the HUD can only open the Engines page".into());
+    }
+    let main = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Spick dashboard is not available".to_string())?;
+    main.show()
+        .map_err(|error| format!("could not show Spick: {error}"))?;
+    main.set_focus()
+        .map_err(|error| format!("could not focus Spick: {error}"))?;
+    app.emit_to(MAIN_WINDOW_LABEL, "navigation://requested", view)
+        .map_err(|error| format!("could not open Engines: {error}"))
 }
 
 #[tauri::command]
@@ -993,38 +1060,45 @@ fn persist_hud_position_if_current<R: Runtime>(
     if HUD_DRAG_REVISION.load(Ordering::Acquire) != revision {
         return Ok(());
     }
-    persist_hud_position_with_gate(state.inner(), position)
+    let preset = hud::nearest_preset(app, position)?;
+    let saved_hud = persist_hud_position_with_gate(state.inner(), preset)?;
+    hud::apply(app, &saved_hud)
 }
 
 #[cfg(test)]
 fn persist_hud_position_for_state(
     state: &AppState,
-    position: crate::domain::HudCoordinates,
+    position: crate::domain::HudPosition,
 ) -> Result<(), String> {
     let _settings_update = state
         .settings_update
         .lock()
         .map_err(|_| "settings update is unavailable".to_string())?;
-    persist_hud_position_with_gate(state, position)
+    persist_hud_position_with_gate(state, position).map(|_| ())
 }
 
 /// Persists a HUD position while the caller owns `settings_update`.
 fn persist_hud_position_with_gate(
     state: &AppState,
-    position: crate::domain::HudCoordinates,
-) -> Result<(), String> {
+    position: crate::domain::HudPosition,
+) -> Result<HudSettings, String> {
     let mut current = state
         .settings
         .write()
         .map_err(|_| "settings lock is poisoned".to_string())?;
-    if current.hud.custom_position == Some(position) {
-        return Ok(());
+    if current.hud.position == position
+        && current.hud.custom_position.is_none()
+        && current.hud.presentation == HudPresentation::Compact
+    {
+        return Ok(current.hud.clone());
     }
     let mut next = current.clone();
-    next.hud.custom_position = Some(position);
+    next.hud.position = position;
+    next.hud.custom_position = None;
+    next.hud.presentation = HudPresentation::Compact;
     state.persist_settings(&next)?;
     *current = next;
-    Ok(())
+    Ok(current.hud.clone())
 }
 
 fn commit_local_model_activation<F>(
@@ -2134,6 +2208,7 @@ fn transcribe_capture(
             .whisper
             .transcribe(Arc::clone(&model), &model_path, request())?;
         apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
+        trim_short_fragment_period(&mut result);
         Ok(PendingDictationTranscript {
             session_id: session.id.clone(),
             engine_id: model.id.clone(),
@@ -2183,6 +2258,7 @@ fn finish_cloud_transcription(
     if !cloud.cleanup_applied {
         apply_configured_cleanup(session.cleanup_engine.as_ref(), &mut result)?;
     }
+    trim_short_fragment_period(&mut result);
     Ok(PendingDictationTranscript {
         session_id: session.id.clone(),
         engine_id: cloud.engine_id.into(),
@@ -2222,6 +2298,26 @@ fn apply_configured_cleanup(
         transcript.segments.clear();
     }
     Ok(())
+}
+
+/// Whisper-family decoders commonly close one- or two-word field fragments
+/// with a full stop. Those are labels, names, and short replies far more often
+/// than complete prose. Keep all other punctuation and every longer sentence.
+fn trim_short_fragment_period(transcript: &mut TranscriptResult) {
+    let trimmed = transcript.text.trim_end();
+    if !trimmed.ends_with('.')
+        || trimmed[..trimmed.len() - 1]
+            .chars()
+            .any(|character| matches!(character, '.' | '!' | '?' | '\n'))
+    {
+        return;
+    }
+    let phrase = &trimmed[..trimmed.len() - 1];
+    if phrase.split_whitespace().count() > 2 || phrase.trim().is_empty() {
+        return;
+    }
+    transcript.text = phrase.trim_end().to_owned();
+    transcript.segments.clear();
 }
 
 fn claim_session_insertion(
@@ -3318,7 +3414,7 @@ mod tests {
         let settings_path = directory.path().join("settings.json");
         let state = Arc::new(AppState::load(settings_path.clone()).unwrap());
         let model = resolve_curated_whisper_model("whisper-tiny-multilingual-f16").unwrap();
-        let position = HudCoordinates { x: -420, y: 96 };
+        let position = crate::domain::HudPosition::BottomLeft;
 
         let (model_has_gate_tx, model_has_gate_rx) = mpsc::channel();
         let (release_model_tx, release_model_rx) = mpsc::channel();
@@ -3359,7 +3455,8 @@ mod tests {
             current.transcription_engine.model,
             "whisper-tiny-multilingual-f16"
         );
-        assert_eq!(current.hud.custom_position, Some(position));
+        assert_eq!(current.hud.position, position);
+        assert_eq!(current.hud.custom_position, None);
         assert_eq!(activated.transcription_engine, current.transcription_engine);
 
         let reloaded = AppState::load(settings_path).unwrap();
@@ -3404,6 +3501,36 @@ mod tests {
 
         assert_eq!(transcript.text, "this is ready.");
         assert!(transcript.segments.is_empty());
+    }
+
+    #[test]
+    fn short_field_fragments_drop_only_an_invented_terminal_period() {
+        let mut fragment = TranscriptResult {
+            text: "Project Atlas.".into(),
+            segments: vec![crate::engines::TranscriptSegment {
+                text: "Project Atlas.".into(),
+                start_ms: 0,
+                end_ms: 300,
+                language: Some("en".into()),
+                confidence: None,
+            }],
+            detected_language: Some("en".into()),
+            confidence: None,
+            is_final: true,
+        };
+        trim_short_fragment_period(&mut fragment);
+        assert_eq!(fragment.text, "Project Atlas");
+        assert!(fragment.segments.is_empty());
+
+        let mut sentence = TranscriptResult {
+            text: "Please send the project notes.".into(),
+            segments: Vec::new(),
+            detected_language: Some("en".into()),
+            confidence: None,
+            is_final: true,
+        };
+        trim_short_fragment_period(&mut sentence);
+        assert_eq!(sentence.text, "Please send the project notes.");
     }
 
     #[test]

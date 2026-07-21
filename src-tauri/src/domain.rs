@@ -10,7 +10,8 @@ pub(crate) const LEGACY_SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub(crate) const OPTION_DEFAULT_SETTINGS_SCHEMA_VERSION: u32 = 2;
 pub(crate) const MULTILINGUAL_SETTINGS_SCHEMA_VERSION: u32 = 3;
 pub(crate) const TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION: u32 = 4;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub(crate) const FREEFORM_HUD_SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 6;
 #[cfg(target_os = "macos")]
 pub const DEFAULT_PUSH_TO_TALK_SHORTCUT: &str = "Option";
 #[cfg(not(target_os = "macos"))]
@@ -253,6 +254,7 @@ impl AppSettings {
                 }
                 self.hud.visible = true;
                 self.migrate_implicit_hud_position();
+                self.migrate_compact_hud();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
@@ -263,17 +265,25 @@ impl AppSettings {
                 }
                 self.hud.visible = true;
                 self.migrate_implicit_hud_position();
+                self.migrate_compact_hud();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
             MULTILINGUAL_SETTINGS_SCHEMA_VERSION => {
                 self.hud.visible = true;
                 self.migrate_implicit_hud_position();
+                self.migrate_compact_hud();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
             TRANSIENT_HUD_SETTINGS_SCHEMA_VERSION => {
                 self.migrate_implicit_hud_position();
+                self.migrate_compact_hud();
+                self.schema_version = SETTINGS_SCHEMA_VERSION;
+                true
+            }
+            FREEFORM_HUD_SETTINGS_SCHEMA_VERSION => {
+                self.migrate_compact_hud();
                 self.schema_version = SETTINGS_SCHEMA_VERSION;
                 true
             }
@@ -285,6 +295,11 @@ impl AppSettings {
         if self.hud.custom_position.is_none() && self.hud.position == HudPosition::BottomCenter {
             self.hud.position = HudPosition::BottomRight;
         }
+    }
+
+    fn migrate_compact_hud(&mut self) {
+        self.hud.presentation = HudPresentation::Compact;
+        self.hud.custom_position = None;
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -609,7 +624,27 @@ mod tests {
         };
         assert!(dragged.migrate_legacy_schema());
         assert_eq!(dragged.hud.position, HudPosition::BottomCenter);
-        assert_eq!(dragged.hud.custom_position, Some(dragged_position));
+        assert_eq!(dragged.hud.custom_position, None);
+    }
+
+    #[test]
+    fn schema_v5_retires_expanded_and_freeform_widget_positions() {
+        let mut previous = AppSettings {
+            schema_version: FREEFORM_HUD_SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                position: HudPosition::BottomLeft,
+                presentation: HudPresentation::Expanded,
+                custom_position: Some(HudCoordinates { x: 400, y: 300 }),
+                visible: true,
+            },
+            ..AppSettings::default()
+        };
+
+        assert!(previous.migrate_legacy_schema());
+        assert_eq!(previous.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(previous.hud.position, HudPosition::BottomLeft);
+        assert_eq!(previous.hud.presentation, HudPresentation::Compact);
+        assert_eq!(previous.hud.custom_position, None);
     }
 
     #[test]

@@ -28,8 +28,10 @@ pub const HUD_WINDOW_LABEL: &str = "hud";
 // hit target over the app beneath it.
 const EXPANDED_HUD_WIDTH: f64 = 336.0;
 const EXPANDED_HUD_HEIGHT: f64 = 96.0;
-const COMPACT_HUD_WIDTH: f64 = 48.0;
-const COMPACT_HUD_HEIGHT: f64 = 110.0;
+const COMPACT_HUD_WIDTH: f64 = 38.0;
+const COMPACT_HUD_HEIGHT: f64 = 76.0;
+const HOVERED_HUD_WIDTH: f64 = 248.0;
+const HOVERED_HUD_HEIGHT: f64 = 132.0;
 const HUD_MARGIN: f64 = 24.0;
 #[cfg(target_os = "macos")]
 const PANEL_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
@@ -518,6 +520,44 @@ pub fn apply<R: Runtime>(app: &AppHandle<R>, settings: &HudSettings) -> Result<(
     Ok(())
 }
 
+/// Temporarily makes room for the compact widget's controls without changing
+/// its persisted presentation. Returning to idle restores the tiny hit area.
+pub fn set_hovered<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &HudSettings,
+    hovered: bool,
+) -> Result<(), String> {
+    let (width, height) = if hovered {
+        (HOVERED_HUD_WIDTH, HOVERED_HUD_HEIGHT)
+    } else {
+        logical_dimensions(HudPresentation::Compact)
+    };
+    let window = app
+        .get_webview_window(HUD_WINDOW_LABEL)
+        .ok_or_else(|| "dictation HUD is not available".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let resized_as_panel = with_native_panel_on_main_thread(app, "resize", move |panel| {
+        panel.set_content_size(width, height);
+        Ok(())
+    })?;
+    #[cfg(not(target_os = "macos"))]
+    let resized_as_panel = false;
+
+    if !resized_as_panel {
+        window
+            .set_size(LogicalSize::new(width, height))
+            .map_err(|error| format!("could not resize dictation HUD: {error}"))?;
+    }
+
+    if let Some(position) = position_for_dimensions(app, settings.position, width, height)? {
+        window
+            .set_position(position)
+            .map_err(|error| format!("could not position dictation HUD: {error}"))?;
+    }
+    Ok(())
+}
+
 fn reposition_native<R: Runtime>(
     app: &AppHandle<R>,
     settings: &HudSettings,
@@ -785,6 +825,36 @@ pub fn current_position<R: Runtime>(app: &AppHandle<R>) -> Result<HudCoordinates
         .map_err(|error| format!("could not read dictation HUD position: {error}"))
 }
 
+/// Resolves a free window drag to the nearest one of Spick's three docks.
+pub fn nearest_preset<R: Runtime>(
+    app: &AppHandle<R>,
+    position: HudCoordinates,
+) -> Result<HudPosition, String> {
+    let monitors = app
+        .available_monitors()
+        .map_err(|error| format!("could not inspect available monitors: {error}"))?;
+    let geometries = monitors
+        .iter()
+        .map(MonitorGeometry::from)
+        .collect::<Vec<_>>();
+    let monitor = closest_monitor(position, &geometries)
+        .ok_or_else(|| "no display is available for the dictation HUD".to_string())?;
+    let dimensions = physical_dimensions(HudPresentation::Compact, monitor.scale_factor);
+    [
+        HudPosition::BottomLeft,
+        HudPosition::BottomCenter,
+        HudPosition::BottomRight,
+    ]
+    .into_iter()
+    .min_by_key(|preset| {
+        let (x, y) = preset_coordinates_for_dimensions(monitor, *preset, dimensions);
+        let dx = i64::from(position.x) - i64::from(x);
+        let dy = i64::from(position.y) - i64::from(y);
+        dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+    })
+    .ok_or_else(|| "no dictation HUD dock is available".to_string())
+}
+
 fn position_for_settings<R: Runtime>(
     app: &AppHandle<R>,
     settings: &HudSettings,
@@ -831,6 +901,37 @@ fn position_for_settings<R: Runtime>(
     };
 
     let (x, y) = preset_coordinates(monitor, settings.presentation, settings.position);
+    Ok(Some(PhysicalPosition::new(x, y)))
+}
+
+fn position_for_dimensions<R: Runtime>(
+    app: &AppHandle<R>,
+    preferred_position: HudPosition,
+    logical_width: f64,
+    logical_height: f64,
+) -> Result<Option<PhysicalPosition<i32>>, String> {
+    let monitors = app
+        .available_monitors()
+        .map_err(|error| format!("could not inspect available monitors: {error}"))?;
+    let geometries = monitors
+        .iter()
+        .map(MonitorGeometry::from)
+        .collect::<Vec<_>>();
+    let anchor = current_position(app).unwrap_or(HudCoordinates { x: 0, y: 0 });
+    let monitor = closest_monitor(anchor, &geometries).or_else(|| geometries.first().copied());
+    let Some(monitor) = monitor else {
+        return Ok(None);
+    };
+    let scale = if monitor.scale_factor.is_finite() && monitor.scale_factor > 0.0 {
+        monitor.scale_factor
+    } else {
+        1.0
+    };
+    let dimensions = (
+        (logical_width * scale).round().max(1.0) as u32,
+        (logical_height * scale).round().max(1.0) as u32,
+    );
+    let (x, y) = preset_coordinates_for_dimensions(monitor, preferred_position, dimensions);
     Ok(Some(PhysicalPosition::new(x, y)))
 }
 
@@ -961,11 +1062,20 @@ fn preset_coordinates(
     presentation: HudPresentation,
     preferred_position: HudPosition,
 ) -> (i32, i32) {
+    let dimensions = physical_dimensions(presentation, monitor.scale_factor);
+    preset_coordinates_for_dimensions(monitor, preferred_position, dimensions)
+}
+
+fn preset_coordinates_for_dimensions(
+    monitor: MonitorGeometry,
+    preferred_position: HudPosition,
+    dimensions: (u32, u32),
+) -> (i32, i32) {
     let work_x = f64::from(monitor.work_x);
     let work_y = f64::from(monitor.work_y);
     let work_width = f64::from(monitor.work_width);
     let work_height = f64::from(monitor.work_height);
-    let (hud_width, hud_height) = physical_dimensions(presentation, monitor.scale_factor);
+    let (hud_width, hud_height) = dimensions;
     let hud_width = f64::from(hud_width);
     let hud_height = f64::from(hud_height);
     let margin = HUD_MARGIN * monitor.scale_factor;
@@ -974,7 +1084,12 @@ fn preset_coordinates(
         HudPosition::BottomCenter => work_x + (work_width - hud_width) / 2.0,
         HudPosition::BottomRight => work_x + work_width - hud_width - margin,
     };
-    let y = work_y + work_height - hud_height - margin;
+    let y = match preferred_position {
+        HudPosition::BottomLeft | HudPosition::BottomRight => {
+            work_y + (work_height - hud_height) / 2.0
+        }
+        HudPosition::BottomCenter => work_y + work_height - hud_height - margin,
+    };
     (x.round() as i32, y.round() as i32)
 }
 
@@ -1179,7 +1294,7 @@ mod tests {
                 HudPresentation::Expanded,
                 HudPosition::BottomRight,
             ),
-            (-360, 960)
+            (-360, 492)
         );
     }
 
@@ -1191,7 +1306,7 @@ mod tests {
                 HudPresentation::Expanded,
                 HudPosition::BottomRight,
             ),
-            (6000, 1920)
+            (6000, 984)
         );
     }
 
@@ -1203,7 +1318,7 @@ mod tests {
                 HudPresentation::Compact,
                 HudPosition::BottomRight,
             ),
-            (1368, 766)
+            (1378, 424)
         );
     }
 
@@ -1262,7 +1377,7 @@ mod tests {
                 HudPresentation::Compact,
                 &screens,
             ),
-            Some(HudCoordinates { x: 2928, y: 1744 })
+            Some(HudCoordinates { x: 2948, y: 1812 })
         );
     }
 
@@ -1302,7 +1417,7 @@ mod tests {
     fn invalid_scale_factors_use_one_for_safe_geometry() {
         assert_eq!(
             physical_dimensions(HudPresentation::Compact, f64::NAN),
-            (48, 110)
+            (38, 76)
         );
         assert_eq!(
             physical_dimensions(HudPresentation::Expanded, 0.0),
