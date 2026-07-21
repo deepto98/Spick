@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   markReady: vi.fn(),
   setPresentation: vi.fn(),
+  setHovered: vi.fn(),
   startDrag: vi.fn(),
 }));
 
@@ -15,6 +16,7 @@ vi.mock("../lib/nativeHud", () => ({
   getHudSettings: mocks.getSettings,
   markHudRendererReady: mocks.markReady,
   setHudPresentation: mocks.setPresentation,
+  setHudHovered: mocks.setHovered,
   startHudDrag: mocks.startDrag,
 }));
 
@@ -39,6 +41,8 @@ describe("HUD renderer hydration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.markReady.mockResolvedValue(undefined);
+    mocks.setHovered.mockResolvedValue(undefined);
+    mocks.startDrag.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -108,5 +112,38 @@ describe("HUD renderer hydration", () => {
     await waitFor(() => expect(result.current.compact).toBe(true));
     await waitFor(() => expect(mocks.markReady).toHaveBeenCalled());
     expect(result.current.error).toBeNull();
+  });
+
+  it("lets a quick drag win over hover expansion", async () => {
+    vi.useFakeTimers();
+    mocks.getSettings.mockResolvedValue(compactSettings);
+    const drag = deferred<void>();
+    mocks.startDrag.mockReturnValue(drag.promise);
+
+    const { result } = renderHook(() => useHudWindow(true));
+    await act(async () => Promise.resolve());
+
+    act(() => result.current.setHovered(true));
+    act(() => result.current.beginDrag());
+    await act(async () => vi.advanceTimersByTimeAsync(160));
+
+    expect(mocks.setHovered).not.toHaveBeenCalled();
+    act(() => result.current.setHovered(false));
+    await act(async () => drag.resolve());
+    expect(mocks.setHovered).toHaveBeenLastCalledWith(false);
+  });
+
+  it("expands only after a deliberate hover", async () => {
+    vi.useFakeTimers();
+    mocks.getSettings.mockResolvedValue(compactSettings);
+    const { result } = renderHook(() => useHudWindow(true));
+    await act(async () => Promise.resolve());
+
+    act(() => result.current.setHovered(true));
+    await act(async () => vi.advanceTimersByTimeAsync(159));
+    expect(mocks.setHovered).not.toHaveBeenCalled();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.setHovered).toHaveBeenCalledWith(true);
   });
 });

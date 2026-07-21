@@ -1608,7 +1608,6 @@ p {
   background: rgba(33, 31, 27, 0.96);
   border: 1px solid rgba(255, 244, 227, 0.14);
   border-radius: 12px;
-  box-shadow: 0 8px 22px rgba(31, 28, 23, 0.22);
   transition:
     width 150ms ease,
     height 150ms ease,
@@ -1649,7 +1648,6 @@ p {
   background: rgba(36, 33, 28, 0.98);
   border: 1px solid rgba(255, 244, 227, 0.14);
   border-radius: 14px;
-  box-shadow: 0 14px 34px rgba(25, 22, 17, 0.28);
   transform: translateY(3px);
   transition:
     opacity 120ms ease,

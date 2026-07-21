@@ -40,9 +40,9 @@ const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: usize = 1;
 #[cfg(target_os = "macos")]
 const DOCK_GUIDE_EDGE_INSET: f64 = 14.0;
 #[cfg(target_os = "macos")]
-const DOCK_GUIDE_THICKNESS: f64 = 18.0;
+const DOCK_GUIDE_THICKNESS: f64 = 26.0;
 #[cfg(target_os = "macos")]
-const DOCK_GUIDE_LENGTH: f64 = 144.0;
+const DOCK_GUIDE_LENGTH: f64 = 196.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingHudShow {
@@ -771,21 +771,14 @@ pub fn start_drag<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
                     tauri_nspanel::objc2::class!(NSApplication),
                     sharedApplication
                 ];
-                let event: *mut tauri_nspanel::AnyObject =
+                let current_event: *mut tauri_nspanel::AnyObject =
                     tauri_nspanel::objc2::msg_send![application, currentEvent];
-                if event.is_null() {
-                    return Err(
-                        "macOS did not provide the mouse event needed to move the HUD".into(),
-                    );
-                }
-                let event_type: usize = tauri_nspanel::objc2::msg_send![event, type];
-                let event_window_number: isize =
-                    tauri_nspanel::objc2::msg_send![event, windowNumber];
                 let panel_window_number: isize =
                     tauri_nspanel::objc2::msg_send![panel.as_panel(), windowNumber];
-                if !is_native_drag_event(event_type, event_window_number, panel_window_number) {
+                let event = native_drag_event(current_event, panel_window_number)?;
+                if event.is_null() {
                     return Err(
-                        "macOS did not report a left-button press on the HUD for this drag".into(),
+                        "macOS could not create the mouse event needed to move the HUD".into(),
                     );
                 }
                 let dock_guides = create_dock_guides(panel.as_panel())?;
@@ -855,7 +848,7 @@ unsafe fn create_dock_guides(
         colorWithSRGBRed: 0.72_f64,
         green: 0.29_f64,
         blue: 0.16_f64,
-        alpha: 0.28_f64
+        alpha: 0.38_f64
     ];
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| "dock guides must be created on the macOS main thread".to_string())?;
@@ -872,7 +865,7 @@ unsafe fn create_dock_guides(
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, setOpaque: false];
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, setBackgroundColor: &*color];
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, setIgnoresMouseEvents: true];
-        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setHasShadow: true];
+        let _: () = tauri_nspanel::objc2::msg_send![&*guide, setHasShadow: false];
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, setLevel: 5_isize];
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, setCollectionBehavior: 257_usize];
         let _: () = tauri_nspanel::objc2::msg_send![&*guide, orderFrontRegardless];
@@ -901,6 +894,59 @@ fn is_native_drag_event(
         && event_window_number == panel_window_number
 }
 
+/// Returns the actual left-down event when AppKit still exposes it, or creates
+/// an equivalent panel-local event while the primary button remains held. IPC
+/// can reach Rust after `currentEvent` has already advanced to mouse-moved;
+/// rejecting that normal transition made dragging intermittent.
+#[cfg(target_os = "macos")]
+unsafe fn native_drag_event(
+    current_event: *mut tauri_nspanel::AnyObject,
+    panel_window_number: isize,
+) -> Result<*mut tauri_nspanel::AnyObject, String> {
+    if panel_window_number <= 0 {
+        return Err("macOS did not report a window number for the HUD".into());
+    }
+    if !current_event.is_null() {
+        let event_type: usize = tauri_nspanel::objc2::msg_send![current_event, type];
+        let event_window_number: isize =
+            tauri_nspanel::objc2::msg_send![current_event, windowNumber];
+        if is_native_drag_event(event_type, event_window_number, panel_window_number) {
+            return Ok(current_event);
+        }
+    }
+
+    let pressed_buttons: usize =
+        tauri_nspanel::objc2::msg_send![tauri_nspanel::objc2::class!(NSEvent), pressedMouseButtons];
+    if pressed_buttons & 1 == 0 {
+        return Err("the mouse button was released before the HUD drag began".into());
+    }
+
+    use tauri_nspanel::NSPoint;
+    let mouse_location: NSPoint =
+        tauri_nspanel::objc2::msg_send![tauri_nspanel::objc2::class!(NSEvent), mouseLocation];
+    let (modifier_flags, timestamp) = if current_event.is_null() {
+        (0_usize, 0_f64)
+    } else {
+        (
+            tauri_nspanel::objc2::msg_send![current_event, modifierFlags],
+            tauri_nspanel::objc2::msg_send![current_event, timestamp],
+        )
+    };
+    let event: *mut tauri_nspanel::AnyObject = tauri_nspanel::objc2::msg_send![
+        tauri_nspanel::objc2::class!(NSEvent),
+        mouseEventWithType: NS_EVENT_TYPE_LEFT_MOUSE_DOWN,
+        location: mouse_location,
+        modifierFlags: modifier_flags,
+        timestamp: timestamp,
+        windowNumber: panel_window_number,
+        context: std::ptr::null_mut::<tauri_nspanel::AnyObject>(),
+        eventNumber: 0_isize,
+        clickCount: 1_isize,
+        pressure: 1.0_f64
+    ];
+    Ok(event)
+}
+
 /// Returns the HUD's current physical top-left coordinate for persistence.
 pub fn current_position<R: Runtime>(app: &AppHandle<R>) -> Result<HudCoordinates, String> {
     let window = app
@@ -927,9 +973,30 @@ pub fn nearest_preset<R: Runtime>(
         .iter()
         .map(MonitorGeometry::from)
         .collect::<Vec<_>>();
-    let monitor = closest_monitor(position, &geometries)
+    let anchor = app
+        .cursor_position()
+        .ok()
+        .map(|cursor| HudCoordinates {
+            x: cursor
+                .x
+                .round()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+            y: cursor
+                .y
+                .round()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+        })
+        .unwrap_or(position);
+    let monitor = closest_monitor(anchor, &geometries)
         .ok_or_else(|| "no display is available for the dictation HUD".to_string())?;
-    let dimensions = physical_dimensions(HudPresentation::Compact, monitor.scale_factor);
+    nearest_preset_for_anchor(anchor, monitor)
+        .ok_or_else(|| "no dictation HUD dock is available".to_string())
+}
+
+fn nearest_preset_for_anchor(
+    anchor: HudCoordinates,
+    monitor: MonitorGeometry,
+) -> Option<HudPosition> {
     [
         HudPosition::BottomLeft,
         HudPosition::BottomCenter,
@@ -937,12 +1004,28 @@ pub fn nearest_preset<R: Runtime>(
     ]
     .into_iter()
     .min_by_key(|preset| {
-        let (x, y) = preset_coordinates_for_dimensions(monitor, *preset, dimensions);
-        let dx = i64::from(position.x) - i64::from(x);
-        let dy = i64::from(position.y) - i64::from(y);
+        let target = preset_anchor(monitor, *preset);
+        let dx = i64::from(anchor.x) - i64::from(target.x);
+        let dy = i64::from(anchor.y) - i64::from(target.y);
         dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
     })
-    .ok_or_else(|| "no dictation HUD dock is available".to_string())
+}
+
+fn preset_anchor(monitor: MonitorGeometry, preset: HudPosition) -> HudCoordinates {
+    let work_left = i64::from(monitor.work_x);
+    let work_top = i64::from(monitor.work_y);
+    let work_right = work_left + i64::from(monitor.work_width);
+    let work_bottom = work_top + i64::from(monitor.work_height);
+    let margin = (HUD_MARGIN * monitor.scale_factor).round() as i64;
+    let (x, y) = match preset {
+        HudPosition::BottomLeft => (work_left + margin, (work_top + work_bottom) / 2),
+        HudPosition::BottomRight => (work_right - margin, (work_top + work_bottom) / 2),
+        HudPosition::BottomCenter => ((work_left + work_right) / 2, work_bottom - margin),
+    };
+    HudCoordinates {
+        x: clamp_i64_to_i32(x),
+        y: clamp_i64_to_i32(y),
+    }
 }
 
 fn position_for_settings<R: Runtime>(
@@ -1362,6 +1445,23 @@ mod tests {
         assert!(!is_native_drag_event(2, 42, 42));
         assert!(!is_native_drag_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN, 41, 42));
         assert!(!is_native_drag_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN, 0, 0));
+    }
+
+    #[test]
+    fn pointer_near_each_guide_selects_that_dock() {
+        let screen = monitor((0, 0, 1440, 900), (0, 24, 1440, 876), 1.0);
+        assert_eq!(
+            nearest_preset_for_anchor(HudCoordinates { x: 12, y: 450 }, screen),
+            Some(HudPosition::BottomLeft)
+        );
+        assert_eq!(
+            nearest_preset_for_anchor(HudCoordinates { x: 1428, y: 450 }, screen),
+            Some(HudPosition::BottomRight)
+        );
+        assert_eq!(
+            nearest_preset_for_anchor(HudCoordinates { x: 720, y: 892 }, screen),
+            Some(HudPosition::BottomCenter)
+        );
     }
 
     #[test]

@@ -20,6 +20,9 @@ export function useHudWindow(enabled: boolean) {
   const [error, setError] = useState<string | null>(null);
   const rendererReadySent = useRef(false);
   const rendererReadyAttempt = useRef(0);
+  const dragging = useRef(false);
+  const hovered = useRef(false);
+  const hoverTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -90,22 +93,64 @@ export function useHudWindow(enabled: boolean) {
     }
   }, [enabled, pending, settings?.presentation]);
 
+  const resizeForHover = useCallback((next: boolean) => {
+    void setHudHovered(next).catch((reason) => {
+      setError(`Couldn’t resize the HUD controls: ${String(reason)}`);
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (hoverTimer.current !== null) {
+        window.clearTimeout(hoverTimer.current);
+      }
+    },
+    [],
+  );
+
   const beginDrag = useCallback(() => {
     if (!enabled) return;
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    dragging.current = true;
     setError(null);
-    void startHudDrag().catch((reason) => {
-      setError(`Couldn’t move the HUD: ${String(reason)}`);
-    });
-  }, [enabled]);
+    void startHudDrag()
+      .catch((reason) => {
+        setError(`Couldn’t move the HUD: ${String(reason)}`);
+      })
+      .finally(() => {
+        dragging.current = false;
+        resizeForHover(hovered.current);
+      });
+  }, [enabled, resizeForHover]);
 
   const setHovered = useCallback(
-    (hovered: boolean) => {
+    (nextHovered: boolean) => {
       if (!enabled) return;
-      void setHudHovered(hovered).catch((reason) => {
-        setError(`Couldn’t resize the HUD controls: ${String(reason)}`);
-      });
+      hovered.current = nextHovered;
+      if (hoverTimer.current !== null) {
+        window.clearTimeout(hoverTimer.current);
+        hoverTimer.current = null;
+      }
+      // A pointer leave commonly fires while AppKit owns the synchronous drag
+      // loop. Remember it, but never resize or reposition the panel mid-drag.
+      // That race was the source of the HUD jumping away from the pointer.
+      if (dragging.current) return;
+
+      if (!nextHovered) {
+        resizeForHover(false);
+        return;
+      }
+
+      // Give a quick drag first refusal before expanding the native window.
+      hoverTimer.current = window.setTimeout(() => {
+        hoverTimer.current = null;
+        if (!dragging.current && hovered.current) resizeForHover(true);
+      }, 160);
     },
-    [enabled],
+    [enabled, resizeForHover],
   );
 
   return {
