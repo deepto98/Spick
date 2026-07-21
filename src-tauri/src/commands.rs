@@ -673,6 +673,17 @@ pub fn start_dictation_session(
 }
 
 #[tauri::command]
+pub fn set_onboarding_practice_mode(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    require_main_window(&window)?;
+    state.onboarding_practice.store(enabled, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn stop_dictation_session(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1291,6 +1302,12 @@ pub(crate) fn start_session<R: Runtime>(
         startup_latency.mark_target_capture_returned();
         match capture {
             Ok(target) => Some(target),
+            Err(error)
+                if error.kind == TextTargetErrorKind::OwnApplication
+                    && state.onboarding_practice.load(Ordering::Acquire) =>
+            {
+                None
+            }
             Err(error) => {
                 return fail_target_preflight(app, state, trigger, error, startup_latency)
             }

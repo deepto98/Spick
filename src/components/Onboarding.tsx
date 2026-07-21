@@ -17,7 +17,8 @@ import {
 import type { AccessibilityPermissionStatus } from "../lib/nativeAccessibility";
 import type { NativeShortcutStatus } from "../lib/nativeShortcut";
 import type { MicrophonePermissionStatus } from "../lib/nativeMicrophone";
-import type { AppSettings, TranscriptionSource } from "../types";
+import type { NativeDictationTranscript } from "../lib/nativeDictation";
+import type { AppSettings, HudState, TranscriptionSource } from "../types";
 import { DictationHud } from "./DictationHud";
 import {
   shortcutDisplayName,
@@ -44,6 +45,9 @@ interface OnboardingProps {
   engineName?: string | null;
   engineReady: boolean;
   engineChecking?: boolean;
+  practiceDictationState: HudState;
+  practiceTranscript: NativeDictationTranscript | null;
+  practiceError?: string;
   onRequestAccessibility: () => void;
   onRefreshAccessibility: () => void;
   onRequestMicrophone: () => void;
@@ -53,6 +57,7 @@ interface OnboardingProps {
   onRetrySettings: () => void;
   onSettingsChange: (settings: AppSettings) => void;
   onFinalStep: () => void;
+  onPracticeModeChange: (enabled: boolean) => void;
   onComplete: () => void;
 }
 
@@ -88,6 +93,9 @@ export function Onboarding({
   engineName,
   engineReady,
   engineChecking = false,
+  practiceDictationState,
+  practiceTranscript,
+  practiceError,
   onRequestAccessibility,
   onRefreshAccessibility,
   onRequestMicrophone,
@@ -97,6 +105,7 @@ export function Onboarding({
   onRetrySettings,
   onSettingsChange,
   onFinalStep,
+  onPracticeModeChange,
   onComplete,
 }: OnboardingProps) {
   const [step, setStep] = useState(0);
@@ -104,12 +113,38 @@ export function Onboarding({
     useState<ShortcutPracticeState>("idle");
   const shortcutPracticeRef = useRef<ShortcutPracticeState>("idle");
   const finalStepAnnounced = useRef(false);
+  const practiceSeenSession = useRef<string | null>(null);
+  const [practiceText, setPracticeText] = useState("");
 
   useEffect(() => {
     if (step !== 3 || finalStepAnnounced.current) return;
     finalStepAnnounced.current = true;
+    practiceSeenSession.current = practiceTranscript?.sessionId ?? null;
     onFinalStep();
-  }, [onFinalStep, step]);
+  }, [onFinalStep, practiceTranscript?.sessionId, step]);
+
+  useEffect(() => {
+    const enabled = step === 3;
+    onPracticeModeChange(enabled);
+    return () => {
+      if (enabled) onPracticeModeChange(false);
+    };
+  }, [onPracticeModeChange, step]);
+
+  useEffect(() => {
+    if (
+      step !== 3 ||
+      !practiceTranscript ||
+      practiceTranscript.sessionId === practiceSeenSession.current
+    ) {
+      return;
+    }
+    practiceSeenSession.current = practiceTranscript.sessionId;
+    setPracticeText((current) => {
+      const separator = current.trim() ? " " : "";
+      return `${current.trimEnd()}${separator}${practiceTranscript.transcript.text}`;
+    });
+  }, [practiceTranscript, step]);
 
   const accessibilityReady =
     accessibilityStatus?.state === "granted" ||
@@ -681,6 +716,24 @@ export function Onboarding({
                 <span>{shortcutPracticeHelp}</span>
               </div>
             </div>
+            <label className="shortcut-practice-textbox">
+              <span>Try speaking into this note</span>
+              <textarea
+                value={practiceText}
+                onChange={(event) => setPracticeText(event.target.value)}
+                placeholder="Put your cursor here, then tap or hold Option and speak…"
+                rows={3}
+              />
+              <small>
+                {practiceError
+                  ? practiceError
+                  : practiceDictationState === "processing"
+                    ? "Turning that into text…"
+                    : practiceDictationState === "listening"
+                      ? "Listening — speak naturally."
+                      : "Your transcription will appear here."}
+              </small>
+            </label>
             <div className="ready-summary">
               <span>
                 <Check size={14} />

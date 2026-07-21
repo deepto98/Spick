@@ -42,6 +42,8 @@ function renderPractice(
       transcriptionSource="local"
       engineName="Whisper Small"
       engineReady
+      practiceDictationState="idle"
+      practiceTranscript={null}
       onRequestAccessibility={vi.fn()}
       onRefreshAccessibility={vi.fn()}
       onRequestMicrophone={vi.fn()}
@@ -51,6 +53,7 @@ function renderPractice(
       onRetrySettings={vi.fn()}
       onSettingsChange={vi.fn()}
       onFinalStep={vi.fn()}
+      onPracticeModeChange={vi.fn()}
       onComplete={vi.fn()}
     />,
   );
@@ -208,6 +211,8 @@ describe("onboarding shortcut practice", () => {
         transcriptionSource="local"
         engineName="Whisper Small"
         engineReady
+        practiceDictationState="idle"
+        practiceTranscript={null}
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
         onRequestMicrophone={vi.fn()}
@@ -217,6 +222,7 @@ describe("onboarding shortcut practice", () => {
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
         onFinalStep={vi.fn()}
+        onPracticeModeChange={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -250,6 +256,8 @@ describe("onboarding shortcut practice", () => {
         transcriptionSource="local"
         engineName="Whisper Small"
         engineReady
+        practiceDictationState="idle"
+        practiceTranscript={null}
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
         onRequestMicrophone={onRequestMicrophone}
@@ -259,6 +267,7 @@ describe("onboarding shortcut practice", () => {
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
         onFinalStep={vi.fn()}
+        onPracticeModeChange={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -290,6 +299,8 @@ describe("onboarding shortcut practice", () => {
         transcriptionSource="cloud"
         engineName="GPT-4o Transcribe"
         engineReady
+        practiceDictationState="idle"
+        practiceTranscript={null}
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
         onRequestMicrophone={vi.fn()}
@@ -299,6 +310,7 @@ describe("onboarding shortcut practice", () => {
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
         onFinalStep={vi.fn()}
+        onPracticeModeChange={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -336,6 +348,8 @@ describe("onboarding shortcut practice", () => {
         transcriptionSource="local"
         engineName="Whisper Small"
         engineReady
+        practiceDictationState="idle"
+        practiceTranscript={null}
         onRequestAccessibility={vi.fn()}
         onRefreshAccessibility={vi.fn()}
         onRequestMicrophone={vi.fn()}
@@ -345,6 +359,7 @@ describe("onboarding shortcut practice", () => {
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
         onFinalStep={vi.fn()}
+        onPracticeModeChange={vi.fn()}
         onComplete={vi.fn()}
       />,
     );

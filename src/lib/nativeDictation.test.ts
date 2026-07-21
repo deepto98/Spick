@@ -6,6 +6,7 @@ import {
   DICTATION_LATENCY_EVENT,
   getLastDictationLatency,
   isValidDictationLatencyEvent,
+  setOnboardingPracticeMode,
   startDictationSession,
   subscribeToDictationLatency,
   toHudState,
@@ -67,6 +68,16 @@ describe("native dictation state mapping", () => {
     await startDictationSession();
 
     expect(invoke).toHaveBeenCalledWith("start_dictation_session");
+  });
+
+  it("scopes onboarding practice to an explicit native mode", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await setOnboardingPracticeMode(true);
+
+    expect(invoke).toHaveBeenCalledWith("set_onboarding_practice_mode", {
+      enabled: true,
+    });
   });
 
   it("forwards privacy-safe latency events from the native listener", async () => {

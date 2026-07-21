@@ -216,6 +216,62 @@ impl ModelStore {
         })
     }
 
+    /// Seeds an integrity-pinned curated model shipped inside the application
+    /// bundle into the normal writable model store. Existing verified copies
+    /// win, so subsequent launches do not rewrite or re-hash the weight file.
+    pub fn seed_bundled_model(&self, model_id: &str, source: &Path) -> Result<(), String> {
+        let model = resolve_download_model(model_id)?;
+        let operation = self.operation_for(&model.id)?;
+        let _operation = try_model_operation(&operation, &model.display_name)?;
+        fs::create_dir_all(&self.root)
+            .map_err(|error| format!("could not create the local model directory: {error}"))?;
+
+        let target = self.path_for(&model);
+        if verify_file(&target, &model, None).is_ok() {
+            write_receipt(&self.receipt_path(&model), &model.sha256)?;
+            self.remember_verified(&model.id, file_fingerprint(&target)?)?;
+            return Ok(());
+        }
+
+        let metadata = fs::metadata(source)
+            .map_err(|error| format!("the bundled speech model is unavailable: {error}"))?;
+        if !metadata.is_file() || metadata.len() != model.download_bytes {
+            return Err("the bundled speech model has an unexpected size".into());
+        }
+        self.quarantine_invalid(&model)?;
+        preflight_model_storage(&self.root, model.download_bytes)?;
+        let mut input = File::open(source)
+            .map_err(|error| format!("the bundled speech model could not be opened: {error}"))?;
+        let mut temporary = TempFileBuilder::new()
+            .prefix(".spick-bundled-model-")
+            .suffix(".part")
+            .tempfile_in(&self.root)
+            .map_err(|error| format!("could not prepare the bundled speech model: {error}"))?;
+        copy_and_verify(
+            &mut input,
+            temporary.as_file_mut(),
+            model.download_bytes,
+            &model.sha256,
+            None,
+            |_| {},
+        )?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("could not finish the bundled speech model: {error}"))?;
+        temporary.persist(&target).map_err(|error| {
+            format!(
+                "could not install the bundled speech model: {}",
+                error.error
+            )
+        })?;
+        write_receipt(&self.receipt_path(&model), &model.sha256)?;
+        self.remember_verified(&model.id, file_fingerprint(&target)?)?;
+        self.remove_invalid_artifacts(&model)?;
+        sync_parent_directory(&self.root);
+        Ok(())
+    }
+
     pub fn verified_model_path(&self, model_id: &str) -> Result<PathBuf, String> {
         self.verified_model_path_with_cancellation(model_id, None)
     }

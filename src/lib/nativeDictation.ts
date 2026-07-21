@@ -223,6 +223,10 @@ export function startDictationSession() {
   return invoke<NativeDictationStateEvent>("start_dictation_session");
 }
 
+export function setOnboardingPracticeMode(enabled: boolean) {
+  return invoke<void>("set_onboarding_practice_mode", { enabled });
+}
+
 export function stopDictationSession() {
   return invoke<NativeDictationStateEvent>("stop_dictation_session");
 }

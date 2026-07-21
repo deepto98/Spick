@@ -115,6 +115,23 @@ pub fn run() {
             }
             let settings = state.settings_snapshot().map_err(setup_error)?;
 
+            if settings.transcription_engine.model == "whisper-tiny-multilingual-f16" {
+                let resource_dir = app.path().resource_dir()?;
+                let bundled_model = [
+                    resource_dir.join("resources/models/ggml-tiny.bin"),
+                    resource_dir.join("models/ggml-tiny.bin"),
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/models/ggml-tiny.bin"),
+                ]
+                .into_iter()
+                .find(|path| path.is_file())
+                .ok_or_else(|| setup_error("the bundled Whisper Tiny model is missing"))?;
+                state
+                    .models
+                    .seed_bundled_model("whisper-tiny-multilingual-f16", &bundled_model)
+                    .map_err(setup_error)?;
+            }
+
             if !app.manage(state) {
                 return Err(setup_error("application state was already initialized"));
             }
@@ -178,6 +195,7 @@ pub fn run() {
             commands::activate_local_model,
             commands::remove_local_model,
             commands::start_dictation_session,
+            commands::set_onboarding_practice_mode,
             commands::stop_dictation_session,
             commands::cancel_dictation_session,
             commands::get_platform_capabilities,

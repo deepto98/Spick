@@ -236,7 +236,7 @@ impl Default for AppSettings {
             language_policy: LanguagePolicy::Auto,
             transcription_engine: EngineConfig::local(
                 EngineProvider::WhisperCpp,
-                "whisper-small-multilingual-q5-1",
+                "whisper-tiny-multilingual-f16",
             ),
             // Cleanup changes a user's words, so it is an explicit opt-in.
             cleanup_engine: None,
@@ -455,7 +455,7 @@ mod tests {
         );
         assert_eq!(
             settings.transcription_engine.model,
-            "whisper-small-multilingual-q5-1"
+            "whisper-tiny-multilingual-f16"
         );
         assert_eq!(settings.cleanup_engine, None);
         assert_eq!(settings.input_device_name, None);

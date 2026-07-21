@@ -56,6 +56,9 @@ pub struct AppState {
     /// delayed worker from an older session from making a newer session's HUD
     /// interactive and stealing its captured text focus.
     pub hud_target_protection: Mutex<HudTargetProtection>,
+    /// Allows a first-run shortcut attempt while Spick itself owns focus.
+    /// It changes only target capture: audio and engine paths remain identical.
+    pub onboarding_practice: AtomicBool,
     transcripts: Mutex<TranscriptStore>,
     active_dictation_latency: Mutex<Option<StartupLatencyTrace>>,
     latest_dictation_latency: RwLock<Option<DictationLatencyEvent>>,
@@ -139,6 +142,7 @@ impl AppState {
             model_configuration: Mutex::new(()),
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),
+            onboarding_practice: AtomicBool::new(false),
             transcripts: Mutex::new(TranscriptStore::default()),
             active_dictation_latency: Mutex::new(None),
             latest_dictation_latency: RwLock::new(None),

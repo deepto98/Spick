@@ -42,6 +42,7 @@ import {
   type NativeAppSettings,
   type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
+import { setOnboardingPracticeMode } from "./lib/nativeDictation";
 import type { ClearLocalDataScope } from "./lib/nativeLocalData";
 import type { CloudProviderId } from "./lib/nativeCloud";
 import type { AppSettings, Engine, TranscriptionSource, ViewId } from "./types";
@@ -272,7 +273,7 @@ function App() {
                     : "Not downloaded yet",
           usable:
             model.state === "installed" || model.state === "needsVerification",
-          recommended: model.manifest.id === "whisper-small-multilingual-q5-1",
+          recommended: model.manifest.id === "whisper-tiny-multilingual-f16",
           origin: model.manifest.origin,
         };
       });
@@ -749,6 +750,14 @@ function App() {
     return result;
   };
 
+  const changeOnboardingPracticeMode = useCallback(
+    (enabled: boolean) => {
+      if (!dictation.native) return;
+      void setOnboardingPracticeMode(enabled).catch(() => undefined);
+    },
+    [dictation.native],
+  );
+
   if (hudOnly) {
     return (
       <div className="hud-window-surface">
@@ -793,6 +802,9 @@ function App() {
         engineName={selectedEngineName}
         engineReady={selectedEngineReady}
         engineChecking={selectedEngineChecking}
+        practiceDictationState={dictation.state}
+        practiceTranscript={dictation.lastTranscript}
+        practiceError={dictation.error ?? undefined}
         onRefreshAccessibility={() => void accessibility.refresh()}
         onRequestAccessibility={() => void accessibility.request()}
         onRefreshMicrophone={() => void microphonePermission.refresh()}
@@ -806,6 +818,7 @@ function App() {
             changeSettings({ ...settings, showWidget: true });
           }
         }}
+        onPracticeModeChange={changeOnboardingPracticeMode}
         onComplete={completeOnboarding}
       />
     );

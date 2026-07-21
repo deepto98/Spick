@@ -2189,6 +2189,43 @@ p {
   font-size: 9px;
 }
 
+.shortcut-practice-textbox {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.shortcut-practice-textbox > span {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shortcut-practice-textbox textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 12px 14px;
+  resize: vertical;
+  color: var(--ink);
+  font: 12px/1.55 var(--font-body);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+}
+
+.shortcut-practice-textbox textarea:focus {
+  border-color: #c78367;
+  box-shadow: 0 0 0 3px rgba(179, 84, 50, 0.1);
+}
+
+.shortcut-practice-textbox small {
+  min-height: 14px;
+  color: #756c61;
+  font-size: 9.5px;
+}
+
 .ready-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
