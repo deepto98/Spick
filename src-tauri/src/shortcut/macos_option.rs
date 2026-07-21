@@ -1,5 +1,4 @@
 use std::{
-    os::raw::c_int,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         mpsc::{self, SyncSender, TrySendError},
@@ -29,13 +28,9 @@ const LISTENER_STOPPED: u8 = 0;
 const LISTENER_ACTIVE: u8 = 1;
 const LISTENER_RECOVERING: u8 = 2;
 const KEY_WORDS: usize = 4;
-const IO_HID_REQUEST_TYPE_LISTEN_EVENT: c_int = 1;
-const IO_HID_ACCESS_TYPE_GRANTED: c_int = 0;
-const IO_HID_ACCESS_TYPE_DENIED: c_int = 1;
-
 extern "C" {
-    fn IOHIDCheckAccess(request_type: c_int) -> c_int;
-    fn IOHIDRequestAccess(request_type: c_int) -> bool;
+    fn CGPreflightListenEventAccess() -> bool;
+    fn CGRequestListenEventAccess() -> bool;
 }
 
 pub struct ListenerHandle {
@@ -65,24 +60,22 @@ impl Drop for ListenerHandle {
 }
 
 pub fn input_monitoring_access() -> InputMonitoringAccess {
-    input_monitoring_access_from_raw(unsafe { IOHIDCheckAccess(IO_HID_REQUEST_TYPE_LISTEN_EVENT) })
-}
-
-pub fn request_input_monitoring_access() -> InputMonitoringAccess {
-    // Unlike the CoreGraphics preflight/request pair, this explicitly enrolls
-    // the process for the Input Monitoring privacy service.
-    if unsafe { IOHIDRequestAccess(IO_HID_REQUEST_TYPE_LISTEN_EVENT) } {
+    if unsafe { CGPreflightListenEventAccess() } {
         InputMonitoringAccess::Granted
     } else {
-        input_monitoring_access()
+        InputMonitoringAccess::Denied
     }
 }
 
-fn input_monitoring_access_from_raw(raw: c_int) -> InputMonitoringAccess {
-    match raw {
-        IO_HID_ACCESS_TYPE_GRANTED => InputMonitoringAccess::Granted,
-        IO_HID_ACCESS_TYPE_DENIED => InputMonitoringAccess::Denied,
-        _ => InputMonitoringAccess::Unknown,
+pub fn request_input_monitoring_access() -> InputMonitoringAccess {
+    // The Option shortcut is implemented with a passive CGEventTap, so its
+    // permission must be checked and requested through CoreGraphics. IOHID's
+    // similarly named API governs IOHIDManager/IOHIDDevice clients and can
+    // incorrectly report this event-tap workflow as ready.
+    if unsafe { CGRequestListenEventAccess() } {
+        InputMonitoringAccess::Granted
+    } else {
+        input_monitoring_access()
     }
 }
 
@@ -445,26 +438,6 @@ fn has_disallowed_modifier(flags: CGEventFlags) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn iohid_access_values_are_mapped_without_guessing_unknown_values() {
-        assert_eq!(
-            input_monitoring_access_from_raw(IO_HID_ACCESS_TYPE_GRANTED),
-            InputMonitoringAccess::Granted
-        );
-        assert_eq!(
-            input_monitoring_access_from_raw(IO_HID_ACCESS_TYPE_DENIED),
-            InputMonitoringAccess::Denied
-        );
-        assert_eq!(
-            input_monitoring_access_from_raw(2),
-            InputMonitoringAccess::Unknown
-        );
-        assert_eq!(
-            input_monitoring_access_from_raw(99),
-            InputMonitoringAccess::Unknown
-        );
-    }
 
     #[test]
     fn event_tap_rebuild_backoff_is_capped() {

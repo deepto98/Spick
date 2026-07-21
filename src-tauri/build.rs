@@ -1,9 +1,6 @@
 fn main() {
     let target_is_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     if target_is_macos {
-        // IOHIDCheckAccess/IOHIDRequestAccess provide the authoritative,
-        // tri-state Input Monitoring enrollment API on macOS 10.15+.
-        println!("cargo:rustc-link-lib=framework=IOKit");
         // IsSecureEventInputEnabled is an independent, fail-closed signal for
         // password entry even when a control's Accessibility metadata is thin.
         println!("cargo:rustc-link-lib=framework=Carbon");

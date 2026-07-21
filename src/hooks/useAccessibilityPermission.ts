@@ -86,5 +86,13 @@ export function useAccessibilityPermission(enabled: boolean) {
     };
   }, [enabled, refresh]);
 
+  useEffect(() => {
+    if (!enabled || status?.state !== "missing") return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 1_250);
+    return () => window.clearInterval(interval);
+  }, [enabled, refresh, status?.state]);
+
   return { error, pending, refresh, request, status };
 }

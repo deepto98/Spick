@@ -235,6 +235,50 @@ describe("onboarding shortcut practice", () => {
     ).toBeVisible();
   });
 
+  it("does not call a running listener ready without Input Monitoring", () => {
+    render(
+      <Onboarding
+        accessibilityPending={false}
+        accessibilityStatus={{ state: "granted", canRequest: true }}
+        microphonePending={false}
+        microphoneStatus={{ state: "granted", canRequest: false }}
+        shortcutPending={false}
+        shortcutStatus={{
+          optionSelected: true,
+          optionListenerActive: true,
+          inputMonitoringGranted: false,
+          fallbackShortcut: null,
+        }}
+        settings={optionSettings}
+        settingsReady
+        settingsSaving={false}
+        transcriptionSource="local"
+        engineName="Whisper Small"
+        engineReady
+        practiceDictationState="idle"
+        practiceTranscript={null}
+        onRequestAccessibility={vi.fn()}
+        onRefreshAccessibility={vi.fn()}
+        onRequestMicrophone={vi.fn()}
+        onRefreshMicrophone={vi.fn()}
+        onRefreshShortcut={vi.fn()}
+        onRequestInputMonitoring={vi.fn()}
+        onRetrySettings={vi.fn()}
+        onSettingsChange={vi.fn()}
+        onFinalStep={vi.fn()}
+        onPracticeModeChange={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Let’s set it up" }));
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Allow in System Settings/ }),
+    ).toBeVisible();
+  });
+
   it("does not advance until microphone access is granted", () => {
     const onRequestMicrophone = vi.fn();
     render(

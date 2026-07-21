@@ -84,6 +84,7 @@ impl ChordQueueFlags {
 pub enum InputMonitoringAccess {
     Granted,
     Denied,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Unknown,
 }
 
@@ -228,7 +229,12 @@ impl ShortcutController {
             return Ok(());
         }
 
-        match OptionRuntime::start(app.clone()) {
+        let listener = if input_monitoring_access.is_granted() {
+            OptionRuntime::start(app.clone())
+        } else {
+            Err("Input Monitoring is not allowed for Spick yet".into())
+        };
+        match listener {
             Ok(mut new_runtime) => {
                 let cleanup_result = (|| {
                     if let Some(previous) = self.accelerator.as_deref() {
@@ -439,9 +445,9 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Result<ShortcutStatus, String> 
 pub fn request_input_monitoring_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
     #[cfg(target_os = "macos")]
     {
-        // This is the only path that asks IOHID to enroll the process in the
-        // Input Monitoring privacy service. Status and watchdog checks never
-        // prompt on their own.
+        // This is the only path that asks CoreGraphics to enroll the process
+        // in the Input Monitoring privacy service. Status and watchdog checks
+        // never prompt on their own.
         let input_monitoring_access = macos_option::request_input_monitoring_access();
         let mut controller = shortcut_controller()
             .lock()
@@ -575,9 +581,8 @@ fn option_activation_required(option_selected: bool, listener_active: bool) -> b
 
 #[cfg(target_os = "macos")]
 fn option_status_recovery_required(option_selected: bool, listener_active: bool) -> bool {
-    // IOHID pane enrollment and actual event-tap readiness are intentionally
-    // independent. Accessibility can authorize a passive event tap even when
-    // Input Monitoring is not enrolled, so listener health is authoritative.
+    // A listener can become unhealthy after permission is granted, and a
+    // permission transition can make a previously unavailable listener ready.
     option_selected && !listener_active
 }
 
@@ -801,7 +806,7 @@ mod tests {
             InputMonitoringAccess::Denied
         ));
 
-        // A real IOHID state transition bypasses the old state's delay.
+        // A real Input Monitoring state transition bypasses the old state's delay.
         assert!(retry.should_attempt(
             started_at + std::time::Duration::from_millis(1),
             InputMonitoringAccess::Granted

@@ -154,7 +154,9 @@ export function Onboarding({
     microphoneStatus?.state === "unsupported";
   const usesOptionGesture = settings.hotkey === "⌥";
   const browserPreview = accessibilityStatus?.state === "unsupported";
-  const optionListenerReady = shortcutStatus?.optionListenerActive === true;
+  const optionListenerReady =
+    shortcutStatus?.inputMonitoringGranted === true &&
+    shortcutStatus.optionListenerActive === true;
   const fallbackShortcut =
     usesOptionGesture && !optionListenerReady
       ? shortcutStatus?.fallbackShortcut

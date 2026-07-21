@@ -85,5 +85,19 @@ export function useMicrophonePermission(enabled: boolean) {
     };
   }, [enabled, refresh]);
 
+  useEffect(() => {
+    if (!enabled || microphonePermissionIsSettled(status)) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 1_250);
+    return () => window.clearInterval(interval);
+  }, [enabled, refresh, status]);
+
   return { error, pending, refresh, request, status };
+}
+
+function microphonePermissionIsSettled(
+  status: MicrophonePermissionStatus | null,
+) {
+  return status?.state === "granted" || status?.state === "restricted";
 }
