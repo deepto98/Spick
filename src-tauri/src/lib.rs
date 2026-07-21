@@ -21,6 +21,7 @@ mod latency;
 mod local_data;
 mod microphone_permission;
 mod model_store;
+mod notes;
 pub mod platform;
 mod session;
 mod shortcut;
@@ -176,6 +177,11 @@ pub fn run() {
             commands::create_vocabulary_entry,
             commands::update_vocabulary_entry,
             commands::delete_vocabulary_entry,
+            commands::list_notes,
+            commands::create_note,
+            commands::update_note,
+            commands::delete_note,
+            commands::export_note,
             commands::clear_local_data,
             commands::get_dictation_session,
             commands::get_audio_capture_status,
@@ -195,7 +201,7 @@ pub fn run() {
             commands::activate_local_model,
             commands::remove_local_model,
             commands::start_dictation_session,
-            commands::set_onboarding_practice_mode,
+            commands::set_in_app_dictation_mode,
             commands::stop_dictation_session,
             commands::cancel_dictation_session,
             commands::get_platform_capabilities,

@@ -189,27 +189,13 @@ pub struct HudCoordinates {
     pub y: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HudSettings {
     pub position: HudPosition,
     pub presentation: HudPresentation,
     pub custom_position: Option<HudCoordinates>,
     pub visible: bool,
-}
-
-impl Default for HudSettings {
-    fn default() -> Self {
-        Self {
-            position: HudPosition::default(),
-            presentation: HudPresentation::default(),
-            custom_position: None,
-            // A fresh install reveals the widget from the final onboarding
-            // step. Once acknowledged, the persisted choice shows it at
-            // startup on every later launch.
-            visible: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

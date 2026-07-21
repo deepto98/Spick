@@ -42,12 +42,13 @@ import {
   type NativeAppSettings,
   type NativeLanguagePolicy,
 } from "./lib/nativeSettings";
-import { setOnboardingPracticeMode } from "./lib/nativeDictation";
+import { setInAppDictationMode } from "./lib/nativeDictation";
 import type { ClearLocalDataScope } from "./lib/nativeLocalData";
 import type { CloudProviderId } from "./lib/nativeCloud";
 import type { AppSettings, Engine, TranscriptionSource, ViewId } from "./types";
 import { EnginesView } from "./views/EnginesView";
 import { SettingsView } from "./views/SettingsView";
+import { NotesView } from "./views/NotesView";
 import { TodayView } from "./views/TodayView";
 import { VocabularyView } from "./views/VocabularyView";
 
@@ -753,10 +754,18 @@ function App() {
   const changeOnboardingPracticeMode = useCallback(
     (enabled: boolean) => {
       if (!dictation.native) return;
-      void setOnboardingPracticeMode(enabled).catch(() => undefined);
+      void setInAppDictationMode(enabled).catch(() => undefined);
     },
     [dictation.native],
   );
+
+  useEffect(() => {
+    if (!dictation.native || !onboardingComplete) return;
+    void setInAppDictationMode(activeView === "notes").catch(() => undefined);
+    return () => {
+      void setInAppDictationMode(false).catch(() => undefined);
+    };
+  }, [activeView, dictation.native, onboardingComplete]);
 
   if (hudOnly) {
     return (
@@ -917,6 +926,14 @@ function App() {
               onCloudDelete={cloudProviders.removeCredential}
               onCloudActivate={activateCloudEngine}
               onFinishSetup={finishEngineSetup}
+            />
+          )}
+          {activeView === "notes" && (
+            <NotesView
+              native={dictation.native}
+              dictationState={dictation.state}
+              transcript={dictation.lastTranscript}
+              shortcut={settings.hotkey}
             />
           )}
           {activeView === "vocabulary" && (

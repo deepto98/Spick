@@ -4,6 +4,7 @@ import {
   Boxes,
   ChevronRight,
   Keyboard,
+  NotebookPen,
   Settings2,
   ShieldCheck,
 } from "lucide-react";
@@ -20,6 +21,7 @@ interface SidebarProps {
 
 const navItems: Array<{ id: ViewId; label: string; icon: typeof BarChart3 }> = [
   { id: "today", label: "Stats", icon: BarChart3 },
+  { id: "notes", label: "Notes", icon: NotebookPen },
   { id: "engines", label: "Engines", icon: Boxes },
   { id: "vocabulary", label: "Vocabulary", icon: BookOpenText },
   { id: "settings", label: "Settings", icon: Settings2 },

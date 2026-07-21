@@ -1066,7 +1066,7 @@ mod tests {
 
         assert!(!lifecycle.try_request_steady_state_transition(&settings, false, true));
         let mut changed = settings.clone();
-        changed.presentation = HudPresentation::Compact;
+        changed.presentation = HudPresentation::Expanded;
         assert!(!lifecycle.try_request_steady_state_transition(&changed, true, true));
 
         let mut moved = settings;

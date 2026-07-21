@@ -4,6 +4,7 @@ import { ShortcutKeys } from "./Ui";
 
 const viewLabels: Record<ViewId, string> = {
   today: "Stats",
+  notes: "Notes",
   engines: "Engines",
   vocabulary: "Vocabulary",
   settings: "Settings",

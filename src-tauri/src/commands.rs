@@ -41,6 +41,7 @@ use crate::{
     },
     microphone_permission::{self, MicrophonePermissionState, MicrophonePermissionStatus},
     model_store::{LocalModelSummary, ModelDownloadProgress, MODEL_DOWNLOAD_PROGRESS_EVENT},
+    notes::{Note, NoteInput},
     platform::{self, TextTargetError, TextTargetErrorKind, TextTargetToken},
     session::SessionController,
     shortcut,
@@ -196,6 +197,95 @@ pub fn delete_vocabulary_entry(
         emit_local_data_changed(&app, state.inner(), vec![LocalDataDomain::Vocabulary]);
     }
     Ok(result)
+}
+
+#[tauri::command]
+pub fn list_notes(window: WebviewWindow, state: State<'_, AppState>) -> Result<Vec<Note>, String> {
+    require_main_window(&window)?;
+    state.notes.list()
+}
+
+#[tauri::command]
+pub fn create_note(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    input: NoteInput,
+) -> Result<Note, String> {
+    require_main_window(&window)?;
+    state.notes.create(input)
+}
+
+#[tauri::command]
+pub fn update_note(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+    input: NoteInput,
+) -> Result<Note, String> {
+    require_main_window(&window)?;
+    state.notes.update(&id, input)
+}
+
+#[tauri::command]
+pub fn delete_note(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    require_main_window(&window)?;
+    state.notes.delete(&id)
+}
+
+#[tauri::command]
+pub fn export_note(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+    format: String,
+) -> Result<bool, String> {
+    require_main_window(&window)?;
+    let note = state.notes.get(&id)?;
+    let extension = match format.as_str() {
+        "md" => "md",
+        "txt" => "txt",
+        _ => return Err("notes can be exported only as Markdown or plain text".into()),
+    };
+    let suggested = note
+        .title
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, ' ' | '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let suggested = if suggested.trim().is_empty() {
+        "Untitled note"
+    } else {
+        suggested.trim()
+    };
+    let selected = window
+        .dialog()
+        .file()
+        .set_title("Export note")
+        .set_file_name(format!("{suggested}.{extension}"))
+        .add_filter(
+            if extension == "md" {
+                "Markdown"
+            } else {
+                "Text"
+            },
+            &[extension],
+        )
+        .blocking_save_file();
+    let Some(FilePath::Path(path)) = selected else {
+        return Ok(false);
+    };
+    std::fs::write(path, note.body)
+        .map_err(|error| format!("could not export the note: {error}"))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -673,13 +763,13 @@ pub fn start_dictation_session(
 }
 
 #[tauri::command]
-pub fn set_onboarding_practice_mode(
+pub fn set_in_app_dictation_mode(
     window: WebviewWindow,
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<(), String> {
     require_main_window(&window)?;
-    state.onboarding_practice.store(enabled, Ordering::Release);
+    state.in_app_dictation.store(enabled, Ordering::Release);
     Ok(())
 }
 
@@ -1304,7 +1394,7 @@ pub(crate) fn start_session<R: Runtime>(
             Ok(target) => Some(target),
             Err(error)
                 if error.kind == TextTargetErrorKind::OwnApplication
-                    && state.onboarding_practice.load(Ordering::Acquire) =>
+                    && state.in_app_dictation.load(Ordering::Acquire) =>
             {
                 None
             }
@@ -3524,7 +3614,7 @@ mod tests {
         assert!(!cloud_checked.get());
         assert_eq!(
             checked_model.borrow().as_deref(),
-            Some("whisper-small-multilingual-q5-1")
+            Some("whisper-tiny-multilingual-f16")
         );
         assert_eq!(error, "selected model is unavailable");
     }

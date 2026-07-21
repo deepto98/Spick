@@ -22,6 +22,7 @@ use crate::{
     latency::{DictationLatencyEvent, StartupLatencyTrace},
     local_data::LocalDataStore,
     model_store::ModelStore,
+    notes::NoteStore,
     platform::{CapturedTextTarget, TextTargetController},
     session::SessionController,
 };
@@ -40,6 +41,7 @@ pub struct AppState {
     pub local_data: LocalDataStore,
     pub text_targets: TextTargetController,
     pub cloud: CloudRuntime,
+    pub notes: NoteStore,
     /// Serializes model selection/removal with settings writes so an active
     /// model cannot disappear between verification and persistence.
     pub model_configuration: Mutex<()>,
@@ -58,7 +60,7 @@ pub struct AppState {
     pub hud_target_protection: Mutex<HudTargetProtection>,
     /// Allows a first-run shortcut attempt while Spick itself owns focus.
     /// It changes only target capture: audio and engine paths remain identical.
-    pub onboarding_practice: AtomicBool,
+    pub in_app_dictation: AtomicBool,
     transcripts: Mutex<TranscriptStore>,
     active_dictation_latency: Mutex<Option<StartupLatencyTrace>>,
     latest_dictation_latency: RwLock<Option<DictationLatencyEvent>>,
@@ -130,6 +132,7 @@ impl AppState {
     ) -> Result<Self, String> {
         let settings = load_settings(&settings_path)?;
         let credentials_path = parent_directory(&database_path).join("cloud-credentials.json");
+        let notes_path = parent_directory(&database_path).join("notes.json");
         Ok(Self {
             settings: RwLock::new(settings),
             session: Mutex::new(SessionController::default()),
@@ -139,10 +142,11 @@ impl AppState {
             local_data: LocalDataStore::open(database_path),
             text_targets: TextTargetController::default(),
             cloud: CloudRuntime::new(credentials_path),
+            notes: NoteStore::open(notes_path)?,
             model_configuration: Mutex::new(()),
             settings_update: Mutex::new(()),
             hud_target_protection: Mutex::new(HudTargetProtection::default()),
-            onboarding_practice: AtomicBool::new(false),
+            in_app_dictation: AtomicBool::new(false),
             transcripts: Mutex::new(TranscriptStore::default()),
             active_dictation_latency: Mutex::new(None),
             latest_dictation_latency: RwLock::new(None),
@@ -754,6 +758,10 @@ mod tests {
         let expected = AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             cleanup_engine: None,
+            hud: HudSettings {
+                visible: true,
+                ..legacy.hud.clone()
+            },
             ..legacy
         };
 
@@ -781,6 +789,10 @@ mod tests {
         let expected = AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             cleanup_engine: None,
+            hud: HudSettings {
+                visible: true,
+                ..legacy.hud.clone()
+            },
             ..legacy
         };
 
@@ -807,6 +819,10 @@ mod tests {
         let state = AppState::load(path.clone()).unwrap();
         let expected = AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
+            hud: HudSettings {
+                visible: true,
+                ..previous.hud.clone()
+            },
             ..previous
         };
 

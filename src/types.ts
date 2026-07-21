@@ -1,4 +1,4 @@
-export type ViewId = "today" | "engines" | "vocabulary" | "settings";
+export type ViewId = "today" | "notes" | "engines" | "vocabulary" | "settings";
 
 export type HudState =
   | "idle"
