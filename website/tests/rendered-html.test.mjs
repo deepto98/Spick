@@ -34,7 +34,12 @@ test("server-renders the complete Spick landing page", async () => {
   assert.match(html, /Works where your cursor works/);
   assert.match(html, /Your Mac can do the listening\./);
   assert.match(html, /Notes made for speaking/);
-  assert.match(html, /Signed build coming/);
+  assert.match(html, />Download for Mac</);
+  assert.match(
+    html,
+    /href=["']https:\/\/github\.com\/deepto98\/Spick\/releases\/download\/v0\.1\.0-preview\.1\/Spick_0\.1\.0_local_aarch64\.dmg["']/,
+  );
+  assert.doesNotMatch(html, /Signed build coming/);
   assert.doesNotMatch(html, /href=["'](?:file:|\/Users\/|\/tmp\/)/i);
 });
 
@@ -49,4 +54,5 @@ test("publishes the required brand and social assets", async () => {
   assert.match(html, /property=["']og:image["']/i);
   assert.match(html, /content=["']http:\/\/localhost(?::3000)?\/og\.png["']/i);
   assert.match(html, /rel=["']icon["'][^>]+spick-mark\.png/i);
+  assert.doesNotMatch(html, /_vinext\/image\?url=/i);
 });

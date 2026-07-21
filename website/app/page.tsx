@@ -1,6 +1,8 @@
 import Image from "next/image";
 
-const downloadUrl = process.env.SPICK_DMG_URL;
+const previewDownloadUrl =
+  "https://github.com/deepto98/Spick/releases/download/v0.1.0-preview.1/Spick_0.1.0_local_aarch64.dmg";
+const downloadUrl = process.env.SPICK_DMG_URL ?? previewDownloadUrl;
 
 const waveBars = [18, 34, 24, 48, 28, 56, 38, 22, 44, 31, 51, 25, 37];
 
@@ -9,7 +11,13 @@ export default function Home() {
     <main>
       <nav className="nav shell" aria-label="Main navigation">
         <a className="wordmark" href="#top" aria-label="Spick home">
-          <Image src="/spick-mark.png" alt="" width={38} height={38} />
+          <Image
+            src="/spick-mark.png"
+            alt=""
+            width={38}
+            height={38}
+            unoptimized
+          />
           <span>Spick</span>
         </a>
         <div className="navLinks">
@@ -42,7 +50,13 @@ export default function Home() {
           <div className="appWindow">
             <aside className="mockSidebar">
               <div className="mockBrand">
-                <Image src="/spick-mark.png" alt="" width={29} height={29} />
+                <Image
+                  src="/spick-mark.png"
+                  alt=""
+                  width={29}
+                  height={29}
+                  unoptimized
+                />
                 <span>Spick</span>
               </div>
               <div className="mockNav active">Stats</div>
@@ -183,7 +197,13 @@ export default function Home() {
       </section>
 
       <section className="download shell" id="download">
-        <Image src="/spick-mark.png" alt="" width={98} height={98} />
+        <Image
+          src="/spick-mark.png"
+          alt=""
+          width={98}
+          height={98}
+          unoptimized
+        />
         <div>
           <p className="eyebrow">Spick for Mac</p>
           <h2>Give the keyboard a breather.</h2>
@@ -205,7 +225,13 @@ export default function Home() {
 
       <footer className="shell footer">
         <a className="wordmark" href="#top">
-          <Image src="/spick-mark.png" alt="" width={38} height={38} />
+          <Image
+            src="/spick-mark.png"
+            alt=""
+            width={38}
+            height={38}
+            unoptimized
+          />
           <span>Spick</span>
         </a>
         <p>Made for sentences that arrive faster than fingers.</p>
