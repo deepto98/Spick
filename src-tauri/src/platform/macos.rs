@@ -42,7 +42,7 @@ use super::{
 };
 #[cfg(not(feature = "macos-input-method-compatibility-harness"))]
 use core_graphics::{
-    event::{CGEvent, CGEventFlags},
+    event::{CGEvent, CGEventFlags, CGEventTapLocation},
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use libc::pid_t;
@@ -90,6 +90,7 @@ const AX_SELECTED_TEXT_CHANGED: &str = "AXSelectedTextChanged";
 const AX_VALUE_CHANGED: &str = "AXValueChanged";
 const AX_UI_ELEMENT_DESTROYED: &str = "AXUIElementDestroyed";
 const AX_MANUAL_ACCESSIBILITY: &str = "AXManualAccessibility";
+const AX_ENHANCED_USER_INTERFACE: &str = "AXEnhancedUserInterface";
 
 const OWNER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2_600);
 const CAPTURE_DEADLINE: Duration = Duration::from_millis(700);
@@ -1206,8 +1207,12 @@ fn commit_through_clipboard_paste(
     if let Err(error) = ensure_post_dispatch_budget(deadline) {
         return Err(restore_after_pre_dispatch_error(&mut pasteboard, error));
     }
-    key_down.post_to_pid(target.pid);
-    key_up.post_to_pid(target.pid);
+    // Electron and Chromium routinely ignore process-addressed synthetic key
+    // events even while their editor is the proven frontmost AX target. Post
+    // the single Cmd-V through the active session, as a physical keyboard
+    // does. The exact app and field were revalidated immediately above.
+    key_down.post(CGEventTapLocation::Session);
+    key_up.post(CGEventTapLocation::Session);
 
     let delivery = confirm_clipboard_paste(target, transcript, expected_ranges, deadline);
     pasteboard.restore_if_owned()?;
@@ -2322,21 +2327,25 @@ fn select_coherent_focused_pid(
     accessibility_application_pid: Option<pid_t>,
     frontmost_application_pid: Option<pid_t>,
 ) -> Result<pid_t, FocusedApplicationFallbackError> {
-    let mut reported = [
-        system_focused_element_pid,
-        accessibility_application_pid,
-        frontmost_application_pid,
-    ]
-    .into_iter()
-    .flatten();
-    let Some(pid) = reported.next() else {
-        return Err(FocusedApplicationFallbackError::Missing);
-    };
-    if reported.all(|reported_pid| reported_pid == pid) {
-        Ok(pid)
-    } else {
-        Err(FocusedApplicationFallbackError::PidMismatch)
+    if let Some(system_pid) = system_focused_element_pid {
+        if frontmost_application_pid.is_some_and(|pid| pid != system_pid) {
+            return Err(FocusedApplicationFallbackError::PidMismatch);
+        }
+        // The system-wide focused element is the strongest field-level
+        // signal. Electron may leave AXFocusedApplication pointing at a stale
+        // helper during a renderer transition, so it must not veto a system
+        // field that agrees with the actual frontmost process.
+        return Ok(system_pid);
     }
+
+    if let Some(accessibility_pid) = accessibility_application_pid {
+        if frontmost_application_pid.is_some_and(|pid| pid != accessibility_pid) {
+            return Err(FocusedApplicationFallbackError::PidMismatch);
+        }
+        return Ok(accessibility_pid);
+    }
+
+    frontmost_application_pid.ok_or(FocusedApplicationFallbackError::Missing)
 }
 
 fn permission_status() -> AccessibilityPermissionStatus {
@@ -2393,8 +2402,9 @@ fn request_permission() -> Result<AccessibilityPermissionStatus, TextTargetError
 /// Read one coherent app/field snapshot. The system-wide focused element is
 /// authoritative because Chromium and Electron can keep AXFocusedApplication
 /// populated while the application's own focus proxy is stale or overly broad.
-/// Every other source is used only as a coherence check or a last-resort
-/// fallback, and conflicting PIDs are retried as an in-flight app switch.
+/// The frontmost process remains the cross-source safety check. An app-level
+/// AX proxy is allowed to lag when a system field already identifies that
+/// frontmost process, which is common in Chromium and Electron.
 fn read_focused_context(deadline: Instant) -> Result<FocusedContext, TextTargetError> {
     let retry_deadline = deadline.min(Instant::now() + FOCUSED_CONTEXT_RETRY_BUDGET);
 
@@ -2459,10 +2469,11 @@ fn read_focused_context_once(deadline: Instant) -> Result<FocusedContext, TextTa
         ));
     }
     check_deadline(deadline)?;
+    enable_application_accessibility_best_effort(&application);
     let mut application_anchor =
         read_optional_focus_element(&application, AX_FOCUSED_UI_ELEMENT, deadline)?;
     if application_anchor.is_none() {
-        enable_manual_accessibility_best_effort(&application);
+        enable_application_accessibility_best_effort(&application);
         check_deadline(deadline)?;
         set_element_timeout(&application, deadline)?;
         application_anchor =
@@ -2519,13 +2530,15 @@ fn frontmost_application_pid() -> Option<pid_t> {
     (pid > 0).then_some(pid)
 }
 
-fn enable_manual_accessibility_best_effort(application: &AXUIElement) {
+fn enable_application_accessibility_best_effort(application: &AXUIElement) {
     let Some(enabled) = (unsafe { kCFBooleanTrue }) else {
         return;
     };
-    let attribute = CFString::from_static_str(AX_MANUAL_ACCESSIBILITY);
     let enabled: &CFType = enabled;
-    let _ = unsafe { application.set_attribute_value(&attribute, enabled) };
+    for attribute in [AX_MANUAL_ACCESSIBILITY, AX_ENHANCED_USER_INTERFACE] {
+        let attribute = CFString::from_static_str(attribute);
+        let _ = unsafe { application.set_attribute_value(&attribute, enabled) };
+    }
 }
 
 fn focused_context_error_is_transient(kind: TextTargetErrorKind) -> bool {
@@ -3019,6 +3032,10 @@ mod tests {
             Ok(41)
         );
         assert_eq!(select_coherent_focused_pid(None, Some(41), None), Ok(41));
+        assert_eq!(
+            select_coherent_focused_pid(Some(41), Some(52), Some(41)),
+            Ok(41)
+        );
     }
 
     #[test]
@@ -3038,7 +3055,7 @@ mod tests {
         );
         assert_eq!(
             select_coherent_focused_pid(Some(41), Some(52), None),
-            Err(FocusedApplicationFallbackError::PidMismatch)
+            Ok(41)
         );
         assert!(focused_context_error_is_transient(
             TextTargetErrorKind::NoFocusedTarget
