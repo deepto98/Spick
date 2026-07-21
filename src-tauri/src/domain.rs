@@ -177,8 +177,8 @@ pub enum HudPosition {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HudPresentation {
-    #[default]
     Expanded,
+    #[default]
     Compact,
 }
 
@@ -204,7 +204,10 @@ impl Default for HudSettings {
             position: HudPosition::default(),
             presentation: HudPresentation::default(),
             custom_position: None,
-            visible: true,
+            // A fresh install reveals the widget from the final onboarding
+            // step. Once acknowledged, the persisted choice shows it at
+            // startup on every later launch.
+            visible: false,
         }
     }
 }
@@ -457,7 +460,8 @@ mod tests {
         assert_eq!(settings.cleanup_engine, None);
         assert_eq!(settings.input_device_name, None);
         assert_eq!(settings.hud.position, HudPosition::BottomRight);
-        assert!(settings.hud.visible);
+        assert_eq!(settings.hud.presentation, HudPresentation::Compact);
+        assert!(!settings.hud.visible);
         assert!(!settings.allow_cloud_fallback);
         assert!(!settings.save_transcript_history);
         assert!(settings.validate().is_ok());

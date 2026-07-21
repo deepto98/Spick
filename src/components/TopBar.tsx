@@ -3,7 +3,7 @@ import type { ViewId } from "../types";
 import { ShortcutKeys } from "./Ui";
 
 const viewLabels: Record<ViewId, string> = {
-  today: "Today",
+  today: "Stats",
   engines: "Engines",
   vocabulary: "Vocabulary",
   settings: "Settings",

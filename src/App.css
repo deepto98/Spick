@@ -899,6 +899,7 @@ p {
 }
 
 .language-donut {
+  position: relative;
   display: grid;
   width: 112px;
   height: 112px;
@@ -914,13 +915,13 @@ p {
 .language-donut::before {
   content: "";
   position: absolute;
-  width: 76px;
-  height: 76px;
+  width: 66px;
+  height: 66px;
   background: #fff;
   border-radius: 50%;
 }
 
-.language-donut > div {
+.language-donut__label {
   position: relative;
   z-index: 1;
   display: flex;
@@ -1912,6 +1913,10 @@ p {
   align-items: center;
   justify-content: space-between;
   margin-top: 28px;
+}
+
+.permission-step .step-actions {
+  margin-bottom: 24px;
 }
 
 .personalize-step {

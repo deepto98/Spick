@@ -34,7 +34,7 @@ describe("Spick product shell", () => {
     window.localStorage.setItem("spick-onboarding-complete", "true");
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Stats" })).toBeInTheDocument();
     expect(screen.getByText("No recordings yet")).toBeInTheDocument();
     expect(screen.queryByText("SAMPLE DATA")).not.toBeInTheDocument();
 
@@ -67,7 +67,7 @@ describe("Spick product shell", () => {
     ).toBeDisabled();
     expect(window.localStorage.getItem("spick-onboarding-complete")).toBeNull();
     expect(
-      screen.queryByRole("heading", { name: "Today" }),
+      screen.queryByRole("heading", { name: "Stats" }),
     ).not.toBeInTheDocument();
   });
 

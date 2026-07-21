@@ -54,7 +54,7 @@ const defaultSettings: AppSettings = {
   hotkey: "⌥",
   language: "Auto-detect",
   microphone: "System default microphone",
-  showWidget: true,
+  showWidget: false,
   keepHistory: false,
   cloudFallback: false,
   cleanupLevel: "Verbatim",
@@ -801,6 +801,11 @@ function App() {
         onRequestInputMonitoring={() => void shortcut.request()}
         onRetrySettings={retrySettingsLoad}
         onSettingsChange={changeSettings}
+        onFinalStep={() => {
+          if (!settings.showWidget) {
+            changeSettings({ ...settings, showWidget: true });
+          }
+        }}
         onComplete={completeOnboarding}
       />
     );

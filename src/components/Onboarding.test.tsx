@@ -50,6 +50,7 @@ function renderPractice(
       onRequestInputMonitoring={vi.fn()}
       onRetrySettings={vi.fn()}
       onSettingsChange={vi.fn()}
+      onFinalStep={vi.fn()}
       onComplete={vi.fn()}
     />,
   );
@@ -215,6 +216,7 @@ describe("onboarding shortcut practice", () => {
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
+        onFinalStep={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -256,6 +258,7 @@ describe("onboarding shortcut practice", () => {
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
+        onFinalStep={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -295,6 +298,7 @@ describe("onboarding shortcut practice", () => {
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
+        onFinalStep={vi.fn()}
         onComplete={vi.fn()}
       />,
     );
@@ -340,6 +344,7 @@ describe("onboarding shortcut practice", () => {
         onRequestInputMonitoring={vi.fn()}
         onRetrySettings={vi.fn()}
         onSettingsChange={vi.fn()}
+        onFinalStep={vi.fn()}
         onComplete={vi.fn()}
       />,
     );

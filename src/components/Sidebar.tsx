@@ -19,7 +19,7 @@ interface SidebarProps {
 }
 
 const navItems: Array<{ id: ViewId; label: string; icon: typeof BarChart3 }> = [
-  { id: "today", label: "Today", icon: BarChart3 },
+  { id: "today", label: "Stats", icon: BarChart3 },
   { id: "engines", label: "Engines", icon: Boxes },
   { id: "vocabulary", label: "Vocabulary", icon: BookOpenText },
   { id: "settings", label: "Settings", icon: Settings2 },

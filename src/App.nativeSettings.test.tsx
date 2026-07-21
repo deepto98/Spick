@@ -487,7 +487,7 @@ describe("native language and cleanup persistence", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     await waitFor(() => expect(audioMocks.list).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stats" }));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     await waitFor(() => expect(audioMocks.list).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
@@ -691,7 +691,7 @@ describe("native language and cleanup persistence", () => {
     await waitFor(() =>
       expect(localDataMocks.clearData).toHaveBeenCalledWith("all"),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stats" }));
     expect(
       screen.queryByText("This cleared recovery text must stay gone."),
     ).not.toBeInTheDocument();

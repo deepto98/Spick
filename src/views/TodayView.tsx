@@ -267,7 +267,7 @@ export function TodayView({
     <div className="view view--today">
       <PageHeader
         eyebrow="YOUR DICTATION"
-        title="Today"
+        title="Stats"
         description="Word counts and recording pace come from dictations on this Mac. Audio is never kept."
         actions={
           <button
@@ -714,7 +714,7 @@ function LanguagePanel({
               aria-label={`${languages.length} ${languages.length === 1 ? "language" : "languages"} used`}
               style={{ background: donutBackground }}
             >
-              <div>
+              <div className="language-donut__label">
                 <strong>{languages.length}</strong>
                 <span>{languages.length === 1 ? "language" : "languages"}</span>
               </div>

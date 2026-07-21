@@ -52,6 +52,7 @@ interface OnboardingProps {
   onRequestInputMonitoring: () => void;
   onRetrySettings: () => void;
   onSettingsChange: (settings: AppSettings) => void;
+  onFinalStep: () => void;
   onComplete: () => void;
 }
 
@@ -95,12 +96,20 @@ export function Onboarding({
   onRequestInputMonitoring,
   onRetrySettings,
   onSettingsChange,
+  onFinalStep,
   onComplete,
 }: OnboardingProps) {
   const [step, setStep] = useState(0);
   const [shortcutPractice, setShortcutPractice] =
     useState<ShortcutPracticeState>("idle");
   const shortcutPracticeRef = useRef<ShortcutPracticeState>("idle");
+  const finalStepAnnounced = useRef(false);
+
+  useEffect(() => {
+    if (step !== 3 || finalStepAnnounced.current) return;
+    finalStepAnnounced.current = true;
+    onFinalStep();
+  }, [onFinalStep, step]);
 
   const accessibilityReady =
     accessibilityStatus?.state === "granted" ||
